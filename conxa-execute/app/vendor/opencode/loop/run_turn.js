@@ -113,10 +113,15 @@ async function runTurn(opts) {
         args = call.function && call.function.arguments ? JSON.parse(call.function.arguments) : {};
       } catch (e) {
         // Malformed tool-call JSON from the model — silently substituting {}
-        // would run the tool with the wrong arguments instead of no run at
-        // all. Feed the parse error back as the tool result so the model can
-        // see what went wrong and retry with valid JSON.
+        // as the *executed* args would run the tool with the wrong arguments
+        // instead of no run at all, so we still feed the parse error back as
+        // the tool result. But `call` is the same object already pushed into
+        // `messages` above, so its raw `arguments` string must be sanitized
+        // here too — otherwise this malformed JSON rides along in history
+        // and gets resent to the provider on every future turn, which
+        // rejects the *entire* request each time (a permanently stuck chat).
         argsError = `Invalid tool call arguments (not valid JSON): ${e.message}`;
+        call.function.arguments = "{}";
       }
       let result;
       const known = (opts.tools || []).some((t) => t.name === name);

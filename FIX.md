@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed a chat conversation that could get permanently stuck after one garbled reply — 2026-09-17
+Every so often, the AI behind Conxa Execute's chat would send back a slightly garbled internal instruction (not something a user would ever see directly). The chat noticed the problem for that one turn, but then kept that garbled piece sitting in the conversation's memory — so every message after that point failed the exact same way, forever, with no way to recover except starting a brand new chat. It's like a form with one bad handwritten field: instead of crossing it out and continuing, the whole form kept getting rejected and resubmitted unchanged. Now that piece gets cleaned up the moment it's spotted, so a single hiccup no longer breaks the rest of the conversation.
+
 ## When Conxa's AI assistant can't get an answer, it now says so instead of staying silent — 2026-09-17
 If every AI provider behind Conxa Execute's chat failed to answer, the failure reason used to vanish completely — it never reached the error message shown to the person, and it was never written to any log either. Support would see only a generic "couldn't run that" with no way to tell what actually went wrong. Now that reason is included in the error and recorded in the server log, so a real outage can be diagnosed in seconds instead of guessed at.
 

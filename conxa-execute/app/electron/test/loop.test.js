@@ -109,4 +109,42 @@ describe("vendored OpenCode chat completions loop", () => {
       globalThis.fetch = orig;
     }
   });
+
+  it("sanitizes malformed tool-call arguments in history instead of poisoning every future turn", async () => {
+    let step = 0;
+    const result = await runTurn({
+      model: "m",
+      system: "sys",
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ name: "x", inputSchema: { type: "object" } }],
+      executeTool: async () => "",
+      chatCompletion: async (body) => {
+        step += 1;
+        if (step === 1) {
+          return {
+            ok: true,
+            json: {
+              choices: [
+                {
+                  message: {
+                    role: "assistant",
+                    tool_calls: [{ id: "1", type: "function", function: { name: "x", arguments: "{}garbage" } }],
+                  },
+                },
+              ],
+            },
+          };
+        }
+        // Second call: the provider now receives the FULL history, including
+        // the previously malformed assistant tool call. Assert it was fixed.
+        const assistantMsg = body.messages.find((m) => m.role === "assistant" && m.tool_calls);
+        assert.equal(assistantMsg.tool_calls[0].function.arguments, "{}");
+        return { ok: true, json: { choices: [{ message: { role: "assistant", content: "done" } }] } };
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.text, "done");
+    const toolResult = result.messages.find((m) => m.role === "tool");
+    assert.match(toolResult.content, /Invalid tool call arguments/);
+  });
 });

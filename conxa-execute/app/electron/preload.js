@@ -11,6 +11,16 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   deleteHistory: (payload) => ipcRenderer.invoke("history:delete", payload),
   getSettings: () => ipcRenderer.invoke("settings:get"),
   saveSettings: (payload) => ipcRenderer.invoke("settings:save", payload),
+  update: {
+    check: () => ipcRenderer.invoke("update:check"),
+    install: () => ipcRenderer.invoke("update:install"),
+    getVersion: () => ipcRenderer.invoke("app:version"),
+    onStatus: (cb) => {
+      const listener = (_e, payload) => cb(payload);
+      ipcRenderer.on("update:status", listener);
+      return () => ipcRenderer.removeListener("update:status", listener);
+    },
+  },
   chatSend: (payload) => ipcRenderer.invoke("chat:send", payload),
   onChatDelta: (cb) => {
     const listener = (_e, payload) => cb(payload);

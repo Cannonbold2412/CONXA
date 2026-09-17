@@ -36,6 +36,13 @@ export type ExecuteContext = {
   credits_remaining?: number | null;
 };
 
+export type UpdateCheckResult = { available: boolean; currentVersion: string; latestVersion?: string; error?: string };
+
+export type UpdateStatus =
+  | { phase: "download-progress"; percent: number; bytesPerSecond: number; transferred: number; total: number }
+  | { phase: "downloaded" }
+  | { phase: "error"; message: string };
+
 export type Bridge = {
   runtimeStatus: () => Promise<{ ok: boolean; command?: string; message?: string }>;
   listSkills: () => Promise<{ ok: boolean; skills?: SkillRow[]; message?: string }>;
@@ -44,6 +51,12 @@ export type Bridge = {
   history: () => Promise<{ ok: boolean; items?: HistoryRow[] }>;
   deleteHistory: (p: { at: string }) => Promise<{ ok: boolean; items?: HistoryRow[]; message?: string }>;
   getSettings: () => Promise<{ ok: boolean; activeWorkspaceId?: string; error?: string }>;
+  update: {
+    check: () => Promise<UpdateCheckResult>;
+    install: () => Promise<void>;
+    getVersion: () => Promise<string>;
+    onStatus: (cb: (p: UpdateStatus) => void) => () => void;
+  };
   chatSend: (p: { text: string; sessionId: string; requestId?: string }) => Promise<{ ok: boolean; text?: string; message?: string }>;
   onChatDelta: (cb: (p: ChatDelta) => void) => () => void;
   listSessions: () => Promise<{ ok: boolean; sessions?: SessionSummary[]; message?: string }>;

@@ -65,6 +65,10 @@ Two UI surfaces each carry their own `PRODUCT.md` (strategic: register, users, p
 - Don't read files larger than ~25 KB completely. Use `offset`/`limit`, or `grep`/`tail` to find the relevant chunk first.
 - Session artifacts (`data/sessions/<id>/events.jsonl`, screenshots, compile reports) can be very large — always scope reads.
 
+### Artifacts
+
+- Whenever the user asks to create an artifact, also save a copy in `docs/archive`.
+
 ---
 
 ## Repository Layout

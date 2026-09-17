@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { ExecuteContext, Identity } from "./bridge";
 import { Button, Icon, paths } from "./ui";
 
@@ -23,6 +24,46 @@ const KIND_LABEL: Record<ExecuteContext["kind"], string> = {
 export function SettingsModal({
   open, onClose, identity, contexts, activeWorkspaceId, onSwitchContext, switchingContext, theme, onThemeChange, onLogout,
 }: Props) {
+  const [version, setVersion] = useState("");
+  const [checkPhase, setCheckPhase] = useState<"idle" | "checking" | "available" | "not-available" | "error">("idle");
+  const [latestVersion, setLatestVersion] = useState("");
+  const [checkError, setCheckError] = useState("");
+  const [downloadPercent, setDownloadPercent] = useState<number | null>(null);
+  const [downloaded, setDownloaded] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    window.conxaExecute.update.getVersion().then((v) => { if (mounted) setVersion(v); }).catch(() => {});
+    const unsub = window.conxaExecute.update.onStatus((msg) => {
+      if (!mounted) return;
+      if (msg.phase === "download-progress") setDownloadPercent(msg.percent);
+      else if (msg.phase === "downloaded") { setDownloadPercent(null); setDownloaded(true); }
+      else if (msg.phase === "error") { setCheckPhase("error"); setCheckError(msg.message); }
+    });
+    return () => { mounted = false; unsub(); };
+  }, []);
+
+  const checkForUpdate = async () => {
+    setCheckPhase("checking");
+    setCheckError("");
+    try {
+      const result = await window.conxaExecute.update.check();
+      setVersion(result.currentVersion);
+      if (result.error) {
+        setCheckPhase("error");
+        setCheckError(result.error);
+      } else if (result.available && result.latestVersion) {
+        setCheckPhase("available");
+        setLatestVersion(result.latestVersion);
+      } else {
+        setCheckPhase("not-available");
+      }
+    } catch (err) {
+      setCheckPhase("error");
+      setCheckError(String(err));
+    }
+  };
+
   if (!open) return null;
   const active = contexts.find((c) => c.workspace_id === activeWorkspaceId);
   return (
@@ -97,10 +138,52 @@ export function SettingsModal({
             </div>
           </section>
 
-          <section>
+          <section className="mb-8">
             <h3 className="mb-1 text-[15px] font-medium">Your CONXA account</h3>
             <p className="mb-3 text-sm text-fg-muted">Signed in as {identity?.email || identity?.name || identity?.user_id}.</p>
             <Button variant="secondary" onClick={onLogout}>Sign out</Button>
+          </section>
+
+          <section>
+            <h3 className="mb-1 text-[15px] font-medium">Software update</h3>
+            <p className="mb-3 text-sm text-fg-muted">
+              CONXA updates itself in the background. Check here if you want the latest version right away.
+            </p>
+            <div className="space-y-2 rounded-lg border border-line bg-bg p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-fg-muted">Current version</span>
+                <span className="text-fg">{version || "—"}</span>
+              </div>
+
+              {checkPhase === "available" && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-fg-muted">New version available</span>
+                  <span className="text-fg">{latestVersion}</span>
+                </div>
+              )}
+              {checkPhase === "not-available" && <p className="text-sm text-fg-dim">You're up to date.</p>}
+              {checkPhase === "error" && <p className="text-sm text-err">{checkError}</p>}
+
+              {downloadPercent !== null && (
+                <div>
+                  <div className="mb-1 flex justify-between text-[11px] text-fg-dim">
+                    <span>Downloading update…</span>
+                    <span>{Math.round(downloadPercent)}%</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-bg-active">
+                    <div className="h-full rounded-full bg-brand transition-all duration-300" style={{ width: `${downloadPercent}%` }} />
+                  </div>
+                </div>
+              )}
+              {downloaded && <p className="text-sm text-fg-dim">Update downloaded — install now, or it will install next time you quit.</p>}
+
+              <div className="flex gap-2 pt-1">
+                <Button variant="secondary" onClick={checkForUpdate} disabled={checkPhase === "checking"}>
+                  {checkPhase === "checking" ? "Checking…" : "Check for updates"}
+                </Button>
+                {downloaded && <Button onClick={() => window.conxaExecute.update.install()}>Install now</Button>}
+              </div>
+            </div>
           </section>
         </div>
       </div>

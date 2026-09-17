@@ -54,6 +54,10 @@ The `docs/` folder is the authoritative source of truth for this codebase. Befor
 - Don't read files larger than ~25 KB completely. Use `offset`/`limit`, or `grep`/`tail` to find the relevant chunk first.
 - Session artifacts (`data/sessions/<id>/events.jsonl`, screenshots, compile reports) can be very large — always scope reads.
 
+### Artifacts
+
+- Whenever the user asks to create an artifact, also save a copy in `docs/archive`.
+
 ---
 
 ## Repository Layout
