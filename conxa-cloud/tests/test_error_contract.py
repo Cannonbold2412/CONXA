@@ -44,6 +44,23 @@ def test_unhandled_exception_returns_internal_error_shape_and_logs(monkeypatch, 
     assert any("unhandled_error" in rec.message for rec in caplog.records)
 
 
+def test_readyz_503s_on_filesystem_store_when_auth_required(monkeypatch):
+    """Regression: /readyz used to report "ready" (200) with database: "filesystem"
+    even when SKILL_AUTH_REQUIRED=true — which _validate_production_config already
+    refuses to boot without a real database for. Readiness must agree with startup."""
+    from conxa_core.config import settings
+
+    monkeypatch.setattr(settings, "auth_required", True)
+    monkeypatch.setattr("app.main.using_database", lambda: False)
+    monkeypatch.setattr("app.main.healthcheck", lambda: None)
+
+    r = client.get("/readyz")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "unavailable"
+    assert body["database"] == "filesystem"
+
+
 def test_admin_role_required_is_a_bare_code_not_prose():
     """Regression: app/services/rbac.py used to raise the prose string
     "admin role required" as the machine-readable detail. It's now a snake_case

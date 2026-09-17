@@ -30,10 +30,6 @@ function apiProxySecret() {
   return (process.env.CONXA_API_PROXY_SECRET || '').trim()
 }
 
-let warnedMissingProxySecret = false
-let warnedMissingOrgId = false
-let warnedMissingUserId = false
-
 async function proxy(request: Request, path: string[]) {
   const origin = upstreamOrigin()
   if (!origin) {
@@ -58,6 +54,12 @@ async function proxy(request: Request, path: string[]) {
   if (token) {
     headers.set('authorization', `Bearer ${token}`)
   }
+  // These three states are legitimate, documented fallbacks — not
+  // misconfiguration — so they log every time rather than pretending a
+  // "warn once" latch (which doesn't work correctly across serverless
+  // instances anyway: each cold start gets its own, so a persistent problem
+  // could warn once per instance forever, or never warn again within one
+  // that already saw it) makes them one-off events worth investigating.
   const proxySecret = apiProxySecret()
   if (proxySecret && userId) {
     headers.set('x-conxa-proxy-secret', proxySecret)
@@ -65,23 +67,18 @@ async function proxy(request: Request, path: string[]) {
     if (orgId) headers.set('x-conxa-org-id', orgId)
     if (orgRole) headers.set('x-conxa-org-role', orgRole)
     if (orgSlug) headers.set('x-conxa-org-name', orgSlug)
-    if (!orgId && !warnedMissingOrgId) {
-      warnedMissingOrgId = true
-      console.warn('CONXA_API_PROXY_SECRET is configured, but Clerk did not provide an active orgId; backend will use the personal workspace.', {
+    if (!orgId) {
+      console.info('proxy: no active Clerk org — backend will use the personal workspace', {
         path: upstreamUrl.pathname,
       })
     }
-  } else if (proxySecret && !userId && !warnedMissingUserId) {
-    warnedMissingUserId = true
-    console.warn('CONXA_API_PROXY_SECRET is configured, but Clerk did not provide a userId; trusted proxy identity headers were not sent.', {
+  } else if (proxySecret && !userId) {
+    console.info('proxy: no Clerk userId — trusted proxy identity headers not sent, falling back to Bearer JWT', {
       path: upstreamUrl.pathname,
-      hasOrgId: Boolean(orgId),
     })
-  } else if (userId && !proxySecret && !warnedMissingProxySecret) {
-    warnedMissingProxySecret = true
-    console.warn('CONXA_API_PROXY_SECRET is not configured; backend workspace identity may fall back to Clerk JWT claims.', {
+  } else if (userId && !proxySecret) {
+    console.info('proxy: CONXA_API_PROXY_SECRET not configured — backend identity comes from the Clerk JWT alone', {
       path: upstreamUrl.pathname,
-      hasOrgId: Boolean(orgId),
     })
   }
 
@@ -102,13 +99,9 @@ async function proxy(request: Request, path: string[]) {
       path: path.join('/'),
       error,
     })
-    return Response.json(
-      {
-        detail: 'backend_unavailable',
-        origin,
-      },
-      { status: 503 },
-    )
+    // `origin` (an internal hostname) stays server-side in the log above —
+    // it has no reason to reach the browser in the response body.
+    return Response.json({ detail: 'backend_unavailable' }, { status: 503 })
   }
 
   const responseHeaders = new Headers()

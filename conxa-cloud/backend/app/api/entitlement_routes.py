@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -40,6 +41,7 @@ from app.services.saas import (
 )
 
 router = APIRouter(tags=["entitlements"])
+logger = logging.getLogger(__name__)
 _ASSIGNABLE_PLANS = {"free", "starter", "pro", "enterprise"}
 
 
@@ -243,6 +245,10 @@ def get_execute_contexts(request: Request) -> dict[str, Any]:
         try:
             ctx["credits_remaining"] = execute_pool_status(ctx["workspace_id"])["remaining"]
         except Exception:  # noqa: BLE001
+            # None is already the right sentinel here — the frontend must not
+            # read it as 0 remaining — it just wasn't logged, so a pool lookup
+            # that's been silently failing for a workspace was invisible.
+            logger.warning("execute_pool_status_failed workspace_id=%s", ctx["workspace_id"], exc_info=True)
             ctx["credits_remaining"] = None
 
     return {"contexts": list(contexts.values()), "active_workspace_id": principal.workspace_id}

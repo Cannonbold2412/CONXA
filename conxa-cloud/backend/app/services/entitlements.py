@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import threading
@@ -50,6 +51,8 @@ def _combined_pool_used(usage: dict[str, Any]) -> int:
     for cls in _POOL_USAGE_CLASSES:
         total += int(usage.get(f"{cls}_input_tokens") or 0) + int(usage.get(f"{cls}_output_tokens") or 0)
     return total
+
+logger = logging.getLogger(__name__)
 
 # The capability ladder (see docs/PRD.md §11): each tier is not just bigger
 # numbers, it unlocks what a workspace can *do*. There is no limit on how many
@@ -299,7 +302,15 @@ def normalize_plan(billing: dict[str, Any]) -> str:
     value = str(billing.get("plan") or "free").strip().lower()
     if value == "basic":
         return "starter"
-    return value if value in PLAN_LIMITS else "free"
+    if value in PLAN_LIMITS:
+        return value
+    # This gates every request for the workspace — a hard failure here would
+    # take the whole workspace offline over what is almost always a stray
+    # admin-tooling typo, not a request-level problem. Falls back to "free"
+    # (the safe, least-privileged default) but logs loudly so a workspace
+    # silently downgraded to free — including a paying one — gets noticed.
+    logger.error("unknown_plan_value plan=%r workspace_billing_keys=%s", value, sorted(billing.keys()))
+    return "free"
 
 
 _QUOTA_ALIASES = {
@@ -332,6 +343,14 @@ def _limits_from_billing(billing: dict[str, Any]) -> dict[str, Any]:
         try:
             limits[target_key] = max(0, int(raw_value))
         except (TypeError, ValueError):
+            # Same reasoning as normalize_plan above: this gates every request,
+            # so a malformed override silently falls back to the plan default
+            # rather than 500ing every call for the workspace — but it's logged
+            # loudly, since a wrong quota override is exactly the kind of thing
+            # that should never fail silently in a billing system.
+            logger.error(
+                "invalid_entitlement_override key=%s value=%r target=%s", raw_key, raw_value, target_key
+            )
             continue
 
     # analytics_retention_days shares the "None = unlimited/forever" sentinel

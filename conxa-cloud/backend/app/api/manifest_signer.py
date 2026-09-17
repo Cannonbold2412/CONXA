@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -64,11 +65,15 @@ def verify_manifest(manifest: dict, public_key_b64: str) -> bool:
     signature_b64 = manifest.get("signature", "")
     if not signature_b64:
         return False
+    # Only a genuine cryptographic mismatch (the signature doesn't match the
+    # content) returns False. A malformed key/signature that can't even be
+    # decoded is a different failure — broken input, not "verification failed"
+    # — and raises instead, so it doesn't look identical to a tampered manifest.
+    public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key_b64))
     try:
-        public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(public_key_b64))
         public_key.verify(base64.b64decode(signature_b64), _canonical_json(manifest))
         return True
-    except Exception:
+    except InvalidSignature:
         return False
 
 

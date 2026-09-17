@@ -370,7 +370,13 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
             except Exception:  # noqa: BLE001 — the reply already streamed to the client; headers
                 # are long committed by this point, so an entitlement-recording failure here can
                 # only be logged, never turned into an HTTP error the way _meter_and_call does.
-                logger.exception("record_llm_usage failed after a streamed copilot reply (org=%s)", org_id)
+                # workspace_id + both token counts are logged so the lost usage
+                # is reconstructable from logs rather than just "it failed".
+                logger.exception(
+                    "record_llm_usage_failed_after_stream org_id=%s workspace_id=%s usage_class=%s "
+                    "input_tokens=%d output_tokens=%d",
+                    org_id, principal.workspace_id, usage_class, input_tokens, output_tokens,
+                )
             yield f"data: {json.dumps({'done': True, 'text': full_text})}\n\n"
         finally:
             _release_workspace_slot(org_id)

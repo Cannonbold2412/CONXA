@@ -133,6 +133,25 @@ class CashfreeRoutesTests(unittest.TestCase):
             res = self._client().post("/api/v1/subscriptions/webhooks/cashfree", json=payload)
             self.assertEqual(res.status_code, 400)
 
+    def test_webhook_billing_update_failure_returns_non_2xx_not_200(self) -> None:
+        """Regression: the handler used to catch the billing-update exception, log
+        it, and still return 200 — Cashfree never retries a 2xx, so a payment
+        could be silently lost with the customer's plan never upgraded. A non-2xx
+        here is what makes Cashfree's own retry schedule recover it."""
+        from conxa_core.db import db_set
+
+        db_set("cashfree_sub_workspace", "subref123", {"workspace_id": "wrk_local", "tier": "starter"})
+        payload = {
+            "cf_event": "SUBSCRIPTION_NEW_PAYMENT",
+            "cf_subReferenceId": "subref123",
+            "cf_planId": "plan_starter",
+            "cf_status": "ACTIVE",
+        }
+        with patch("app.api.cashfree_routes.upsert_billing", side_effect=RuntimeError("db down")):
+            res = self._client().post("/api/v1/subscriptions/webhooks/cashfree", json=payload)
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(res.json()["detail"], "webhook_billing_update_failed")
+
 
 if __name__ == "__main__":
     unittest.main()

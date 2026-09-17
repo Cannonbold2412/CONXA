@@ -19,6 +19,10 @@ PUBLIC_PATHS = {
     "/",
     "/health",
     "/healthz",
+    # Render's deploy gate hits this directly (see Dockerfile) — it must be
+    # reachable with no auth or every deploy would sit "unhealthy" against a
+    # 401 that has nothing to do with DB readiness.
+    "/readyz",
     "/api/v1/health",
     # Runtime phonehome — installed runtimes have no Clerk session, only sync tokens.
     # This stores best-effort device registration; spoofing just inflates counts.

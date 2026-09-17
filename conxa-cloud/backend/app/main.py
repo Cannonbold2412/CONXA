@@ -90,20 +90,37 @@ def _validate_production_config() -> None:
 
 _logger = logging.getLogger(__name__)
 
+# Consecutive GC failure count. A single flaky pass logging the same exception
+# forever at the normal level would bury the signal that it's actually stuck —
+# past this many in a row, it's escalated so it can't just scroll by unnoticed.
+_GC_STUCK_THRESHOLD = 5
 
-async def _run_gc_once() -> None:
-    """Run every background GC pass off the event loop (they do blocking IO)."""
+
+async def _run_gc_once(consecutive_failures: int) -> int:
+    """Run every background GC pass off the event loop (they do blocking IO).
+    Returns the updated consecutive-failure count."""
     try:
         await asyncio.to_thread(cleanup_old_snapshots)
         await asyncio.to_thread(cleanup_expired_entries)
+        return 0
     except Exception:  # noqa: BLE001
-        _logger.exception("Background GC pass failed")
+        consecutive_failures += 1
+        if consecutive_failures >= _GC_STUCK_THRESHOLD:
+            _logger.error(
+                "Background GC pass has failed %d times in a row — it looks stuck, not transient",
+                consecutive_failures,
+                exc_info=True,
+            )
+        else:
+            _logger.exception("Background GC pass failed")
+        return consecutive_failures
 
 
 async def _gc_loop(interval_secs: int) -> None:
     """Run GC once at startup, then every ``interval_secs``."""
+    consecutive_failures = 0
     while True:
-        await _run_gc_once()
+        consecutive_failures = await _run_gc_once(consecutive_failures)
         await asyncio.sleep(interval_secs)
 
 
@@ -187,4 +204,15 @@ def readyz() -> JSONResponse:
             status_code=503,
             content={"status": "unavailable", "database": "down", "error": str(exc)[:200]},
         )
-    return JSONResponse(content={"status": "ready", "database": "up" if using_database() else "filesystem"})
+    on_database = using_database()
+    if settings.auth_required and not on_database:
+        # _validate_production_config already refuses to boot without a real
+        # database when auth is required, so this should be unreachable in
+        # practice — but readiness reporting "ready" while running on the
+        # filesystem store in production is exactly the silent-degrade this
+        # refactor is about. Agree with startup instead of contradicting it.
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "database": "filesystem", "error": "auth_required but no database configured"},
+        )
+    return JSONResponse(content={"status": "ready", "database": "up" if on_database else "filesystem"})

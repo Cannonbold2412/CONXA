@@ -12,6 +12,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import secrets
 import time
 import zipfile
@@ -28,6 +29,7 @@ from app.api.skillpack_storage import skill_packs_dir, skillpack_files_ns
 from app.services.saas import principal_from_request, ensure_principal
 from app.services.rbac import require_admin
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/skill-packs", tags=["skill-packs"])
 # Versioned equivalent of the delta route below, nested under /workflows so it
 # shares one mental model with the other three per-company endpoints
@@ -279,8 +281,14 @@ def _delta_impl(workspace_id: str, since: str, request: Request) -> dict[str, An
     try:
         since_map = json.loads(since) if since else {}
         if not isinstance(since_map, dict):
+            logger.warning("skillpack_delta_since_not_a_dict workspace_id=%s", workspace_id)
             since_map = {}
     except (json.JSONDecodeError, TypeError):
+        # Falls back to "client knows nothing" — a full resync, not an error —
+        # since this is an unattended background sync loop with no one to see
+        # a 400. But a malformed `since` from a runtime's own saved state is
+        # still worth knowing about: it means something wrote bad state.
+        logger.warning("skillpack_delta_since_unparseable workspace_id=%s since=%r", workspace_id, since)
         since_map = {}
     return _build_delta(workspace_id, {str(k): str(v) for k, v in since_map.items()})
 

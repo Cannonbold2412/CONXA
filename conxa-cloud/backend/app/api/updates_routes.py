@@ -15,6 +15,7 @@ Admin POST endpoints (Bearer CONXA_ADMIN_TOKEN required — called by CI after e
   POST /updates/conxa-app-manifest  — update app manifest vars in memory
 """
 
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from conxa_core.db import db_get, db_set
 from app.api.manifest_signer import load_signing_key, sign_manifest
 
 router = APIRouter(tags=["updates"])
+logger = logging.getLogger(__name__)
 
 _ADMIN_TOKEN = os.environ.get("CONXA_ADMIN_TOKEN", "")
 
@@ -217,7 +219,14 @@ def _latest_yml(latest_yml_url: str, win_url: str, sha512: str, bare_version: st
             )
             return Response(content, media_type="text/yaml")
         except Exception:
-            pass  # fall through to hand-crafted YAML on any fetch error
+            # Falls through to the hand-crafted YAML below, which has no
+            # blockMapSize — every user gets a full re-download instead of a
+            # differential patch until this is noticed and fixed.
+            logger.warning(
+                "latest_yml_fetch_failed url=%s — falling back to full-download manifest",
+                latest_yml_url,
+                exc_info=True,
+            )
 
     # Fallback: minimal YAML (no blockMapSize → full download, not differential).
     filename = unquote(win_url.split("/")[-1])

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import logging
 import secrets
 import time
 from pathlib import Path
@@ -19,6 +20,9 @@ from fastapi import HTTPException, Request
 
 from conxa_core.config import settings
 from conxa_core.db import db_get, db_list_kv, using_database
+
+logger = logging.getLogger(__name__)
+_warned_unsigned_downloads = False
 
 
 def sign_installer(slug: str, version: str | None, ts: int) -> str:
@@ -33,8 +37,19 @@ def verify_installer_signature(slug: str, version: str | None, request: Request)
 
     A blank SKILL_INSTALLER_SIGNING_KEY preserves the legacy public-download
     behavior for local dev — matches the SKILL_API_BASE_URL fallback pattern.
+    main.py's _validate_production_config already refuses to boot without this
+    key when SKILL_AUTH_REQUIRED=true, so this path is dev-only in practice;
+    the warning here is for the case someone runs with auth off against real
+    data anyway.
     """
     if not settings.installer_signing_key:
+        global _warned_unsigned_downloads
+        if not _warned_unsigned_downloads:
+            _warned_unsigned_downloads = True
+            logger.warning(
+                "installer_downloads_unsigned SKILL_INSTALLER_SIGNING_KEY is unset — "
+                "every installer download is publicly accessible with no signature check."
+            )
         return
     ts_param = request.query_params.get("ts", "")
     sig_param = request.query_params.get("sig", "")

@@ -10,12 +10,17 @@ export type RiskRow = {
   lastSeen: number
 }
 
+/** `value || 0` used to turn a missing/NaN metric into a confident "0" — every
+ *  number on the dashboard looked healthy even when the field never arrived.
+ *  A real 0 still formats as "0"; only a genuinely absent value shows "—". */
 export function fmtNumber(value: number) {
-  return new Intl.NumberFormat().format(value || 0)
+  if (!Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat().format(value)
 }
 
 export function fmtPercent(value: number) {
-  return `${Number(value || 0).toFixed(1).replace(/\.0$/, '')}%`
+  if (!Number.isFinite(value)) return '—'
+  return `${value.toFixed(1).replace(/\.0$/, '')}%`
 }
 
 export function fmtDuration(ms: number) {

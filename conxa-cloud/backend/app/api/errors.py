@@ -47,6 +47,7 @@ ERROR_MESSAGES: dict[str, str] = {
     "llm_all_providers_failed": "Every AI provider we tried is unavailable right now. Try again shortly.",
     "llm_unavailable": "The AI service is unavailable right now. Try again shortly.",
     "cashfree_plan_create_failed": "We couldn't set up billing for that plan right now. Try again, or contact support.",
+    "cashfree_addon_verify_failed": "We couldn't verify that payment right now. If you were charged, it will be credited automatically shortly — contact support if it isn't within a few minutes.",
     "quota_exceeded": "The monthly usage limit for this workspace has been reached.",
     "legal_version_mismatch": "Our terms have been updated since you last accepted them. Please review and accept the new version.",
     "policy_invalid": "That policy setting isn't valid.",
@@ -59,6 +60,10 @@ ERROR_MESSAGES: dict[str, str] = {
     "missing_bearer_token": "You need to be signed in to do that.",
     "request_body_too_large": "That upload is too large.",
     "credits_unavailable": "We couldn't check your remaining credits just now.",
+    "customer_email_required": "We need an email address on file to set up billing. Add one to your account and try again.",
+    "webhook_billing_update_failed": "We received your payment but couldn't update your plan yet. This will retry automatically.",
+    "webhook_cancel_failed": "We couldn't process your subscription cancellation yet. This will retry automatically.",
+    "webhook_grant_failed": "We received your payment but couldn't grant your credits yet. This will retry automatically.",
 }
 
 
