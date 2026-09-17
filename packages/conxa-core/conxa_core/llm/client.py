@@ -702,6 +702,14 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
                 ],
             },
         ]
+    if task == "execute_chat":
+        # Conxa Execute's multi-turn tool-calling chat — the one task whose
+        # payload already IS an OpenAI-shaped messages array (system prompt +
+        # full history), built client-side by the desktop app's own turn
+        # loop. Every other task above builds its own single-turn prompt
+        # from payload["input"]/["prompt"]; this is the deliberate exception.
+        messages = payload.get("messages")
+        return list(messages) if isinstance(messages, list) else []
     return [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 
 
@@ -751,6 +759,12 @@ def _openai_body_dict(task: str, payload: dict[str, Any], *, json_mode: bool) ->
         body["max_tokens"] = 1024
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+    # Tool-calling passthrough — only execute_chat's caller-built payload ever
+    # sets these, so this is a no-op for every other task's payload shape.
+    if payload.get("tools"):
+        body["tools"] = payload["tools"]
+        if payload.get("tool_choice") is not None:
+            body["tool_choice"] = payload["tool_choice"]
     return body
 
 
@@ -928,6 +942,64 @@ def _iter_sse_text_deltas(response: Any, *, observed: dict[str, Any] | None = No
         text = _sse_choice_text(first)
         if text:
             yield text
+
+
+def _sse_choice_tool_call_deltas(first: Any) -> list[dict[str, Any]]:
+    if not isinstance(first, dict):
+        return []
+    delta = first.get("delta")
+    if not isinstance(delta, dict):
+        return []
+    calls = delta.get("tool_calls")
+    if not isinstance(calls, list):
+        return []
+    out = []
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        fn_raw = call.get("function")
+        fn: dict[str, Any] = fn_raw if isinstance(fn_raw, dict) else {}
+        out.append({
+            "index": call.get("index", 0),
+            "id": call.get("id"),
+            "name": fn.get("name"),
+            "arguments_delta": fn.get("arguments"),
+        })
+    return out
+
+
+def _iter_sse_deltas(response: Any, *, observed: dict[str, Any] | None = None) -> Any:
+    """Tagged sibling of _iter_sse_text_deltas for tasks that need tool-call
+    deltas too (currently only execute_chat) — yields
+    {"type": "text", "text": ...} or {"type": "tool_call", ...} per chunk
+    instead of a bare string, so a caller can tell the two apart. Kept as a
+    separate function rather than changing _iter_sse_text_deltas' return
+    shape, so every existing caller (copilot_reply, etc., which never
+    request tools) is completely unaffected."""
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == "[DONE]":
+            return
+        try:
+            obj = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        choices = obj.get("choices") if isinstance(obj, dict) else None
+        if not isinstance(choices, list) or not choices:
+            continue
+        first = choices[0]
+        if observed is not None:
+            finish_reason = first.get("finish_reason") if isinstance(first, dict) else None
+            if finish_reason:
+                observed["finish_reason"] = finish_reason
+        text = _sse_choice_text(first)
+        if text:
+            yield {"type": "text", "text": text}
+        for call in _sse_choice_tool_call_deltas(first):
+            yield {"type": "tool_call", **call}
 
 
 def _next_api_key(keys: list[str]) -> tuple[str, int, int]:
