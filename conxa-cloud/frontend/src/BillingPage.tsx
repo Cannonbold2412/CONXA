@@ -324,7 +324,6 @@ export function BillingPage() {
                 Upgrade limits without changing local workflow creation.
               </p>
             </div>
-            {/* removed legacy plan badge per request */}
           </div>
 
           {plansQuery.isLoading ? (

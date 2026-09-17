@@ -12,36 +12,17 @@
  * "Other" rather than inventing a hue nobody can distinguish.
  */
 
-export const CATEGORICAL = [
-  'var(--chart-1)',
-  'var(--chart-2)',
-  'var(--chart-3)',
-  'var(--chart-4)',
-] as const
+const OTHER_COLOR = 'var(--chart-5)'
 
-export const OTHER_COLOR = 'var(--chart-5)'
-
-export const MAX_SERIES = CATEGORICAL.length
-
-/** Identity colour for series `index`. Anything past the 4th slot is "Other". */
-export function seriesColor(index: number): string {
-  return index < MAX_SERIES ? CATEGORICAL[index] : OTHER_COLOR
-}
-
-export const TIER_COLORS: Record<string, string> = {
+const TIER_COLORS: Record<string, string> = {
   'Tier A': 'var(--tier-1)',
   'Tier B': 'var(--tier-4)',
-  // Wire leftovers — map if an old payload still arrives.
-  'Tier 1': 'var(--tier-1)',
-  'Tier 2': 'var(--tier-1)',
-  'Tier 3': 'var(--tier-4)',
-  'Tier 4': 'var(--tier-4)',
 }
 
 export const TIER_ORDER = ['Tier A', 'Tier B'] as const
 
 /** Tier A resolves without any model call — the platform's zero-cost band. */
-export const ZERO_TOKEN_TIERS = new Set(['Tier A', 'Tier 1', 'Tier 2'])
+export const ZERO_TOKEN_TIERS = new Set(['Tier A'])
 
 export function tierColor(tier: string): string {
   return TIER_COLORS[tier] ?? OTHER_COLOR
@@ -66,7 +47,6 @@ export function heatColor(t: number): string {
 export const HEAT_LEGEND = HEAT_STEPS
 
 /** Recessive chrome — grid and axis lines must never compete with the data. */
-export const AXIS_LINE = 'rgba(255,255,255,0.10)'
 export const GRID_LINE = 'rgba(255,255,255,0.055)'
 /** 11px matches the dashboard's meta-text size; 10px numerals in zinc-500 on a
  *  near-black surface are legible only at close range. */

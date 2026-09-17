@@ -874,6 +874,39 @@ def test_installer_upload_rejects_duplicate_version_and_preserves_history():
     assert rows[1]["is_latest"] is False
 
 
+def test_installer_upload_versions_v2_route_has_no_path_collision():
+    """Regression test: post_installer_upload_v2/get_installer_versions_v2 used to be
+    registered at `/{installer_version}/installer/upload` and `/{installer_version}/
+    installer/versions` — the exact same path template as the legacy `/{slug}/...`
+    routes on the same router, so the first (legacy) registration always won and the
+    v2 handlers were unreachable. They now live at the param-free `/installer/upload`
+    and `/installer/versions`, deriving slug from the authenticated principal."""
+    from conxa_core.workspace import workspace_dir_slug
+    from app.services.saas import LOCAL_WORKSPACE_ID
+
+    expected_slug = workspace_dir_slug(LOCAL_WORKSPACE_ID)
+    body = b"MZv2route"
+
+    up = client.post(
+        "/api/v1/workflows/installer/upload?filename=V2-Setup.exe&version=9.0.0&release_notes=v2%20route",
+        content=body,
+    )
+    assert up.status_code == 200, up.text
+    assert up.json()["slug"] == expected_slug
+
+    versions = client.get("/api/v1/workflows/installer/versions")
+    assert versions.status_code == 200, versions.text
+    rows = versions.json()["versions"]
+    assert any(row["version"] == "9.0.0" for row in rows)
+
+    # Same data as the legacy, slug-in-path route for the same workspace.
+    legacy_versions = client.get(f"/api/v1/workflows/{expected_slug}/installer/versions")
+    assert legacy_versions.status_code == 200, legacy_versions.text
+    assert {r["version"] for r in legacy_versions.json()["versions"]} == {
+        r["version"] for r in rows
+    }
+
+
 def test_installer_history_survives_disk_wipe_but_binary_does_not(monkeypatch, tmp_path):
     """Render's free plan has no persistent disk and idles out, wiping local files
     between requests. Version *history* is Postgres-backed (faked here via the fs KV

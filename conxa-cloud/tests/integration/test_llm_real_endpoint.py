@@ -1,6 +1,5 @@
 """Integration test for real LLM endpoint (gated by SKILL_LLM_TEXT_ENDPOINT env var)."""
 
-import os
 import pytest
 
 from conxa_core.config import settings

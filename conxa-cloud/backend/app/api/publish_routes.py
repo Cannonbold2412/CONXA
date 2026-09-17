@@ -653,9 +653,12 @@ async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     return await _upload_installer_impl(slug, request)
 
 
-@router.post("/{installer_version}/installer/upload")
-async def post_installer_upload_v2(installer_version: str, request: Request) -> dict[str, Any]:
-    validate_installer_version(installer_version)
+@router.post("/installer/upload")
+async def post_installer_upload_v2(request: Request) -> dict[str, Any]:
+    """Versioned-generation equivalent of ``post_installer_upload``. No path
+    parameter — the workspace (and thus slug) comes from the authenticated
+    principal, so there is nothing for ``{installer_version}``/``{slug}`` to
+    disambiguate. See docs/TRD.md's back-compat table."""
     principal = current_principal(request)
     require_admin(principal)
     from conxa_core.workspace import workspace_dir_slug
@@ -724,9 +727,12 @@ def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     return _installer_versions_impl(slug, request)
 
 
-@router.get("/{installer_version}/installer/versions")
-def get_installer_versions_v2(installer_version: str, request: Request) -> dict[str, Any]:
-    validate_installer_version(installer_version)
+@router.get("/installer/versions")
+def get_installer_versions_v2(request: Request) -> dict[str, Any]:
+    """Versioned-generation equivalent of ``get_installer_versions``. No path
+    parameter — the workspace (and thus slug) comes from the authenticated
+    principal. This is the URL the Cloud dashboard's Build Installer page
+    calls. See docs/TRD.md's back-compat table."""
     principal = current_principal(request)
     require_admin(principal)
     from conxa_core.workspace import workspace_dir_slug

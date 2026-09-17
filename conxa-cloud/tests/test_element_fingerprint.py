@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from conxa_compile.compiler.build import (
     _build_assertions,
     _build_element_fingerprint,
@@ -30,7 +28,6 @@ from conxa_core.models.skill_spec import (
     FrameFingerprint,
     IdentityBundle,
     IdentitySignal,
-    RecoveryBlock,
     ShadowHost,
     SkillStep,
     ValidationBlock,
