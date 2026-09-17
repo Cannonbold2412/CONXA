@@ -141,7 +141,12 @@ def test_genuinely_empty_stream_still_fails_over_and_is_not_labelled_reasoning(m
     assert any(line == "stream produced no content" for line in error_detail)
 
 
-def test_openrouter_body_suppresses_reasoning_for_copilot_reply(monkeypatch):
+def test_no_task_or_endpoint_ever_gets_a_reasoning_key(monkeypatch):
+    """Reasoning is always left on — the router used to send OpenRouter entries
+    reasoning={"enabled": False} to save tokens, but one deployment (z-ai/glm-5.3-flash)
+    hard-rejected that with a 400 ("Reasoning is mandatory..."), so the lever was removed
+    entirely rather than special-cased per entry. No task, on any endpoint, sends a
+    "reasoning" body key any more."""
     router = _fresh_router([_entry(endpoint="https://openrouter.ai/api/v1")], max_retries=1)
     seen_bodies: list[dict] = []
 
@@ -153,9 +158,10 @@ def test_openrouter_body_suppresses_reasoning_for_copilot_reply(monkeypatch):
 
     monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
 
-    router.route_text("copilot_reply", {}, 5_000, on_delta=lambda c: None)
+    for task in ("copilot_reply", "copilot_diagnose", "anchor_vision", "execute_chat"):
+        router.route_text(task, {}, 5_000, on_delta=lambda c: None)
 
-    assert seen_bodies[0].get("reasoning") == {"enabled": False}
+    assert all("reasoning" not in body for body in seen_bodies)
 
 
 def test_non_openrouter_endpoint_does_not_get_reasoning_key(monkeypatch):
@@ -171,93 +177,6 @@ def test_non_openrouter_endpoint_does_not_get_reasoning_key(monkeypatch):
     monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
 
     router.route_text("copilot_reply", {}, 5_000, on_delta=lambda c: None)
-
-    assert "reasoning" not in seen_bodies[0]
-
-
-def test_copilot_diagnose_also_gets_reasoning_suppressed_on_openrouter(monkeypatch):
-    """copilot_diagnose used to be excluded on the assumption its larger max_tokens already
-    accommodated a reasoning prefix — that was observed false live (finish_reason="length" with
-    an empty answer at both 900 and 2048), so the suppression is now endpoint-gated only, for
-    every task except execute_chat (see test_execute_chat_is_exempt_from_reasoning_suppression)."""
-    router = _fresh_router([_entry(endpoint="https://openrouter.ai/api/v1")], max_retries=1)
-    seen_bodies: list[dict] = []
-
-    class _FakeJsonResponse:
-        status = 200
-
-        def read(self):
-            import json as _json
-
-            return _json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    def fake_urlopen(req, timeout=None):
-        import json as _json
-
-        seen_bodies.append(_json.loads(req.data.decode("utf-8")))
-        return _FakeJsonResponse()
-
-    monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
-
-    router.route_text("copilot_diagnose", {}, 5_000)
-
-    assert seen_bodies[0].get("reasoning") == {"enabled": False}
-
-
-def test_non_copilot_task_also_gets_reasoning_suppressed_on_openrouter(monkeypatch):
-    """The suppression is endpoint-gated only now — not limited to the two copilot tasks."""
-    router = _fresh_router([_entry(endpoint="https://openrouter.ai/api/v1")], max_retries=1)
-    seen_bodies: list[dict] = []
-
-    class _FakeJsonResponse:
-        status = 200
-
-        def read(self):
-            import json as _json
-
-            return _json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode("utf-8")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-    def fake_urlopen(req, timeout=None):
-        import json as _json
-
-        seen_bodies.append(_json.loads(req.data.decode("utf-8")))
-        return _FakeJsonResponse()
-
-    monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
-
-    router.route_text("anchor_vision", {}, 5_000)
-
-    assert seen_bodies[0].get("reasoning") == {"enabled": False}
-
-
-def test_execute_chat_is_exempt_from_reasoning_suppression(monkeypatch):
-    """Conxa Execute's chat streams reasoning deltas live as "thinking" in its UI (see
-    conxa_core.llm.client._iter_sse_deltas' "reasoning" chunk type) — the only task that wants
-    the tokens rather than paying for wasted ones, so it must not get the suppression key."""
-    router = _fresh_router([_entry(endpoint="https://openrouter.ai/api/v1")], max_retries=1)
-    seen_bodies: list[dict] = []
-
-    def fake_urlopen(req, timeout=None):
-        import json as _json
-
-        seen_bodies.append(_json.loads(req.data.decode("utf-8")))
-        return _FakeStreamResponse(_sse_lines('data: {"choices":[{"delta":{"content":"hi"}}]}', "data: [DONE]"))
-
-    monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
-
-    router.route_text("execute_chat", {}, 5_000, on_delta=lambda c: None)
 
     assert "reasoning" not in seen_bodies[0]
 

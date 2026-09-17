@@ -574,20 +574,6 @@ class LLMRouter:
             body_dict = _openai_body_dict(task, payload_with_model, json_mode=on_delta is None)
             if on_delta is not None:
                 body_dict["stream"] = True
-            # BUILD-33: OpenRouter-specific lever to skip the hidden chain-of-thought prefix. Every
-            # task except execute_chat never reads reasoning text (see _sse_choice_reasoning's
-            # docstring) — it is billed output that can consume the whole completion budget before
-            # the answer starts (observed live: copilot_diagnose on z-ai/glm-5.3-flash returning
-            # finish_reason="length" with empty content at its old 900 AND 2048 caps). execute_chat
-            # is exempted: Conxa Execute streams reasoning deltas live as "thinking" in its chat UI
-            # (see _iter_sse_deltas' "reasoning" chunk type), so the tokens are wanted there, not
-            # wasted — the reasoning_only_no_content fast-fail below still guards it if a model
-            # spends the whole budget on reasoning and writes no content anyway. Gated on the
-            # endpoint (what actually accepts this body key), not entry.provider (a free-text name
-            # a deployment can spell however it likes) — an OpenAI-compatible endpoint that doesn't
-            # recognise "reasoning" would otherwise reject the whole request.
-            if "openrouter.ai" in entry.endpoint and task != "execute_chat":
-                body_dict["reasoning"] = {"enabled": False}
             raw_body = json.dumps(body_dict).encode("utf-8")
             # Guarded on has_active_job_sink() — the proxy path never opens a job
             # scope, so this used to build a full redacted preview (including a
@@ -732,12 +718,12 @@ class LLMRouter:
                 return None
 
             # BUILD-33 (non-streaming twin of the check above, line 647-672): a reasoning-
-            # capable model can ignore the reasoning={"enabled": False} lever above and spend
-            # the whole completion budget on hidden chain-of-thought, returning finish_reason
-            # "length" with empty message content — a real, paid-for generation, not a dead
-            # provider. Every retry against the same entry hits the identical shape, so this is
-            # _DeterministicRejection's case: fail fast instead of burning the pool's other
-            # entries and more billed attempts on a request that can't produce content this way.
+            # capable model can spend the whole completion budget on hidden chain-of-thought,
+            # returning finish_reason "length" with empty message content — a real, paid-for
+            # generation, not a dead provider. Every retry against the same entry hits the
+            # identical shape, so this is _DeterministicRejection's case: fail fast instead of
+            # burning the pool's other entries and more billed attempts on a request that can't
+            # produce content this way.
             choices = data_raw.get("choices")
             first_choice = choices[0] if isinstance(choices, list) and choices else None
             finish_reason = first_choice.get("finish_reason") if isinstance(first_choice, dict) else None

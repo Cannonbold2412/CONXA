@@ -2,6 +2,12 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Simplified how the AI reasoning setting is handled, removing an unnecessary workaround — 2026-09-17
+Right after the fix below this one shipped, we decided to go simpler still. The system used to try to tell some AI providers to turn off their "thinking out loud" step to save time and cost, then had to work around the providers that refused to allow that. Now it never asks any provider to turn that step off at all — it just lets each one behave the way it normally does. This removes the whole category of problem instead of patching around it, and keeps the code easier to maintain going forward.
+
+## One AI provider's own rule was quietly breaking replies for everyone behind it — 2026-09-17
+One paid AI provider Conxa can use always insists on "thinking out loud" before it answers and won't let that be turned off. The system was always asking it to turn that off anyway. When it refused, Conxa gave up on the whole request instead of quietly trying one of the other available providers — and it kept making the exact same mistake on every later request too, so people using that reply feature kept hitting failures. Now the system notices that specific refusal, stops asking that provider to turn its thinking off, and keeps trying the other providers in the meantime, so a request only fails if every option genuinely can't answer it.
+
 ## Fixed a chat conversation that could get permanently stuck after one garbled reply — 2026-09-17
 Every so often, the AI behind Conxa Execute's chat would send back a slightly garbled internal instruction (not something a user would ever see directly). The chat noticed the problem for that one turn, but then kept that garbled piece sitting in the conversation's memory — so every message after that point failed the exact same way, forever, with no way to recover except starting a brand new chat. It's like a form with one bad handwritten field: instead of crossing it out and continuing, the whole form kept getting rejected and resubmitted unchanged. Now that piece gets cleaned up the moment it's spotted, so a single hiccup no longer breaks the rest of the conversation.
 
