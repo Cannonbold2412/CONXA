@@ -1,0 +1,522 @@
+<title>Conxa vs. Claude</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #06080b;
+    --panel: #0b0f14;
+    --raised: #0f1620;
+    --border: #1a2029;
+    --border-soft: #14181f;
+    --cyan: #22d3ee;
+    --teal: #5eead4;
+    --text: #f4f5f7;
+    --text-secondary: #9ba3af;
+    --text-tertiary: #6b7280;
+    --danger-bg: #170f10;
+    --danger-border: #3a1d1f;
+    --danger-text: #f0a5a8;
+    --danger-text-soft: #c9989a;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Geist', system-ui, sans-serif;
+    padding-inline: 24px;
+    padding-block: 64px;
+  }
+
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  /* ---- Header ---- */
+  .hero { display: flex; flex-direction: column; gap: 16px; }
+
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--cyan);
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(2rem, 5vw, 2.75rem);
+    font-weight: 600;
+    line-height: 1.12;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+    background: linear-gradient(135deg, var(--cyan), var(--teal));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .lede {
+    margin: 0;
+    max-width: 60ch;
+    font-size: 17px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+  }
+
+  /* ---- Legend ---- */
+  .legend {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .legend-item.work { color: var(--cyan); }
+  .legend-item.life { color: var(--teal); }
+  .legend-item svg { width: 16px; height: 16px; flex-shrink: 0; }
+
+  /* ---- Point sections ---- */
+  .points { display: flex; flex-direction: column; gap: 44px; }
+
+  .point-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+
+  .point-icon {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    border-radius: 10px;
+    background: var(--raised);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .point-icon svg { width: 20px; height: 20px; stroke: var(--teal); }
+
+  .point-head h2 {
+    margin: 0;
+    font-size: 19px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .examples {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  @media (max-width: 620px) {
+    .examples { grid-template-columns: 1fr; }
+  }
+
+  .example {
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .example-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .example.work .example-label { color: var(--cyan); }
+  .example.life .example-label { color: var(--teal); }
+  .example-label svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+  .example p {
+    margin: 0;
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+  }
+
+  .example strong { color: var(--text); font-weight: 600; }
+
+  /* ---- Incident callout ---- */
+  .incident {
+    margin-top: 14px;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    background: var(--danger-bg);
+    border: 1px solid var(--danger-border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+
+  .incident svg { width: 18px; height: 18px; flex-shrink: 0; stroke: var(--danger-text); margin-top: 1px; }
+
+  .incident p {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--danger-text-soft);
+  }
+
+  .incident strong { color: var(--danger-text); font-weight: 600; }
+
+  /* ---- Closer ---- */
+  .closer {
+    border-top: 1px solid var(--border-soft);
+    padding-top: 36px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    text-align: center;
+  }
+
+  .closer p {
+    margin: 0;
+    max-width: 52ch;
+    font-size: 18px;
+    line-height: 1.55;
+    font-style: italic;
+    color: var(--text);
+  }
+
+  .brand {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    color: var(--teal);
+  }
+
+  /* ---- Outlook ---- */
+  .outlook {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .outlook-head { display: flex; flex-direction: column; gap: 8px; }
+
+  .outlook-head h2 {
+    margin: 0;
+    font-size: 21px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .outlook-head p {
+    margin: 0;
+    font-size: 14.5px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+    max-width: 62ch;
+  }
+
+  .outlook-rows { display: flex; flex-direction: column; gap: 10px; }
+
+  .outlook-row {
+    display: grid;
+    grid-template-columns: 128px 1fr;
+    gap: 16px;
+    align-items: start;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+
+  @media (max-width: 560px) {
+    .outlook-row { grid-template-columns: 1fr; gap: 8px; }
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 5px 10px;
+    border-radius: 999px;
+    width: fit-content;
+    white-space: nowrap;
+  }
+
+  .pill::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+  }
+
+  .pill.risk { color: #f0a5a8; background: rgba(240, 165, 168, 0.12); }
+  .pill.watch { color: #f2c078; background: rgba(242, 192, 120, 0.12); }
+  .pill.safe { color: var(--teal); background: rgba(94, 234, 212, 0.1); }
+
+  .outlook-row p {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+  }
+
+  .outlook-row p strong { color: var(--text); font-weight: 600; }
+
+  .sources {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .sources span {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .sources a {
+    font-size: 12.5px;
+    color: var(--text-tertiary);
+    text-decoration: underline;
+    text-decoration-color: var(--border);
+    text-underline-offset: 2px;
+  }
+
+  .sources a:hover { color: var(--text-secondary); }
+</style>
+
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">Plain-Language Guide</div>
+    <h1>Conxa vs. Claude in Chrome</h1>
+    <p class="lede">The same six differences as the technical brief — explained the way you'd explain them to someone who's never touched either product.</p>
+  </header>
+
+  <div class="legend">
+    <div class="legend-item work">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8z"/><path d="M8 8V6a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      At work
+    </div>
+    <div class="legend-item life">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>
+      In everyday life
+    </div>
+  </div>
+
+  <div class="points">
+
+    <!-- 1. Cost -->
+    <section class="point">
+      <div class="point-head">
+        <span class="point-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.66 3.13 3 7 3s7-1.34 7-3V6"/><path d="M5 12v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6"/></svg>
+        </span>
+        <h2>Cost</h2>
+      </div>
+      <div class="examples">
+        <div class="example work">
+          <div class="example-label">At work</div>
+          <p>Say you process 500 invoices a month. If the AI has to "think" through each one every single time, you're paying for 500 thinking-sessions a month — <strong>forever</strong>. Record it once instead, and every invoice after that runs for almost nothing.</p>
+        </div>
+        <div class="example life">
+          <div class="example-label">In everyday life</div>
+          <p>It's like paying a tutor by the hour, <strong>every single time</strong> your kid does homework — versus paying the tutor once to write out the steps, so your kid can follow them forever for free.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 2. Always available -->
+    <section class="point">
+      <div class="point-head">
+        <span class="point-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>
+        </span>
+        <h2>A person must always be watching</h2>
+      </div>
+      <div class="examples">
+        <div class="example work">
+          <div class="example-label">At work</div>
+          <p>You want order processing to run overnight so orders are ready before your team arrives at 9am. If it needs someone sitting there watching the screen the whole time, it can <strong>never run overnight</strong> — you've gained nothing.</p>
+        </div>
+        <div class="example life">
+          <div class="example-label">In everyday life</div>
+          <p>It's like a washing machine that only works while you stand next to it watching — versus one you start and <strong>walk away from</strong>, done by the time you're back.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Handoff -->
+    <section class="point">
+      <div class="point-head">
+        <span class="point-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="M9 12l2 2 4-4"/></svg>
+        </span>
+        <h2>Handing off to a human, properly</h2>
+      </div>
+      <div class="examples">
+        <div class="example work">
+          <div class="example-label">At work</div>
+          <p>Say a refund needs a manager's approval. If the AI just freezes and hopes someone notices, the refund could sit for hours — or worse, someone approves the wrong thing without knowing what state it's in.</p>
+        </div>
+        <div class="example life">
+          <div class="example-label">In everyday life</div>
+          <p>It's the difference between a doorbell that just rings and hopes someone's home — versus a courier who hands the package to a specific person, gets a signature, and <strong>confirms it</strong> before leaving.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4. Determinism -->
+    <section class="point">
+      <div class="point-head">
+        <span class="point-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 12h8"/><path d="M8 8h4"/><path d="M8 16h6"/></svg>
+        </span>
+        <h2>Doing it the same way, every time</h2>
+      </div>
+      <div class="examples">
+        <div class="example work">
+          <div class="example-label">At work</div>
+          <p>Payroll has to be calculated the exact same way every month — same formula, same order, no surprises. If the AI is "figuring it out fresh" each time, one month it might do it slightly differently, and now finance has a discrepancy to explain.</p>
+        </div>
+        <div class="example life">
+          <div class="example-label">In everyday life</div>
+          <p>It's like a recipe you follow exactly, so grandma's dish comes out the same every time — versus a cook who <strong>winds it from memory</strong> and sometimes forgets an ingredient.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5. Data security -->
+    <section class="point">
+      <div class="point-head">
+        <span class="point-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        </span>
+        <h2>Keeping your information safe</h2>
+      </div>
+      <div class="examples">
+        <div class="example work">
+          <div class="example-label">At work</div>
+          <p>If your automation is looking at your customer database and sends a picture of your screen to an outside company every time it clicks something, that's your customers' private information leaving your building — <strong>constantly</strong>.</p>
+        </div>
+        <div class="example life">
+          <div class="example-label">In everyday life</div>
+          <p>It's like hiring an assistant who reads your mail out loud to a stranger on the phone every day, just to help organize it — versus one who keeps everything in your <strong>own locked filing cabinet</strong>, and only calls someone else on the rare day they're stuck.</p>
+        </div>
+      </div>
+      <div class="incident">
+        <svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.9"><path d="M12 3l9 16H3z"/><path d="M12 10v4"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none"/></svg>
+        <p><strong>This already happened:</strong> a booby-trapped website tricked an AI browser assistant into stealing someone's email, files, and other accounts — just from being asked to "summarize my inbox." Real, disclosed incident, not a hypothetical.</p>
+      </div>
+    </section>
+
+    <!-- 6. Individual vs business -->
+    <section class="point">
+      <div class="point-head">
+        <span class="point-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V7l8-4 8 4v14"/><path d="M9 21v-6h6v6"/><path d="M9 11h.01M15 11h.01M9 15h.01M15 15h.01"/></svg>
+        </span>
+        <h2>Built for one person vs. built for the company</h2>
+      </div>
+      <div class="examples">
+        <div class="example work">
+          <div class="example-label">At work</div>
+          <p>If an employee sets up an automation on their own personal AI account and then quits, the automation <strong>leaves with them</strong>. If the company owns it instead, anyone can run it, forever, even after that person is gone.</p>
+        </div>
+        <div class="example life">
+          <div class="example-label">In everyday life</div>
+          <p>It's the difference between one person memorizing a family recipe and never writing it down — versus putting it on a card in the family cookbook, so <strong>anyone can cook it</strong> after that person's gone.</p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <section class="outlook">
+    <div class="outlook-head">
+      <h2>What about next year?</h2>
+      <p>A fair question is whether Claude just closes these gaps. Here's an honest, evidence-based read on each — grounded in what Anthropic has actually said and shipped, not a guess.</p>
+    </div>
+
+    <div class="outlook-rows">
+
+      <div class="outlook-row">
+        <span class="pill watch">Watch</span>
+        <p><strong>Cost.</strong> No public roadmap either way. Caching a known-good path is a solvable engineering problem — plausible quiet improvement, not a guarantee.</p>
+      </div>
+
+      <div class="outlook-row">
+        <span class="pill risk">Closing fast</span>
+        <p><strong>Always-available person.</strong> Claude in Chrome just reached general availability with actions executing autonomously instead of needing approval each time. Anthropic has publicly said it's pushing toward longer-running, less-supervised execution. This is the gap most likely to shrink.</p>
+      </div>
+
+      <div class="outlook-row">
+        <span class="pill watch">Watch</span>
+        <p><strong>Proper handoff.</strong> New content probes and action-verifying classifiers are a real step, but they're built to stop hijacking, not to cleanly resume a paused workflow. Partial overlap, not a direct fix.</p>
+      </div>
+
+      <div class="outlook-row">
+        <span class="pill safe">Unlikely to close</span>
+        <p><strong>Determinism.</strong> Anthropic names reliability itself — "agents fail at a rate that requires human supervision" — as a current, acknowledged limitation. Fixing this means replaying a fixed path instead of reasoning live, which is a different product than the one they're building.</p>
+      </div>
+
+      <div class="outlook-row">
+        <span class="pill safe">Unlikely to close</span>
+        <p><strong>Data security.</strong> Anthropic's own words: prompt injection is "far from a solved problem." OpenAI's head of preparedness has gone further — it "may never be solved" for browser agents industry-wide. This isn't a Conxa-specific gap, it's unsolved across the industry.</p>
+      </div>
+
+      <div class="outlook-row">
+        <span class="pill safe">Structurally unlikely</span>
+        <p><strong>Individual vs. business.</strong> No sign of Claude shipping "use this with zero Claude account" — and it would work against their own seat-based revenue. Not a missing feature; a conflict with their own business model.</p>
+      </div>
+
+    </div>
+
+    <div class="sources">
+      <span>Sources</span>
+      <a href="https://finance.biggo.com/news/04bd1c2f-2660-4a13-8067-472a7c776690" target="_blank" rel="noopener">Anthropic launches browser-operating AI to general availability — BigGo Finance</a>
+      <a href="https://www.anthropic.com/research/prompt-injection-defenses" target="_blank" rel="noopener">Mitigating prompt injections in browser use — Anthropic</a>
+      <a href="https://cyberscoop.com/openai-chatgpt-atlas-prompt-injection-browser-agent-security-update-head-of-preparedness/" target="_blank" rel="noopener">OpenAI: prompt injection may never be "solved" — CyberScoop</a>
+    </div>
+  </section>
+
+  <footer class="closer">
+    <p>"Claude in Chrome helps one person, right now. Conxa becomes something the business keeps, forever."</p>
+    <div class="brand">CONXA</div>
+  </footer>
+
+</div>

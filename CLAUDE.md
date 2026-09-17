@@ -67,7 +67,7 @@ Two UI surfaces each carry their own `PRODUCT.md` (strategic: register, users, p
 
 ### Artifacts
 
-- Whenever the user asks to create an artifact, also save a copy in `docs/archive`.
+- Whenever the user asks to create an artifact, also save a copy in `docs/artifacts/<artifact_name>`.
 
 ---
 

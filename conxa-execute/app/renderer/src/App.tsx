@@ -595,12 +595,20 @@ export function App() {
               </p>
             )}
             <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
-              {displayLog.map((m, i) => (
-                <div key={i} className="mx-auto max-w-[720px]">
-                  <div className="mb-1 text-[11px] text-fg-dim">{m.role === "user" ? "You" : m.error ? "Couldn't run that" : "CONXA"}</div>
-                  <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
-                </div>
-              ))}
+              {displayLog.map((m, i) =>
+                m.role === "user" ? (
+                  <div key={i} className="mx-auto flex max-w-[720px] justify-end">
+                    <div className="max-w-[70%] whitespace-pre-wrap rounded-2xl bg-bg-elevated px-4 py-2.5 text-[15px] leading-relaxed">
+                      {m.content}
+                    </div>
+                  </div>
+                ) : (
+                  <div key={i} className="mx-auto max-w-[720px]">
+                    <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
+                    <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
+                  </div>
+                )
+              )}
               {streamingMsg && (
                 <div className="mx-auto max-w-[720px]">
                   <div className="mb-1 text-[11px] text-fg-dim">CONXA</div>

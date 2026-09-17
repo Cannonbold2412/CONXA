@@ -19,6 +19,8 @@ situations should be re-confirmed before any pitch.
 - **Channel** — they deploy Conxa inside client engagements; one deal = many logos.
 - **Platform partner** — their ISV marketplace is the distribution play (PROD-13).
 
+**Browser-ops fit column:** the strictest read of the ICP — does the *majority of this company's own people's daily work* actually happen in the browser, across systems with no realistic API path (see `docs/PRD.md` §"When it's a fit")? **Strong** = yes, that's literally their job. **Channel/Platform** = the company itself isn't the browser-heavy user — it reaches browser-heavy users indirectly (dev shops building for clients, or a marketplace/product company). Weak fit here doesn't disqualify a row — Vendor ICP and Channel deals are still how Conxa reaches Strong-fit end users at scale — but Strong-fit rows are the closest, most direct proof of the core thesis.
+
 ---
 
 ## 1. Global Enterprise Targets (12)
@@ -69,16 +71,16 @@ India-first matters: proximity, network, price tolerance for an early-stage vend
 
 The home-turf list. Warm intros are realistic, meetings are cheap, and a Pune anchor logo de-risks the rest of India.
 
-| Company | Why they fit | Use cases | Priority | Buyer to approach |
-|---|---|---|---|---|
-| Persistent Systems | Pune HQ; product-engineering DNA means they evaluate early-stage tools on merit; dual value — internal use *and* a channel to hundreds of clients | Channel + ops user | **P0** | CTO office / GenAI-automation practice |
-| Bajaj Finserv / Bajaj Finance | Pune HQ NBFC giant; enormous back-office ops; RBI-regulated (recurring evidence workload); digital-forward leadership | Ops user: evidence packs, ops automation | P1 (post-ISO/SOC 2 Type I) | Ops excellence / internal audit |
-| Bajaj Allianz General Insurance | Pune HQ insurer; IRDAI attestation plus legacy policy-admin UIs | Ops user: evidence packs, policy ops | P1 | Ops transformation |
-| KPIT Technologies | Pune HQ automotive-software firm; internal tools plus automotive-client channel | Channel + ops user | P1 | CTO office |
-| Zensar Technologies | Pune HQ SI (RPG Group); mid-size means faster decisions than tier-1 SIs | Channel | P1 | AI/automation practice lead |
-| Icertis | Pune-born SaaS unicorn; too big to be ICP, but agent-readiness pressure on their product and marketplace makes a partner conversation plausible | Platform partner / agent-readiness | P2 | Product / platform ecosystem team |
-| Serum Institute of India | Pune; world's largest vaccine maker; GxP validation workload | Ops user: CSV evidence | P2 | Quality / CSV lead |
-| Thermax | Pune industrial; SAP migration wave + decades of internal tools | Ops user: bridge + shadow-run | P2 | IT / ERP program office |
+| Company | Why they fit | Use cases | Browser-ops fit | Priority | Buyer to approach |
+|---|---|---|---|---|---|
+| Persistent Systems | Pune HQ; product-engineering DNA means they evaluate early-stage tools on merit; dual value — internal use *and* a channel to hundreds of clients | Channel + ops user | Channel (staff are mostly engineers, not browser-ops) | **P0** | CTO office / GenAI-automation practice |
+| Bajaj Finserv / Bajaj Finance | Pune HQ NBFC giant; enormous back-office ops; RBI-regulated (recurring evidence workload); digital-forward leadership | Ops user: evidence packs, ops automation | **Strong** — loan/claims/KYC teams live in internal web portals all day | P1 (post-ISO/SOC 2 Type I) | Ops excellence / internal audit |
+| Bajaj Allianz General Insurance | Pune HQ insurer; IRDAI attestation plus legacy policy-admin UIs | Ops user: evidence packs, policy ops | **Strong** — claims/policy-admin staff work legacy web UIs daily | P1 | Ops transformation |
+| KPIT Technologies | Pune HQ automotive-software firm; internal tools plus automotive-client channel | Channel + ops user | Channel (engineering-heavy core work) | P1 | CTO office |
+| Zensar Technologies | Pune HQ SI (RPG Group); mid-size means faster decisions than tier-1 SIs | Channel | Channel (builds for clients, not a browser-ops user itself) | P1 | AI/automation practice lead |
+| Icertis | Pune-born SaaS unicorn; too big to be ICP, but agent-readiness pressure on their product and marketplace makes a partner conversation plausible | Platform partner / agent-readiness | Platform (their product is the browser tool others use, not their own ops) | P2 | Product / platform ecosystem team |
+| Serum Institute of India | Pune; world's largest vaccine maker; GxP validation workload | Ops user: CSV evidence | **Strong** — quality teams do repetitive, documented step-by-step system walkthroughs | P2 | Quality / CSV lead |
+| Thermax | Pune industrial; SAP migration wave + decades of internal tools | Ops user: bridge + shadow-run | **Strong** — finance/ops teams straddle old tools and an in-progress SAP portal | P2 | IT / ERP program office |
 
 ---
 
@@ -86,28 +88,32 @@ The home-turf list. Warm intros are realistic, meetings are cheap, and a Pune an
 
 This is the ICP section. The Option A thesis lives or dies here: small SaaS vendors with no spare engineer, whose customers would genuinely use "ask Claude to do it in our product." Services firms are included as micro-channels — each serves dozens of exactly-ICP clients.
 
-| Company | Why they fit | Use cases | Priority | Buyer to approach |
-|---|---|---|---|---|
-| Amura Marketing Technologies (Sell.Do) | Pune real-estate CRM SaaS; small team; customers are non-technical builders/brokers — the perfect Option A profile | Vendor ICP: ship "create lead / schedule site visit / send quote" skills to customers' Claude | **P0** | Founder / Head of Product |
-| onlinesales.ai | Pune ad-tech SaaS serving retailers and marketplaces; SMB-heavy customer base | Vendor ICP: campaign setup / reporting skills | **P0** | Founder / CPO |
-| Harbinger Group | Pune product studio with its own SaaS products (eLearning tools) plus dozens of SMB SaaS clients | Vendor ICP + micro-channel | **P0** | Product BU head |
-| Sapience Analytics | Pune-rooted workforce-analytics SaaS; mid-market customers | Vendor ICP: admin/reporting skills | P0 | Head of Product |
-| Quick Heal | Pune HQ security-product company; consumer/SMB customer base; agent-readiness is brand-relevant for them | Vendor ICP (larger): support/admin skills | P1 | CTO / product head |
-| Mindtickle | Pune-born sales-readiness unicorn; has engineers (weakens the ICP fit) but strong design-partner potential and marketplace pressure | Vendor ICP (larger) / design partner | P1 | VP Product / ecosystem |
-| Druva | Pune-rooted (US HQ) data-protection company; MSP channel could ship skills to end customers | Vendor ICP (larger) | P2 | Product / MSP program |
-| GS Lab \| GAVS | Pune product-engineering firm; builds SaaS for dozens of SMB clients | Micro-channel: bundle Conxa into client builds | P1 | Delivery / practice head |
-| Clarion Technologies | Pune SMB software-services firm; long tail of small SaaS clients | Micro-channel | P1 | CEO / delivery head |
-| e-Zest | Pune digital-engineering firm; similar client profile | Micro-channel | P1 | CTO |
-| Pratiti Technologies | Pune digital-product firm; smaller, founder-reachable | Micro-channel | P2 | Founder |
-| Neilsoft | Pune engineering-software and services; own tools + client work | Micro-channel + ops user | P2 | Delivery head |
-| AgroStar | Pune agritech; large field-ops and support back office | Ops user: internal-tool automation pilot | P1 | Head of Ops / support |
-| ElasticRun | Pune B2B logistics; heavy manual back-office (onboarding, reconciliation) | Ops user | P1 | COO office |
-| Xpressbees | Pune logistics unicorn; seller-support and ops tooling long tail | Ops user | P1 | Ops excellence |
-| FirstCry | Pune e-commerce group; catalog/vendor ops across many internal tools | Ops user | P1 | Ops / vendor management head |
+| Company | Why they fit | Use cases | Browser-ops fit | Priority | Buyer to approach |
+|---|---|---|---|---|---|
+| Amura Marketing Technologies (Sell.Do) | Pune real-estate CRM SaaS; small team; customers are non-technical builders/brokers — the perfect Option A profile | Vendor ICP: ship "create lead / schedule site visit / send quote" skills to customers' Claude | **Strong** — brokers/agents do lead entry, scheduling, quoting entirely in a web CRM | **P0** | Founder / Head of Product |
+| onlinesales.ai | Pune ad-tech SaaS serving retailers and marketplaces; SMB-heavy customer base | Vendor ICP: campaign setup / reporting skills | **Strong** — campaign setup/reporting happens inside ad-platform dashboards | **P0** | Founder / CPO |
+| Harbinger Group | Pune product studio with its own SaaS products (eLearning tools) plus dozens of SMB SaaS clients | Vendor ICP + micro-channel | Channel-leaning (studio/dev-shop side does client builds, not repetitive browser ops itself) | **P0** | Product BU head |
+| Sapience Analytics | Pune-rooted workforce-analytics SaaS; mid-market customers | Vendor ICP: admin/reporting skills | **Strong** — admin/reporting screens are the whole product surface | P0 | Head of Product |
+| Quick Heal | Pune HQ security-product company; consumer/SMB customer base; agent-readiness is brand-relevant for them | Vendor ICP (larger): support/admin skills | Weak — core product is installed security software, not browser-based; only the support/admin slice fits | P1 | CTO / product head |
+| Mindtickle | Pune-born sales-readiness unicorn; has engineers (weakens the ICP fit) but strong design-partner potential and marketplace pressure | Vendor ICP (larger) / design partner | Weak — has engineers who could build a real integration, undercuts the "no API path" criterion | P1 | VP Product / ecosystem |
+| Druva | Pune-rooted (US HQ) data-protection company; MSP channel could ship skills to end customers | Vendor ICP (larger) | Weak — reached via MSP channel, not Druva's own staff's daily work | P2 | Product / MSP program |
+| GS Lab \| GAVS | Pune product-engineering firm; builds SaaS for dozens of SMB clients | Micro-channel: bundle Conxa into client builds | Channel (builds browser tools for clients, isn't the browser-ops user) | P1 | Delivery / practice head |
+| Clarion Technologies | Pune SMB software-services firm; long tail of small SaaS clients | Micro-channel | Channel | P1 | CEO / delivery head |
+| e-Zest | Pune digital-engineering firm; similar client profile | Micro-channel | Channel | P1 | CTO |
+| Pratiti Technologies | Pune digital-product firm; smaller, founder-reachable | Micro-channel | Channel | P2 | Founder |
+| Neilsoft | Pune engineering-software and services; own tools + client work | Micro-channel + ops user | Channel | P2 | Delivery head |
+| AgroStar | Pune agritech; large field-ops and support back office | Ops user: internal-tool automation pilot | **Strong** — field-ops/support staff work web portals all day | P1 | Head of Ops / support |
+| ElasticRun | Pune B2B logistics; heavy manual back-office (onboarding, reconciliation) | Ops user | **Strong** — ops teams reconcile data by hand across web systems | P1 | COO office |
+| Xpressbees | Pune logistics unicorn; seller-support and ops tooling long tail | Ops user | **Strong** — seller-support agents work ops dashboards all day | P1 | Ops excellence |
+| FirstCry | Pune e-commerce group; catalog/vendor ops across many internal tools | Ops user | **Strong** — catalog/vendor-ops teams juggle multiple disconnected web tools | P1 | Ops / vendor management head |
 
 ---
 
 ## Recommendations
+
+### Strong browser-ops fit (Pune, tightest proof of the core thesis)
+
+Amura/Sell.Do, onlinesales.ai, Sapience Analytics, AgroStar, ElasticRun, Xpressbees, FirstCry, Bajaj Finserv, Bajaj Allianz, Serum Institute, Thermax — in each, real staff spend the majority of their day clicking through browser systems that don't talk to each other, with no API on the horizon. These are the rows that most directly validate "Conxa works because the browser is the only integration surface that exists." Everything else in this list (Persistent, KPIT, Zensar, Icertis, GS Lab, Clarion, e-Zest, Pratiti, Neilsoft, Mindtickle, Quick Heal, Druva) is a **channel or platform play** — valuable for reach, but the company itself isn't the browser-heavy end user.
 
 ### The best first 10 customers
 
