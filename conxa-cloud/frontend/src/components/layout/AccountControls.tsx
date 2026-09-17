@@ -7,8 +7,8 @@ export function AccountControls() {
   return (
     <div className="hidden shrink-0 items-center gap-3 md:flex">
       <OrganizationSwitcher
-        hidePersonal
         afterSelectOrganizationUrl="/dashboard"
+        afterSelectPersonalUrl="/dashboard"
         afterCreateOrganizationUrl="/dashboard"
         appearance={{
           ...clerkAppearance,
