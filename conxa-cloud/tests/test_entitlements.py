@@ -510,6 +510,32 @@ def test_seat_limit_blocks_new_member_but_allows_known_one(monkeypatch, tmp_path
     ensure_seats_available(newcomer)  # does not raise
 
 
+def test_current_principal_maps_seat_limit_to_http_error_not_500(monkeypatch, tmp_path):
+    """A brand-new (user, workspace) pairing over the seat cap must surface as a
+    well-formed HTTPException, not an unhandled EntitlementError that FastAPI
+    turns into a bare 500 — see FIX.md 2026-09-17."""
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+    monkeypatch.setattr(settings, "entitlements_enforce_seats", True)
+    import app.api.deps as deps_mod
+    import app.services.entitlements as entitlements_mod
+    from fastapi import HTTPException
+
+    upsert_billing("org_deps_seat_test", {"plan": "free"})  # free's seat limit is 1
+
+    newcomer = Principal(
+        user_id="u_deps_newcomer", workspace_id="org_deps_seat_test", workspace_slug="deps-seat-test",
+        workspace_name="Deps Seat Test", role="member", email=None, name=None, auth_provider="clerk",
+    )
+    monkeypatch.setattr(deps_mod, "principal_from_request", lambda request: newcomer)
+    monkeypatch.setattr(entitlements_mod, "_clerk_org_member_count", lambda principal: 2)
+
+    with pytest.raises(HTTPException) as exc_info:
+        deps_mod.current_principal(request=None)
+    assert exc_info.value.status_code == 402
+    assert exc_info.value.detail == "seat_limit_exceeded"
+
+
 def test_trial_expired_blocks_compile_but_not_sync(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "database_url", "")

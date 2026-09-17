@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Switching between a personal account and a company account no longer breaks the Operations dashboard — 2026-09-17
+Some people saw "Could not load telemetry" the first time they switched from their personal account into a company workspace (or the other way round), even though nothing was actually broken. Behind the scenes, the very first time that particular person showed up under that particular workspace, the system needed to check whether the workspace still had a free seat for them — and if it didn't, that check was crashing instead of showing a proper message. Now it reports the real reason cleanly instead of crashing, so the dashboard can react correctly instead of showing a generic, confusing error.
+
 ## Conxa Execute no longer has its own separate account system or backend — it now runs entirely on the same one as everything else — 2026-09-17
 Conxa Execute used to be its own little island: its own sign-in system, its own payment setup, its own way of letting people pay with their own AI key. That meant extra accounts to create, extra bills to pay, and a clunky "type in this code" step for anyone a company wanted to give access to. All of that is gone. Execute now signs in with the exact same company account as everything else, its cost comes out of the same shared credit balance a company already has, and giving someone access is as simple as inviting them by email — the moment they sign in, they're in, no code to copy or paste. A signed-in person can also now switch between using it on their own or on behalf of a company they belong to. One loose end remains: a couple of one-time account-setup clicks still need to happen before this goes live, tracked so nothing gets missed.
 

@@ -24,7 +24,10 @@ def current_principal(request: Request) -> Principal:
     """
     principal = principal_from_request(request)
     if not is_known_member(principal.user_id, principal.workspace_id):
-        ensure_seats_available(principal)
+        try:
+            ensure_seats_available(principal)
+        except EntitlementError as exc:
+            raise entitlement_http_error(exc) from exc
     ensure_principal(principal)
     return principal
 
