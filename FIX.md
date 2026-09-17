@@ -2,6 +2,12 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## When Conxa's AI assistant can't get an answer, it now says so instead of staying silent — 2026-09-17
+If every AI provider behind Conxa Execute's chat failed to answer, the failure reason used to vanish completely — it never reached the error message shown to the person, and it was never written to any log either. Support would see only a generic "couldn't run that" with no way to tell what actually went wrong. Now that reason is included in the error and recorded in the server log, so a real outage can be diagnosed in seconds instead of guessed at.
+
+## Conxa Execute's chat now streams its reply and shows its thinking as it works — 2026-09-17
+The chat window in Conxa Execute used to sit frozen with a spinner until the whole answer was ready, then dump the entire reply on screen at once. Now the reply appears word by word as it's written, the same way a person typing would look. When the model is reasoning through a problem before answering, that reasoning now shows up live too, in a dimmer "Thinking…" block above the final answer, so a user can see it's actively working instead of wondering if it's stuck. Nothing about billing or the final saved conversation changed — this only changes what's visible while a reply is being generated.
+
 ## Final pass on the cloud cleanup: merged duplicated code that had spread across many pages — 2026-09-17
 Last part of the cloud-service cleanup — no behavior changes for anyone using the product, just tidying that makes future changes safer. Several small pieces of logic — formatting a date, formatting a dollar amount, turning "member_role" into "Member Role" for display — had each been separately hand-copied into seven or more different screens over time, with small differences that had started to drift. They're now written once and reused everywhere, so a future fix to "how dates are shown" only has to happen in one place instead of being remembered across a dozen files. Two nearly-identical confirmation popups (one for releasing a new version, one for rolling back to an old one) were merged into a single shared building block. And a stray piece of billing code that lived in the wrong part of the program — it belonged with the rest of the security/signing logic, not tucked inside the analytics code — was moved to where it actually belongs, closing out this cleanup effort.
 
