@@ -10,7 +10,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -21,6 +21,7 @@ from conxa_core.storage.snapshots_gc import cleanup_old_snapshots
 
 from app.api.byok_routes import router as byok_router
 from app.api.entitlement_routes import router as entitlement_router
+from app.api.errors import http_error_handler, unhandled_error_handler
 from app.api.job_routes import router as job_router
 from app.api.legal_routes import router as legal_router
 from app.api.llm_proxy_routes import router as llm_proxy_router
@@ -37,6 +38,11 @@ from app.api.tracking_routes import public_router as public_tracking_router
 from app.api.tracking_routes import router as tracking_router
 from app.api.tracking_routes import versioned_router as tracking_versioned_router
 from app.api.updates_routes import router as updates_router
+
+logging.basicConfig(
+    level=settings.log_level.upper(),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 
 def _validate_production_config() -> None:
@@ -131,6 +137,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(ProductionRequestMiddleware)
+
+# One error response shape for every route: {"detail", "message", "request_id"}.
+# `detail` is untouched — two shipped clients (the frontend, Build Studio's
+# LLMProxyClient) parse it directly — `message`/`request_id` are additive.
+# See app/api/errors.py.
+app.add_exception_handler(HTTPException, http_error_handler)
+app.add_exception_handler(Exception, unhandled_error_handler)
 
 app.include_router(job_router, prefix="/api/v1")
 app.include_router(byok_router, prefix="/api/v1")

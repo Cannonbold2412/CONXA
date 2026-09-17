@@ -35,7 +35,7 @@ export function WorkflowDetailPage({ company, slug }: { company: string; slug: s
   })
 
   if (detail.isPending) return <DashboardSkeleton />
-  if (detail.isError || !detail.data) return <DashboardError onRetry={() => detail.refetch()} />
+  if (detail.isError || !detail.data) return <DashboardError error={detail.error} onRetry={() => detail.refetch()} />
 
   const data = detail.data
   const summary = data.summary

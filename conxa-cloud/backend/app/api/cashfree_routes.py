@@ -280,7 +280,8 @@ def _ensure_plan(tier: str) -> str:
         if resp.status_code not in (200, 201) and body.get("status") != "OK":
             # 409 means plan already exists — treat as success
             if resp.status_code != 409:
-                raise HTTPException(status_code=500, detail=f"cashfree_plan_create_failed: {resp.text}")
+                logger.error("cashfree_plan_create_failed tier=%s response=%s", tier, resp.text)
+                raise HTTPException(status_code=500, detail="cashfree_plan_create_failed")
         store[plan_key] = plan_id
         _write_plan_store(store)
         return plan_id
@@ -289,7 +290,7 @@ def _ensure_plan(tier: str) -> str:
     except Exception as exc:
         detail = _exception_detail(exc)
         logger.exception("cashfree_plan_create_failed tier=%s error=%s", tier, detail)
-        raise HTTPException(status_code=500, detail=f"failed_to_create_plan: {detail}") from exc
+        raise HTTPException(status_code=500, detail="cashfree_plan_create_failed") from exc
 
 
 @router.get("/plans")

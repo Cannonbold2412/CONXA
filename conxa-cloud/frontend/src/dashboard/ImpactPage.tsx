@@ -159,7 +159,7 @@ export function ImpactPage() {
 
   if (dashboard.isPending) return <DashboardSkeleton />
   if (isUpgradeRequiredError(dashboard.error)) return <DashboardPageBody><UpgradeRequired /></DashboardPageBody>
-  if (dashboard.isError || !dashboard.data) return <DashboardError onRetry={() => dashboard.refetch()} />
+  if (dashboard.isError || !dashboard.data) return <DashboardError error={dashboard.error} onRetry={() => dashboard.refetch()} />
 
   const data = dashboard.data
   const roi = data.roi

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import { errorMessage } from '@/lib/apiBase'
 
 /** True when a dashboard query failed because the workspace's plan doesn't include
  * operations analytics, not because anything is actually broken (see `ensure_ops_tier`
@@ -46,7 +47,7 @@ export function DashboardSkeleton() {
   )
 }
 
-export function DashboardError({ onRetry }: { onRetry?: () => void }) {
+export function DashboardError({ error, onRetry }: { error?: unknown; onRetry?: () => void }) {
   return (
     <DashboardPageBody>
       <div className="flex flex-col items-center gap-3 rounded-xl border border-red-500/20 bg-red-500/[0.04] px-6 py-12 text-center">
@@ -54,8 +55,10 @@ export function DashboardError({ onRetry }: { onRetry?: () => void }) {
         <div>
           <p className="text-sm font-medium text-zinc-100">Could not load telemetry</p>
           <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-            The dashboard could not reach the tracking service. Your workflows are unaffected —
-            execution runs entirely on the customer&apos;s machine.
+            {error !== undefined
+              ? errorMessage(error, 'The dashboard could not reach the tracking service.')
+              : 'The dashboard could not reach the tracking service.'}{' '}
+            Your workflows are unaffected — execution runs entirely on the customer&apos;s machine.
           </p>
         </div>
         {onRetry ? (

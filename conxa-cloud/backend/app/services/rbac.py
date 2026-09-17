@@ -7,4 +7,4 @@ from app.services.saas import Principal
 
 def require_admin(principal: Principal) -> None:
     if principal.role not in ("admin", "owner"):
-        raise HTTPException(status_code=403, detail="admin role required")
+        raise HTTPException(status_code=403, detail="admin_role_required")

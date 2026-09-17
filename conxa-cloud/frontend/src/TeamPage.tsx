@@ -16,6 +16,7 @@ import {
   Users,
   type LucideIcon,
 } from 'lucide-react'
+import { errorMessage } from '@/lib/apiBase'
 import {
   createExecuteGrant,
   fetchAuditEvents,
@@ -383,7 +384,7 @@ function ExecuteSeatsPanel({ seatMeter }: { seatMeter?: EntitlementMeter }) {
       </div>
 
       {grantsQ.isLoading ? <LoadingState /> : null}
-      {grantsQ.isError ? <ErrorState message={(grantsQ.error as Error).message} /> : null}
+      {grantsQ.isError ? <ErrorState message={errorMessage(grantsQ.error)} /> : null}
       {!grantsQ.isLoading && !grantsQ.isError && grants.length === 0 ? (
         <EmptyState
           title="No Execute seats granted yet"

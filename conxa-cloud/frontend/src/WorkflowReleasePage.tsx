@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { errorMessage } from '@/lib/apiBase'
 import {
   fetchDeployments,
   fetchReleaseDiff,
@@ -121,7 +122,7 @@ export function WorkflowReleasePage({
           </div>
         ) : versionsQ.isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(versionsQ.error as Error).message}
+            {errorMessage(versionsQ.error)}
           </div>
         ) : (
           <>

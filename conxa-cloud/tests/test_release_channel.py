@@ -301,7 +301,7 @@ def test_unauthorized_user_cannot_publish(monkeypatch):
         },
     )
     assert r.status_code == 403
-    assert r.json()["detail"] == "admin role required"
+    assert r.json()["detail"] == "admin_role_required"
 
 
 def test_unauthorized_user_cannot_release(monkeypatch):

@@ -1,4 +1,5 @@
 'use client'
+import { errorMessage } from '@/lib/apiBase'
 import { queryKeys } from '@/lib/queryKeys'
 import {
   displayPlanName,
@@ -498,7 +499,7 @@ function CompileCreditAddonPanel({
             ))}
           </div>
         ) : addonsQuery.isError ? (
-          <p className="pt-4 text-sm text-red-300">{(addonsQuery.error as Error).message}</p>
+          <p className="pt-4 text-sm text-red-300">{errorMessage(addonsQuery.error)}</p>
         ) : (
           <div className="grid gap-3 pt-4 md:grid-cols-2 xl:grid-cols-4">
             {addons.map((addon) => {

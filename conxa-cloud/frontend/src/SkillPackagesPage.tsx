@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
+import { errorMessage } from '@/lib/apiBase'
 import { fetchSkillPack, fetchGroups, type Group, type GroupWorkflowSummary } from '@/api/workflowsApi'
 import { fetchEntitlements } from '@/api/productApi'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -226,7 +227,7 @@ export function SkillPackagesPage() {
           </div>
         ) : groupsQ.isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(groupsQ.error as Error).message}
+            {errorMessage(groupsQ.error)}
           </div>
         ) : groups.length === 0 ? (
           <Card className="border-white/8 bg-white/[0.03] shadow-none">

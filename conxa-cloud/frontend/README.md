@@ -8,7 +8,7 @@ layer (auth, billing, telemetry, skill-pack hosting).
 
 **Stack:** Next.js App Router, React 19, Clerk, TanStack Query, [Tailwind CSS 4](https://tailwindcss.com) + [shadcn/ui](https://ui.shadcn.com) (Radix Nova), [Sonner](https://sonner.emilkowal.ski) toasts, Geist font.
 
-**Resilience:** [ErrorBoundary](src/components/ErrorBoundary.tsx) wraps the client app providers with a recovery affordance. Global `prefers-reduced-motion` is respected for scroll behavior in [index.css](src/index.css).
+**Resilience:** Next's native [error.tsx](app/error.tsx) and [global-error.tsx](app/global-error.tsx) give every route a recovery affordance. Global `prefers-reduced-motion` is respected for scroll behavior in [index.css](src/index.css).
 
 ## Run
 

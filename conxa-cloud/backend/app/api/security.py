@@ -13,6 +13,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from conxa_core.config import settings
 
+from app.api.errors import message_for
+
 PUBLIC_PATHS = {
     "/",
     "/health",
@@ -171,7 +173,7 @@ class ProductionRequestMiddleware(BaseHTTPMiddleware):
                 size = 0
             if size > _body_limit_for_path(request.url.path, request):
                 return JSONResponse(
-                    {"detail": "request_body_too_large", "request_id": rid},
+                    {"detail": "request_body_too_large", "message": message_for("request_body_too_large"), "request_id": rid},
                     status_code=413,
                     headers={"x-request-id": rid},
                 )
@@ -185,8 +187,9 @@ class ProductionRequestMiddleware(BaseHTTPMiddleware):
                 else:
                     claims = verify_clerk_jwt(token)
             except HTTPException as exc:
+                detail_msg = message_for(exc.detail) if isinstance(exc.detail, str) else str(exc.detail)
                 return JSONResponse(
-                    {"detail": exc.detail, "request_id": rid},
+                    {"detail": exc.detail, "message": detail_msg, "request_id": rid},
                     status_code=exc.status_code,
                     headers={"x-request-id": rid},
                 )

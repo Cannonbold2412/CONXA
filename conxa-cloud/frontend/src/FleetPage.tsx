@@ -1,4 +1,5 @@
 'use client'
+import { errorMessage } from '@/lib/apiBase'
 import { queryKeys } from '@/lib/queryKeys'
 import { toneBadgeClasses, type Tone } from '@/lib/tone'
 
@@ -233,7 +234,7 @@ export function FleetPage() {
 
       <div className="mx-auto w-full max-w-7xl space-y-4 px-4 py-4 sm:px-6">
         {fleetQ.isLoading ? <LoadingState /> : null}
-        {fleetQ.isError ? <ErrorState message={(fleetQ.error as Error).message} /> : null}
+        {fleetQ.isError ? <ErrorState message={errorMessage(fleetQ.error)} /> : null}
         {fleetQ.data ? (
           <>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

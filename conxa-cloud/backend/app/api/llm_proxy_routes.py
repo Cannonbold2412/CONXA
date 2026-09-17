@@ -188,8 +188,10 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
                 error_detail=error_detail, pool=compile_pool_for(principal),
             )
     except RuntimeError as exc:
-        # No providers configured — treat as upstream unavailable.
-        raise HTTPException(status_code=502, detail=f"llm_unavailable: {exc}") from exc
+        # No providers configured — treat as upstream unavailable. Log the real
+        # reason server-side; the client gets the bare code (see app/api/errors.py).
+        logger.error("llm_unavailable org_id=%s error=%s", org_id, exc)
+        raise HTTPException(status_code=502, detail="llm_unavailable") from exc
     finally:
         _release_workspace_slot(org_id)
 

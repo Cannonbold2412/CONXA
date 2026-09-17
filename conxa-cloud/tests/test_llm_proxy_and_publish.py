@@ -753,7 +753,7 @@ def test_org_member_without_a_role_is_not_admin(monkeypatch, tmp_path):
         },
     )
     assert pub.status_code == 403, pub.text
-    assert pub.json()["detail"] == "admin role required"
+    assert pub.json()["detail"] == "admin_role_required"
 
 
 def test_org_dashboard_cannot_see_other_user_personal_publish(monkeypatch, tmp_path):

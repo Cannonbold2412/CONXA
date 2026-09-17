@@ -178,13 +178,19 @@ def _artifact_entries(skill_dir: Path) -> list[dict[str, str]]:
 
 
 def _pack_version(workspace_id: str) -> str:
+    # No pack.json yet is a real, legitimate state (nothing published for this
+    # workspace) — "0" here means "everything is new", which is correct.
     pack_path = skill_packs_dir(workspace_id) / "pack.json"
     if not pack_path.is_file():
         return "0"
     try:
         return json.loads(pack_path.read_text(encoding="utf-8")).get("skill_pack_version", "0")
-    except Exception:
-        return "0"
+    except Exception as exc:
+        # A pack.json that exists but fails to parse is corruption, not absence.
+        # Silently returning "0" here made every runtime see "changed" forever —
+        # an infinite full-resync loop that looks like a healthy sync from the
+        # runtime's side. Raise so the corruption gets fixed instead of masked.
+        raise HTTPException(status_code=500, detail="pack_json_corrupted") from exc
 
 
 def _skill_version(workspace_id: str, slug: str) -> str:

@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
+import { errorMessage } from '@/lib/apiBase'
 import {
   fetchGroups,
   fetchInstallerVersions,
@@ -119,7 +120,7 @@ export function SkillPackageVersionsPage() {
           </div>
         ) : packQ.isError ? (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {(packQ.error as Error).message}
+            {errorMessage(packQ.error)}
           </div>
         ) : pack ? (
           <>

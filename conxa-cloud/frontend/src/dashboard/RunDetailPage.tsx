@@ -23,7 +23,7 @@ export function RunDetailPage({ company, runId }: { company: string; runId: stri
   })
 
   if (run.isPending) return <DashboardSkeleton />
-  if (run.isError || !run.data) return <DashboardError onRetry={() => run.refetch()} />
+  if (run.isError || !run.data) return <DashboardError error={run.error} onRetry={() => run.refetch()} />
 
   const data = run.data
   const summary = data.summary
