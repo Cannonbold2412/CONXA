@@ -638,6 +638,11 @@ const HANDLERS = {
   upload: async (page, step, inputs) => {
     const rawValue = String(step.value || "");
     const resolved = interpolate(rawValue, inputs);
+    // Only the compiler-controlled downloaded_files_dir placeholder qualifies for cleanup — a
+    // hand-authored {{file_path}} that happens to point at a real directory must never have its
+    // files deleted out from under the user. Moved up (was computed just before runLocatorStep
+    // below) so the BUILD-31 guard right after can use it too.
+    const isSharedDownloadsDir = resolved === inputs.downloaded_files_dir;
     // A bare {{downloaded_file...}}-style placeholder that resolved to "" isn't a missing
     // declared input — filter_runtime_only_inputs (compiler) deliberately never declares these,
     // so telling the user to "supply" one is a dead end. It means the recorded download for this
@@ -648,11 +653,28 @@ const HANDLERS = {
         "file during this run (it may have timed out or never started)",
       );
     }
+    // BUILD-31: unlike the single-file downloaded_file* placeholders (bound by the
+    // download_observed handler only once a real file exists, and throwing badInput otherwise),
+    // server.js sets inputs.downloaded_files_dir unconditionally at run start — it is never the
+    // empty string, so the guard above can never fire for it, even when zero files were ever
+    // downloaded and the directory doesn't exist. Check for that directly: a run-per-run check,
+    // not a bind-time one, since the same placeholder may be read by several upload steps at
+    // different points in the run, some before and some after a download actually lands.
+    if (isSharedDownloadsDir) {
+      let hasFiles = false;
+      try {
+        // Mirrors uploads.js::resolveUploadPaths's own directory-expansion filter — same
+        // withFileTypes: true idiom, no second statSync round-trip per entry.
+        hasFiles = fs.readdirSync(resolved, { withFileTypes: true }).some(entry => entry.isFile());
+      } catch (_) { hasFiles = false; } // directory doesn't exist — same as "no files"
+      if (!hasFiles) {
+        throw Object.assign(new Error(
+          "upload step has no file path — the recorded download for this step didn't produce a " +
+          "file during this run (it may have timed out or never started)",
+        ), { badInput: true });
+      }
+    }
     const filePaths = resolveUploadPaths(resolved);
-    // Only the compiler-controlled downloaded_files_dir placeholder qualifies for cleanup — a
-    // hand-authored {{file_path}} that happens to point at a real directory must never have its
-    // files deleted out from under the user.
-    const isSharedDownloadsDir = resolved === inputs.downloaded_files_dir;
 
     await runLocatorStep(page, step, inputs, async locator => {
       // Whether this control takes one file or many is a property of the live page, not of

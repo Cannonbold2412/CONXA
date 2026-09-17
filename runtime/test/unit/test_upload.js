@@ -285,6 +285,39 @@ test("the compiled downloaded_files_dir placeholder resolves to every file this 
   }
 });
 
+// BUILD-31: unlike downloaded_file/downloaded_file_N (bound only once a real file exists, and
+// throwing badInput otherwise), server.js sets inputs.downloaded_files_dir unconditionally at
+// run start — it is never the empty string, so the "no file path" guard above never fires for
+// it. A directory that was never created (no download landed in this run) used to fall straight
+// through to setInputFiles via resolveUploadPaths's own ENOENT-swallowing fallback.
+test("downloaded_files_dir pointing at a directory that was never created throws, badInput", async () => {
+  const neverCreated = path.join(os.tmpdir(), "conxa-upload-test-does-not-exist-" + Date.now());
+  await assert.rejects(
+    () => executeStep(unusedPage, { type: "upload", value: "{{downloaded_files_dir}}" }, { downloaded_files_dir: neverCreated }),
+    (err) => {
+      assert.match(err.message, /recorded download.*didn't produce a file/);
+      assert.strictEqual(err.badInput, true, "must be flagged so runPlan skips recovery");
+      return true;
+    },
+  );
+});
+
+test("downloaded_files_dir pointing at an existing but empty directory throws, badInput", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-upload-test-empty-"));
+  try {
+    await assert.rejects(
+      () => executeStep(unusedPage, { type: "upload", value: "{{downloaded_files_dir}}" }, { downloaded_files_dir: dir }),
+      (err) => {
+        assert.match(err.message, /recorded download.*didn't produce a file/);
+        assert.strictEqual(err.badInput, true, "must be flagged so runPlan skips recovery");
+        return true;
+      },
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // EXEC-19: upload_binding.py's compile-time FIFO consumption already guarantees a downloaded
 // file is bound to at most one upload step, but a shared run-wide download folder means that
 // guarantee only holds on disk if the runtime deletes each file once it's actually uploaded.

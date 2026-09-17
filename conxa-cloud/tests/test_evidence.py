@@ -118,6 +118,66 @@ def test_bundle_reads_runtime_evidence_and_resolves_failed_step_key(tmp_path, mo
     assert bundle["runtime_evidence"]["pre_step_screenshot_path"] is None
 
 
+def test_failed_step_key_nulled_when_a_step_was_inserted_before_the_failing_index(tmp_path, monkeypatch):
+    """BUILD-31: failed_at is a raw index frozen at run time. Inserting a step before it shifts
+    every later position — the old, purely-positional resolution silently returned the WRONG
+    step's key instead of nulling out. failed_stable_hash (the failing step's own identity_bundle
+    hash at write time) lets this be caught instead of trusted blindly."""
+    from conxa_core.config import settings
+    from conxa_core.storage.json_store import write_skill
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setenv("CONXA_STUDIO_HOME", str(tmp_path / "studio_home"))
+
+    skill_id = "skill_evidence_mismatch"
+    # At run time: [h1, h2] — h2 (index 1) is the one that actually failed.
+    # Since then, a new step was inserted at the front: [hNEW, h1, h2] — index 1 is now h1.
+    doc = _doc([_click("hNEW"), _click("h1"), _click("h2")], compile_report={"status": "ok", "steps": [
+        {"confidence": 0.9, "warnings": []}, {"confidence": 0.9, "warnings": []}, {"confidence": 0.9, "warnings": []},
+    ]})
+    write_skill(skill_id, doc)
+
+    run_id = "run_mismatch1"
+    evidence_dir = tmp_path / "studio_home" / "sandbox" / "data" / "runs" / run_id / "_evidence"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "evidence.json").write_text(json.dumps({
+        "run_id": run_id, "slug": skill_id, "failed_at": 1, "failed_stable_hash": "h2",
+        "message": "element not found",
+    }), encoding="utf-8")
+
+    bundle = build_evidence_bundle(skill_id, run_id=run_id)
+    assert bundle["failed_step_key"] is None
+    assert bundle["runtime_evidence_absent"] is not None
+    assert "no longer matches its recorded position" in bundle["runtime_evidence_absent"]
+
+
+def test_failed_step_key_still_resolves_when_stable_hash_agrees(tmp_path, monkeypatch):
+    """The positive case for the same mechanism — no edit happened, the hash matches, resolution
+    is unchanged (and slightly more confident than a bare index lookup)."""
+    from conxa_core.config import settings
+    from conxa_core.storage.json_store import write_skill
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setenv("CONXA_STUDIO_HOME", str(tmp_path / "studio_home"))
+
+    skill_id = "skill_evidence_match"
+    doc = _doc([_click("h1"), _click("h2")], compile_report={"status": "ok", "steps": [
+        {"confidence": 0.9, "warnings": []}, {"confidence": 0.9, "warnings": []},
+    ]})
+    write_skill(skill_id, doc)
+
+    run_id = "run_match1"
+    evidence_dir = tmp_path / "studio_home" / "sandbox" / "data" / "runs" / run_id / "_evidence"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "evidence.json").write_text(json.dumps({
+        "run_id": run_id, "slug": skill_id, "failed_at": 1, "failed_stable_hash": "h2",
+    }), encoding="utf-8")
+
+    bundle = build_evidence_bundle(skill_id, run_id=run_id)
+    assert bundle["failed_step_key"] == "h2#1"
+    assert bundle["runtime_evidence_absent"] is None
+
+
 def test_bundle_falls_back_to_workflow_last_test_run_id_when_run_id_omitted(tmp_path, monkeypatch):
     from conxa_core.config import settings
     from conxa_core.storage.json_store import write_skill
@@ -188,4 +248,42 @@ def test_no_run_id_and_no_workflow_gives_compile_side_only_bundle(tmp_path, monk
     assert bundle["run_id"] is None
     assert bundle["failed_step_key"] is None
     assert bundle["runtime_evidence"] == {}
+    assert bundle["runtime_evidence_absent"] == "no test run recorded for this skill"
+    assert bundle["last_test"] is None
     assert len(bundle["steps"]) == 1
+
+
+def test_last_test_error_survives_when_run_evidence_left_none_on_disk(tmp_path, monkeypatch):
+    """The exact bug this guards against: a Studio test run failed (last_test_error is set on
+    the Workflow record) but the app layer that ran it predates BUILD-26's evidence.json writer,
+    so nothing landed under runs/{run_id}/_evidence/. The copilot must be told evidence is
+    missing AND still get the persisted failure text — not a bundle indistinguishable from a
+    passing run."""
+    from conxa_core.config import settings
+    from conxa_core.storage.json_store import write_skill
+    from conxa_core.storage.workflow_store import save_workflow
+    from conxa_core.models.workflow import Workflow
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setenv("CONXA_STUDIO_HOME", str(tmp_path / "studio_home"))
+
+    skill_id = "skill_evidence_6"
+    write_skill(skill_id, _doc([_click("h1"), _click("h2")]))
+    run_id = "run_no_evidence_written"
+    save_workflow(Workflow(
+        id="wf2", slug="wf2", name="WF2", target_url="https://x",
+        skill_id=skill_id, last_test_run_id=run_id,
+        last_test_status="failed", last_test_error="Execution failed at step 2: boom",
+        last_test_at=123.0,
+    ))
+    # Deliberately no runs/{run_id}/_evidence/ on disk at all.
+
+    bundle = build_evidence_bundle(skill_id)  # no run_id passed — falls back to the workflow's
+    assert bundle["run_id"] == run_id
+    assert bundle["failed_step_key"] is None
+    assert bundle["runtime_evidence"] == {}
+    assert bundle["runtime_evidence_absent"] is not None
+    assert run_id in bundle["runtime_evidence_absent"]
+    assert bundle["last_test"] == {
+        "status": "failed", "error": "Execution failed at step 2: boom", "at": 123.0,
+    }

@@ -397,11 +397,22 @@ async function _writeStudioEvidence(page, err, resolvedEntry, steps, failedAt, s
     const { inventory, overlay } = await gatherInventory(page, err, deps);
     const slug = resolvedEntry && resolvedEntry.slug;
 
+    // BUILD-31: failed_at alone is a raw index into the step list as it existed at THIS run —
+    // editor/evidence.py re-resolves it against the CURRENT document's step list on every read,
+    // so an insert/delete before this index would otherwise silently mislabel the wrong step.
+    // The runtime has no concept of the compiler's step_key (and reimplementing its hashing here
+    // would drift from that source of truth), but identity_bundle.stable_hash IS the base every
+    // step_key is built from (compiler/step_key.py) and already rides on `steps` when present —
+    // write it so evidence.py can cross-check the step it resolves to before trusting it.
+    const failedStep = Array.isArray(steps) ? steps[failedAt] : null;
+    const failedStableHash = (failedStep && failedStep.identity_bundle && failedStep.identity_bundle.stable_hash) || null;
+
     const evidence = {
       run_id: runId,
       slug,
       ts: new Date().toISOString(),
       failed_at: failedAt,
+      failed_stable_hash: failedStableHash,
       step_no: stepNo,
       message: err.message,
       page_url: page.url(),

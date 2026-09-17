@@ -101,6 +101,22 @@ def _base_user_text(digest: dict[str, Any], transcript: list[dict[str, Any]], me
         "shown here):\n"
         f"{json.dumps(digest, ensure_ascii=False, default=str)}\n\n"
     )
+    # BUILD-26 stage h: a null failed_step_key / empty runtime_evidence means EITHER the run
+    # passed OR it failed but left no evidence.json (stale app layer, retention sweep). Those
+    # look identical in the digest otherwise — without this line the model has inferred a step
+    # failure from unrelated fields (a stale compile report, an advanced-only step kind) rather
+    # than say it couldn't see the page. last_test.error is the one fact that always survives.
+    absent_reason = digest.get("runtime_evidence_absent")
+    if absent_reason:
+        last_test = digest.get("last_test") or {}
+        user_text += (
+            f"No runtime evidence is available for this turn: {absent_reason}. "
+            "Treat last_test.error (if present) as the authoritative account of what failed — "
+            f"last_test: {json.dumps(last_test, ensure_ascii=False, default=str)}. "
+            "Do not infer a different failing step or cause from compile_status, step kinds, or "
+            "anything else in the digest; say plainly that the failing page could not be "
+            "inspected for this turn.\n\n"
+        )
     history = _format_transcript(transcript)
     if history:
         user_text += f"Conversation so far:\n{history}\n\n"

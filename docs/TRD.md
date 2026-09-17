@@ -1479,6 +1479,20 @@ case — this is what keeps the binding from ever handing an upload control a fo
 contains a file it was never meant to see. `downloaded_files_dir` is excluded from the
 auto-declared-input scan the same way `downloaded_file`/`downloaded_file_N` are.
 
+**BUILD-31 correction (2026-09-18): "no runtime upload-handler change was needed" was wrong for
+the zero-downloads case.** `server.js` sets `inputs.downloaded_files_dir` unconditionally at run
+start — it is never the empty string, so the `upload` handler's "no file path" guard (which fires
+only on an empty interpolated value) could never catch it, unlike `downloaded_file`/
+`downloaded_file_N` (bound lazily by the `download_observed` handler only once a real file
+exists, throwing `badInput` otherwise). `resolveUploadPaths`'s own `statSync`-catch fallback then
+handed a nonexistent directory straight to `setInputFiles`. `handlers.js`'s `upload` handler now
+checks, specifically when the resolved value equals `inputs.downloaded_files_dir`, whether that
+directory exists and contains at least one file before calling `resolveUploadPaths` — throwing
+the same clear message with `badInput: true` (skipping the Tier 1-2 recovery cascade, matching
+`download_observed`'s own precedent for this failure family) when it doesn't. The general
+plain-`{{file_path}}` fallback in `resolveUploadPaths` is untouched — that one is deliberate (its
+own comment: "let setInputFiles raise its own not-found error for a plain file path").
+
 **A custom calendar widget's open→nav→day-cell click run collapses into one parameterized
 `date_pick` step** (2026-08-30). Native `<input type=date|datetime-local|time|month|week>` already
 compiled correctly (a `date_pick` action straight off the recorder's `change` listener); a custom
@@ -1935,6 +1949,48 @@ on `step_key` (never `step_index`, which renumbers on any edit):
 `Workflow.last_test_run_id` (set by `cmd_test_workflow` from the run's own `test_phase` log line,
 regardless of pass/fail/error) is the fallback when no `run_id` is given — stable across a Studio
 restart, unlike the in-memory `_active_test_runs` map.
+
+**`last_test` / `runtime_evidence_absent` (added 2026-09-18, BUILD-26 stage h).** A run can fail
+with `evidence.json` never written — the Studio's installed app layer predates the failure-capture
+writer above, or the run's evidence was already swept — and that degrades `runtime_evidence` to
+`{}` and `failed_step_key` to `None`, identically to a run that simply passed. Left alone, that
+ambiguity is exactly what let a real diagnosis session invent a wrong root cause: with nothing
+saying otherwise, the copilot read "no failure recorded" and reasoned from unrelated fields
+instead. Two additions close it, both read straight from the `Workflow` record (which persists
+`last_test_error` unconditionally, independent of anything written under `runs/`):
+- `bundle["last_test"]` — `{status, error, at}` from `workflow.last_test_status/last_test_error/
+  last_test_at`, or `None` when no `Workflow` exists for the skill. Always available when a test
+  ever ran, even when `runtime_evidence` is empty.
+- `bundle["runtime_evidence_absent"]` — `None` when `runtime_evidence` is non-empty; otherwise a
+  short reason string ("no test run recorded for this skill" / "run `{run_id}` left no evidence on
+  disk (swept after retention, or written by an app layer built before failure capture)").
+
+`llm/copilot.py::_base_user_text` turns a set `runtime_evidence_absent` into an explicit
+instruction in the prompt: treat `last_test.error` as the authoritative failure and say the page
+could not be inspected, rather than inferring a different cause from `compile_status`, step kinds,
+or anything else in the digest.
+
+**`failed_stable_hash` cross-check (BUILD-31, added 2026-09-18).** A separate gap in the same
+resolution: `failed_step_key = keys[failed_at]` looks up a raw index (frozen at the moment the run
+failed) against `keys = step_keys(steps)` computed from the CURRENT document on every call. An
+insert/delete before that index shifts every later position, and the only guard was a bounds
+check — the lookup silently returned the *wrong* step's key rather than nulling out, so a reviewer
+or the copilot could be pointed at the wrong step after any edit with no indication anything was
+wrong. Fixed without reimplementing `compiler/step_key.py`'s hashing/ordinal logic in the runtime
+(which has no concept of `step_key` at all): `failure_response.js::_writeStudioEvidence` now also
+writes `failed_stable_hash` — the failing step's own `identity_bundle.stable_hash` at write time,
+when `steps` is in scope and that step has one — into `evidence.json`. `editor/evidence.py`'s new
+`_resolve_failed_step_key(keys, failed_at, failed_stable_hash)` cross-checks the resolved key's own
+base hash (the part before its `#N` ordinal) against it: a mismatch nulls `failed_step_key` and
+sets `runtime_evidence_absent` to explain why, instead of trusting a stale position. No
+`failed_stable_hash` recorded (older evidence, `steps` was `null` at write time for a multi-skill
+`execute_sequence` failure, or a marker step with no `identity_bundle`) skips the check and trusts
+the position exactly as before — this only narrows, never widens, when a position is trusted.
+Known residual gap: a pure reorder of two steps that happen to share the same `stable_hash` (the
+reason the `#N` ordinal exists) can still be missed; full elimination needs the compiler to
+persist each step's own `step_key` into `execution.json` and thread it through unchanged — not
+attempted here. The identical positional exposure in the `observed_overlays` `step_key` resolution
+a few lines below is unfixed (overlays carry no `stable_hash` to cross-check against).
 
 **Runtime failure evidence — a gap this closed.** `failure_response.js::buildFailureResponse`'s
 `!agentRecoveryEnabled` branch (the one every Studio test failure takes — Studio forces
@@ -3358,6 +3414,21 @@ format even though no model is involved) — accept is one call, one undo entry,
 insert/patch RPCs; reject logs into the same `edits.jsonl` every other proposal decision uses,
 `source="for_each_suggestion"` — distinct from `"copilot"` since no model produced this finding.
 
+**EXEC-44 (2026-09-18): the literal→`{{<as>_id}}` templating covered `url` only.** A wrapped body
+step's `entity_binding.identifier` — the field `runtime/app/resolution.js::entityRoots` actually
+narrows the live page to on every loop iteration — was left as the one recorded row's literal
+text. Iteration 1 (matching the original recording) passed; every other iteration failed closed
+(`entityRoots` requires exactly one `hasText` match and never falls back). Fixed by applying the
+identical literal→`{{<as>_id}}` rewrite (same case-insensitive substring match, either direction,
+`compiler/entity_binding.py::upgrade_entity_binding_identifiers` already uses elsewhere) to a
+wrapped step's `entity_binding.identifier` when it mentions the recorded filename. Deliberately not
+generalized beyond that field — a wrapped step's `value` or an assertion's text is left untouched
+even when it happens to contain the filename, since substring-replacing arbitrary text risks
+corrupting content that merely coincides with it. The declared `files` input is now also run
+through `_validate_skill_inputs` (the same validator `merge_skill_inputs` already runs for every
+other input-declaring path) before being written — previously appended with no shape or
+uniqueness check at all.
+
 **A real subtlety, found and fixed during implementation:** `download_observed`'s fallback
 `step_key` hashes on action+url alone — identical across every `download_observed` step in a
 workflow, disambiguated only by occurrence ordinal. Moving one occurrence out of the top-level
@@ -3415,10 +3486,19 @@ a click/dblclick on the same tab whose own recorded fingerprint text (`inner_tex
 suggestion as `redundant_click_key` and the wrap range is extended to include it.
 `apply_for_each_loop_suggestion` removes that step on Accept rather than wrapping it (wrapping
 would click one hardcoded filename every iteration only to have the following `navigate`
-override it), archiving it into `compile_report["archived_steps"]` under category
-`superseded_by_loop_navigate` so it stays reversible, matching `flag_noise`'s own archive
-philosophy. Verified the same way: reconstructed the pre-accept step list and confirmed the fixed
-detector folds the redundant `Android.gitignore` click into the suggestion.
+override it), archiving it under category `superseded_by_loop_navigate`, matching `flag_noise`'s
+own archive philosophy. Verified the same way: reconstructed the pre-accept step list and
+confirmed the fixed detector folds the redundant `Android.gitignore` click into the suggestion.
+
+**EXEC-44 correction (2026-09-18): this archive did NOT actually stay reversible as originally
+written here** — it landed in `compile_report["archived_steps"]`, which
+`compiler/build.py::_apply_second_opinion` rebuilds from scratch on every recompile from that
+compile's own `flag_noise` findings alone, discarding whatever was there before. An editor-time
+accept flow's archive was gone the moment the workflow was next compiled. Fixed by giving it a
+separate home the compile pipeline never touches: `apply_for_each_loop_suggestion` now writes into
+`doc["editor_archived_steps"]` (a document-level field, append-only), and
+`editor/evidence.py::build_evidence_bundle`'s `archived_steps` field is the concatenation of that
+and `compile_report["archived_steps"]` — same entry shape, two provenances, one bundle field.
 
 **BUILD-34 (2026-09-13, same day): the detector's URL match never decoded percent-encoding.** A
 second real recording (`C++.gitignore`) surfaced this immediately after BUILD-33 shipped: no

@@ -503,6 +503,27 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
         templated = replace_url_literal(url, template_literal, f"{{{{{as_name}_id}}}}")
         if templated is not None:
             wrapped["url"] = templated
+        # EXEC-44: url is not the only field that can carry the recorded filename. A body step's
+        # entity_binding.identifier is what runtime/app/resolution.js::entityRoots actually
+        # narrows the live page to on EVERY iteration — left as the one recorded row's literal
+        # text, iteration 1 (matching the original recording) passes and every other iteration
+        # fails closed (entityRoots requires exactly one hasText match). Same match rule and same
+        # literal→{{var}} rewrite compiler/entity_binding.py::upgrade_entity_binding_identifiers
+        # already applies elsewhere — adapted here for a dict-shaped step rather than the
+        # pydantic SkillStep that helper expects.
+        eb = wrapped.get("entity_binding")
+        if isinstance(eb, dict) and eb.get("source") == "literal" and eb.get("identifier"):
+            ident_lower = str(eb["identifier"]).lower()
+            literal_lower = template_literal.lower().strip()
+            if literal_lower and (literal_lower in ident_lower or ident_lower in literal_lower):
+                eb = dict(eb)
+                eb["identifier"] = f"{{{{{as_name}_id}}}}"
+                eb["source"] = "input"
+                wrapped["entity_binding"] = eb
+        # Deliberately not generalized further: a wrapped step's `value` or an assertion's text
+        # is left untouched even if it happens to contain the filename — entity_binding is the
+        # only field with a proven runtime consequence, and blindly substring-replacing arbitrary
+        # text risks corrupting content that merely coincides with the filename.
         body.append(wrapped)
 
     wrapper = _new_manual_step("for_each", "")
@@ -535,10 +556,16 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
 
     inputs = list(doc.get("inputs") or [])
     if not any(str(i.get("id") or "").strip().lower() == input_name.lower() for i in inputs if isinstance(i, dict)):
+        # `optional` is deliberately left at the model default (False, required) — the loop
+        # cannot run without a value for `files`, so requiring it is correct, not an oversight.
         inputs.append({
             "id": input_name, "type": "text", "default": None, "options": [],
             "description": "Filenames to download, comma-separated.",
         })
+    # EXEC-44: this used to append straight to doc["inputs"] with no shape/uniqueness check,
+    # unlike every other input-declaring path (merge_skill_inputs runs this same validator). A
+    # bad id or a case-insensitive collision with an existing input landed silently.
+    _validate_skill_inputs(inputs)
     doc["inputs"] = inputs
 
     # Old index `start` becomes the new for_each step; start+1..end are merged into it (no
@@ -573,9 +600,13 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
         doc["compile_report"] = report
 
     if archived_click is not None:
-        report = dict(doc.get("compile_report") or {})
-        report["archived_steps"] = list(report.get("archived_steps") or []) + [archived_click]
-        doc["compile_report"] = report
+        # EXEC-44: NOT compile_report["archived_steps"] — compiler/build.py::_apply_second_opinion
+        # rebuilds compile_report from scratch on every recompile from that compile's OWN
+        # flag_noise findings alone; anything written here would be silently discarded the next
+        # time this workflow is compiled. editor_archived_steps is a document-level field the
+        # compile pipeline never reads or writes, so an editor-time archive (this one) actually
+        # survives a recompile, unlike the docs' prior "stays reversible" claim implied.
+        doc["editor_archived_steps"] = list(doc.get("editor_archived_steps") or []) + [archived_click]
 
     meta = dict(doc.get("meta") or {})
     meta["version"] = int(meta.get("version", 1)) + 1

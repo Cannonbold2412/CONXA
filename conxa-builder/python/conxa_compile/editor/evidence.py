@@ -115,6 +115,45 @@ def _read_observed_overlays(evidence_dir: Path) -> list[dict[str, Any]]:
     return out[-_OVERLAY_CAP:]
 
 
+def _resolve_failed_step_key(
+    keys: list[str], failed_at: Any, failed_stable_hash: str | None
+) -> tuple[str | None, bool]:
+    """BUILD-31: `failed_at` is a raw index frozen at the moment a run failed; `keys` is the
+    CURRENT document's step_keys. An insert/delete before that index shifts every later
+    position, and a bare bounds check can't tell "still correct" from "now points at a
+    different step" — the mismatch used to resolve silently to the wrong step's key rather than
+    nulling out. `failed_stable_hash` (the failing step's identity_bundle.stable_hash at write
+    time, when the runtime had it — see failure_response.js::_writeStudioEvidence) is the base
+    every step_key is built from (compiler/step_key.py); cross-checking it against the resolved
+    key's own base catches the mismatch. No `failed_stable_hash` recorded (older evidence, or a
+    marker step with no identity_bundle) skips the check and trusts the position exactly as
+    before — this only narrows, never widens, when a position is trusted.
+
+    Returns (failed_step_key, mismatched) — mismatched is True only when a real disagreement was
+    detected, so the caller can explain the None rather than leave it unexplained.
+    """
+    if not isinstance(failed_at, int) or not (0 <= failed_at < len(keys)):
+        return None, False
+    key = keys[failed_at]
+    if failed_stable_hash and key.rsplit("#", 1)[0] != failed_stable_hash:
+        return None, True
+    return key, False
+
+
+def _runtime_evidence_absence_reason(run_id: str | None, runtime_evidence: dict[str, Any]) -> str | None:
+    """Why runtime_evidence is empty, or None when it isn't. Kept separate from last_test (the
+    always-persisted fallback on the Workflow record) so the copilot is told explicitly that the
+    richer evidence is missing, instead of a null failed_step_key silently reading as "it passed"."""
+    if runtime_evidence:
+        return None
+    if not run_id:
+        return "no test run recorded for this skill"
+    return (
+        f"run {run_id} left no evidence on disk (swept after retention, or written by "
+        "an app layer built before failure capture)"
+    )
+
+
 def _read_runtime_evidence(run_id: str | None) -> dict[str, Any]:
     """Read runs/{run_id}/_evidence/ from the Studio's own test sandbox — sandbox/data/ is the
     CONXA_DATA_DIR the runtime is given for every Test Skill run (conxa_runtime.ensure_test_sandbox).
@@ -256,12 +295,40 @@ def build_evidence_bundle(
 
     runtime_evidence = _read_runtime_evidence(run_id)
     failed_at = runtime_evidence.get("failed_at")
-    failed_step_key = keys[failed_at] if isinstance(failed_at, int) and 0 <= failed_at < len(keys) else None
+    failed_step_key, step_key_mismatched = _resolve_failed_step_key(
+        keys, failed_at, runtime_evidence.get("failed_stable_hash")
+    )
+
+    # BUILD-26 stage h: runtime_evidence degrades to {} both when nothing failed AND when a
+    # failure happened but left no evidence.json (app layer built before failure capture landed,
+    # or the run was swept). Those two cases must never look the same to the copilot — a null
+    # failed_step_key with no explanation reads as "the run passed" and invites exactly the wrong
+    # diagnosis. last_test is the independent, always-persisted fallback (workflow_store.py never
+    # loses it to a sweep or a stale app layer).
+    last_test = None
+    if workflow is not None:
+        last_test = {
+            "status": workflow.last_test_status,
+            "error": workflow.last_test_error,
+            "at": workflow.last_test_at,
+        }
+    runtime_evidence_absent = _runtime_evidence_absence_reason(run_id, runtime_evidence)
+    # BUILD-31: runtime_evidence is non-empty here (the absence check above only fires on {}),
+    # but the position it named no longer names the step that actually failed — explain the
+    # None the same way, rather than leave the copilot staring at an unexplained null.
+    if runtime_evidence_absent is None and step_key_mismatched:
+        runtime_evidence_absent = (
+            "the step that failed no longer matches its recorded position — the workflow was "
+            "edited since this run failed"
+        )
 
     # BUILD-26 stage f: the runtime only knows step_index (it has no concept of the compiler's
     # step_key), so resolve it here the same way failed_step_key is resolved above — this is
     # what lets a copilot proposal address an overlay by the SAME step_key gate_proposals already
     # re-resolves everything else against.
+    # BUILD-31: this lookup has the identical positional-mismatch exposure failed_step_key had —
+    # unfixed here. Overlays carry no stable_hash to cross-check against (overlay_capture.js only
+    # records step_index), so the fix above doesn't extend to this loop; flagged, not fixed.
     for overlay in runtime_evidence.get("observed_overlays") or []:
         idx = overlay.get("step_index")
         overlay["step_key"] = keys[idx] if isinstance(idx, int) and 0 <= idx < len(keys) else None
@@ -307,8 +374,16 @@ def build_evidence_bundle(
         "failed_step_key": failed_step_key,
         "compile_status": compile_report.get("status"),
         "second_opinion": compile_report.get("second_opinion"),
-        "archived_steps": compile_report.get("archived_steps"),
+        # EXEC-44: two provenances, concatenated. compile_report["archived_steps"] is rebuilt
+        # from scratch every compile (this compile's own flag_noise findings only — see
+        # compiler/build.py::_apply_second_opinion); doc["editor_archived_steps"] is a durable,
+        # document-level field an editor-time accept flow (e.g. apply_for_each_loop_suggestion's
+        # redundant-click archive) writes and a recompile never touches. Both entries share the
+        # same {step_key, step, category, why} shape, so this is a plain concat, no reshaping.
+        "archived_steps": list(compile_report.get("archived_steps") or []) + list(doc.get("editor_archived_steps") or []),
         "runtime_evidence": runtime_evidence,
+        "runtime_evidence_absent": runtime_evidence_absent,
+        "last_test": last_test,
         "steps": steps_bundle,
     }
     if detail == "digest":
@@ -332,5 +407,20 @@ if __name__ == "__main__":
 
     mismatched_report = {"status": "ok", "steps": [{"confidence": 0.9, "warnings": []}]}  # 1 entry, 2 live steps
     assert _compile_report_for_step(mismatched_report, 1, two_steps)["available"] is False
+
+    assert _runtime_evidence_absence_reason(None, {}) == "no test run recorded for this skill"
+    absent_reason = _runtime_evidence_absence_reason("r_abc", {})
+    assert absent_reason is not None and "r_abc" in absent_reason
+    assert _runtime_evidence_absence_reason("r_abc", {"failed_at": 0}) is None
+
+    three_keys = ["hashA#1", "hashB#1", "hashA#2"]
+    # No failed_stable_hash recorded — trust the position exactly as before.
+    assert _resolve_failed_step_key(three_keys, 1, None) == ("hashB#1", False)
+    # failed_stable_hash agrees with what's at that position — still trusted, no mismatch.
+    assert _resolve_failed_step_key(three_keys, 1, "hashB") == ("hashB#1", False)
+    # failed_stable_hash disagrees — an insert/delete shifted this position; null out, flagged.
+    assert _resolve_failed_step_key(three_keys, 1, "hashA") == (None, True)
+    # Out of bounds — unchanged behavior, no mismatch flag (nothing to compare against).
+    assert _resolve_failed_step_key(three_keys, 99, "hashA") == (None, False)
 
     print("ok")

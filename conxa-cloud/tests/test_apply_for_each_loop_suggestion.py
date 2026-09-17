@@ -201,7 +201,11 @@ def test_redundant_click_is_dropped_from_steps_and_archived():
     assert [s["action"]["action"] if isinstance(s["action"], dict) else s["action"] for s in steps] == [
         "navigate", "for_each", "navigate", "upload_intent",
     ]
-    archived = out["compile_report"]["archived_steps"]
+    # EXEC-44: NOT compile_report["archived_steps"] — that field is rebuilt from scratch on
+    # every recompile (compiler/build.py::_apply_second_opinion) and would silently discard this.
+    # editor_archived_steps is a document-level field the compile pipeline never touches.
+    assert "archived_steps" not in out.get("compile_report", {}) or not out["compile_report"]["archived_steps"]
+    archived = out["editor_archived_steps"]
     assert len(archived) == 1
     assert archived[0]["step_key"] == suggestion["redundant_click_key"]
     assert archived[0]["category"] == "superseded_by_loop_navigate"
@@ -257,6 +261,105 @@ def test_templates_a_percent_encoded_filename_correctly():
     assert "https://example.com/blob/main/{{file_id}}" in urls
     # Neither the raw filename nor its percent-encoded form should survive anywhere.
     assert not any("C++" in (u or "") or "C%2B%2B" in (u or "") for u in urls)
+
+
+def _document_with_body_entity_binding() -> tuple[dict, dict]:
+    steps = [
+        _step(action="navigate", url="https://example.com/repo"),
+        _step(
+            action="navigate", url="https://example.com/blob/main/Actionscript.gitignore",
+            entity_binding={
+                "container_selector": "tr.file-row",
+                "identifier": "Actionscript.gitignore",
+                "source": "literal",
+            },
+        ),
+        _step(action="click", intent="click_download"),
+        _step(action="download_observed", value=_download_value("Actionscript.gitignore")),
+        _step(action="navigate", url="https://drive.example.com"),
+        _step(action="upload_intent", value="{{downloaded_file}}", input_binding=None),
+    ]
+    suggestions = detect_download_upload_loop_candidates(steps)
+    doc = {
+        "meta": {"id": "skill_x", "version": 1},
+        "skills": [{"steps": [json.loads(s.model_dump_json()) for s in steps]}],
+        "inputs": [],
+        "compile_report": {"for_each_suggestions": suggestions},
+    }
+    return doc, suggestions[0]
+
+
+def _action_name(step: dict) -> str | None:
+    action = step.get("action")
+    return action.get("action") if isinstance(action, dict) else action
+
+
+def test_templates_a_matching_entity_binding_identifier():
+    doc, suggestion = _document_with_body_entity_binding()
+    out = apply_for_each_loop_suggestion(doc, suggestion)
+    body = out["skills"][0]["steps"][1]["for_each"]["steps"]
+    navigate = next(s for s in body if _action_name(s) == "navigate" and s.get("entity_binding"))
+    eb = navigate["entity_binding"]
+    assert eb["identifier"] == "{{file_id}}"
+    assert eb["source"] == "input"
+    # container_selector is untouched — only identifier/source change.
+    assert eb["container_selector"] == "tr.file-row"
+
+
+def test_does_not_touch_an_entity_binding_that_does_not_mention_the_filename():
+    steps = [
+        _step(action="navigate", url="https://example.com/repo"),
+        _step(
+            action="navigate", url="https://example.com/blob/main/Actionscript.gitignore",
+            entity_binding={
+                "container_selector": "tr.file-row",
+                "identifier": "Something Unrelated",
+                "source": "literal",
+            },
+        ),
+        _step(action="click", intent="click_download"),
+        _step(action="download_observed", value=_download_value("Actionscript.gitignore")),
+        _step(action="navigate", url="https://drive.example.com"),
+        _step(action="upload_intent", value="{{downloaded_file}}", input_binding=None),
+    ]
+    suggestions = detect_download_upload_loop_candidates(steps)
+    doc = {
+        "meta": {"id": "skill_x", "version": 1},
+        "skills": [{"steps": [json.loads(s.model_dump_json()) for s in steps]}],
+        "inputs": [],
+        "compile_report": {"for_each_suggestions": suggestions},
+    }
+    out = apply_for_each_loop_suggestion(doc, suggestions[0])
+    body = out["skills"][0]["steps"][1]["for_each"]["steps"]
+    navigate = next(s for s in body if _action_name(s) == "navigate" and s.get("entity_binding"))
+    eb = navigate["entity_binding"]
+    assert eb["identifier"] == "Something Unrelated"
+    assert eb["source"] == "literal"
+
+
+def test_raises_when_the_suggested_input_name_is_not_a_valid_placeholder_id():
+    # EXEC-44: the appended input row was never run through validation before this fix — an
+    # invalid suggested_input_name (never happens today, since the detector only ever proposes
+    # "files", but a manually-constructed/tampered suggestion must still be caught, not silently
+    # declare an input nothing can ever reference via {{...}}).
+    doc, suggestion = _document()
+    suggestion = dict(suggestion)
+    suggestion["suggested_input_name"] = "my files"
+    with pytest.raises(ValueError, match="invalid_input_id"):
+        apply_for_each_loop_suggestion(doc, suggestion)
+
+
+def test_archived_step_survives_a_simulated_recompile():
+    doc, suggestion = _document_with_redundant_click()
+    out = apply_for_each_loop_suggestion(doc, suggestion)
+    assert len(out["editor_archived_steps"]) == 1
+
+    # A recompile rebuilds compile_report from scratch — compiler/build.py::_apply_second_opinion
+    # sets archived_steps only from THAT compile's own flag_noise findings (fresh["archived_steps"]
+    # = archived), never reading the document's prior value. Simulate that overwrite here without
+    # invoking the full compile pipeline.
+    out["compile_report"] = {"status": "ok", "steps": []}
+    assert out["editor_archived_steps"][0]["category"] == "superseded_by_loop_navigate"
 
 
 def test_exports_to_a_valid_execution_json(tmp_path):

@@ -2323,6 +2323,19 @@ Response (`packages/conxa-core/conxa_core/models/manifest.py:UnifiedManifest`):
 }
 ```
 
+**Digest env vars are shape-validated at import time (added 2026-09-18).** Every `sha256`/`sha512`
+field above the legacy `deps-manifest`/`conxa-runtime-manifest`/`conxa-app-manifest` shims serve
+(`app/api/updates_routes.py`'s `CONXA_NSIS_SHA256`, `CONXA_HOST_WIN_SHA256`,
+`CONXA_KEYTAR_WIN_SHA256`, `CONXA_APP_BUNDLE_SHA256`, `CONXA_STUDIO_WIN_SHA256/SHA512`,
+`CONXA_EXECUTE_WIN_SHA256/SHA512`) is read straight from the environment as a module-level
+constant. A live incident showed why that needs a check: one of these was set to a
+release-notes-style `"<filename>  <hash>"` two-column line instead of the bare hex digest — every
+client's own checksum verification then rejected the download forever, silently, with nothing
+pointing back at the env var. `_validate_digest_env_vars()` now runs once at module import and
+raises `RuntimeError` (refusing to boot) if any non-empty digest env var isn't exactly 64 or 128
+lowercase hex characters. An unset var is still allowed — the dependent manifest entry is simply
+skipped, unchanged from before.
+
 `signature` is computed over the canonical JSON (sorted keys, no whitespace, `signature` field excluded) of every other field, using an Ed25519 private key held only as the `CONXA_MANIFEST_SIGNING_KEY` env var — never in CI. The runtime verifies it against a public key baked into the host exe at build time; a failed verification is treated exactly like a network failure (fall back to the last verified cache, or skip entirely on first run). `skill_packs[].files` is deliberately empty — skill content is delivered through the existing per-company delta-sync (§5.9) which is Bearer-token-gated per company, not broadcast in a public manifest.
 
 **POST /api/v1/admin/component-versions/{component}** — CI (after host/app build) and `release_routes.py` (after a skill is Released/Deployed — see §5.1d; **not** at publish time) write a component's version record here; the manifest is recomposed and re-signed immediately after. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. Requires `Authorization: Bearer <CONXA_ADMIN_TOKEN>`.

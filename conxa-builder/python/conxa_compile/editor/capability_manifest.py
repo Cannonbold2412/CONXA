@@ -72,6 +72,10 @@ RUNTIME_NOTES: dict[str, str] = {
         "call if it arrives in time. No answer to validate — the person may change the page."
     ),
     "upload": "Resolves value as file path(s); can consume (delete) a prior download_observed file.",
+    "upload_intent": (
+        "Recorded provenance only — the packager collapses it to a real `upload` step at build "
+        "time (same value and selector), so it DOES execute. Not insertable by hand."
+    ),
     "if_present": "Best-effort probe + body; NEVER enters the Tier 1-4 recovery cascade.",
     "try_dismiss": "Best-effort candidates + Escape fallback; never enters the recovery cascade.",
     "wait_for_one_of": "Races each option's probe up to timeout_ms; never enters the recovery cascade.",
