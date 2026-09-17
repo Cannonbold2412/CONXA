@@ -59,6 +59,33 @@ describe("vendored OpenCode chat completions loop", () => {
     }
   });
 
+  it("uses a pluggable chatCompletion transport instead of fetch when given one", async () => {
+    const orig = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("must not call fetch when chatCompletion is supplied");
+    };
+    let callCount = 0;
+    try {
+      const result = await runTurn({
+        model: "m",
+        system: "sys",
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+        executeTool: async () => "",
+        chatCompletion: async (body) => {
+          callCount += 1;
+          assert.equal(body.model, "m");
+          return { ok: true, json: { choices: [{ message: { role: "assistant", content: "via proxy" } }] } };
+        },
+      });
+      assert.equal(callCount, 1);
+      assert.equal(result.ok, true);
+      assert.equal(result.text, "via proxy");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
+
   it("surfaces HTTP model errors without hanging", async () => {
     const orig = globalThis.fetch;
     globalThis.fetch = async () => ({

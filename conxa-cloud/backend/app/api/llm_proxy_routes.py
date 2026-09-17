@@ -33,8 +33,11 @@ from app.services.entitlements import (
     EntitlementError,
     compile_pool_for,
     current_entitlements,
+    ensure_execute_pool_available,
     ensure_human_edit_available,
     ensure_trial_active,
+    execute_chat_access_for,
+    record_execute_pool_usage,
     record_llm_usage,
 )
 
@@ -81,26 +84,63 @@ class ProxyBody(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     timeout_ms: int = Field(default=30_000, ge=1_000, le=120_000)
     usage_class: str = Field(default="compile", max_length=32)
+    # execute_chat only: which of the caller's several eligible Execute
+    # contexts (personal / a team they're a member of / a team that granted
+    # them a seat) this turn should bill against — see the personal/team
+    # switcher, GET /api/v1/execute/contexts. Verified server-side via
+    # execute_chat_access_for, never trusted from the client alone.
+    target_workspace_id: str | None = Field(default=None, max_length=256)
 
 
-def _require_studio_client(request: Request) -> None:
+_EXECUTE_CLIENT_HEADER = "conxa-execute"
+
+
+def _require_known_client(request: Request) -> str:
+    """Returns the caller's X-Conxa-Client value once it's confirmed to be one
+    of the two first-party callers this proxy is meant for — never a browser.
+    Callers branch on the return value (e.g. to skip machine-slot
+    registration for Execute, whose cap is execute_seats, not machines)."""
     expected = settings.llm_proxy_client_header.strip()
     got = request.headers.get("x-conxa-client", "").strip()
-    if not expected or got != expected:
-        raise HTTPException(status_code=403, detail="proxy_requires_build_studio_client")
+    if got == _EXECUTE_CLIENT_HEADER:
+        return got
+    if expected and got == expected:
+        return got
+    raise HTTPException(status_code=403, detail="proxy_requires_known_client")
+
+
+def _resolve_execute_chat_workspace(principal, body: ProxyBody) -> str:
+    """execute_chat bills against the workspace the caller explicitly chose
+    in Execute's context switcher — falling back to the token's own
+    workspace_id when none was given — never a Principal-derived default
+    the caller didn't ask for. Raises 403 if the caller doesn't actually
+    have Execute access to the requested workspace."""
+    target = (body.target_workspace_id or "").strip() or principal.workspace_id
+    if target == principal.workspace_id:
+        return target  # the caller's own token-resolved workspace — always allowed, no lookup needed
+    if not execute_chat_access_for(principal.user_id, target):
+        raise HTTPException(status_code=403, detail="execute_context_not_available")
+    return target
 
 
 def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[str, Any]:
-    _require_studio_client(request)
+    client = _require_known_client(request)
     principal = current_principal(request)
-    org_id = principal.workspace_id
     usage_class = str(body.usage_class or "compile").strip()
     if usage_class not in ALLOWED_USAGE_CLASSES:
         raise HTTPException(status_code=400, detail="invalid_usage_class")
+    # execute_chat bills whichever context the caller's switcher picked —
+    # never the token's own workspace_id by default the way every other
+    # usage_class does.
+    org_id = _resolve_execute_chat_workspace(principal, body) if usage_class == "execute_chat" else principal.workspace_id
 
     try:
         ensure_trial_active(principal)
-        register_request_machine(request, principal)
+        if client != _EXECUTE_CLIENT_HEADER:
+            # Execute grantees are capped by execute_seats, not the machines
+            # meter — registering one here would consume a machine slot that
+            # belongs to a real installed Build Studio/runtime device.
+            register_request_machine(request, principal)
     except EntitlementError as exc:
         raise entitlement_http_error(exc) from exc
 
@@ -108,7 +148,12 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
         raise HTTPException(status_code=429, detail="quota_exceeded")
 
     input_tokens = llm_metering.estimate_request_tokens(body.payload)
-    if usage_class == "human_edit":
+    if usage_class == "execute_chat":
+        try:
+            ensure_execute_pool_available(org_id, estimated_tokens=input_tokens)
+        except EntitlementError as exc:
+            raise entitlement_http_error(exc) from exc
+    elif usage_class == "human_edit":
         try:
             ensure_human_edit_available(principal, estimated_tokens=input_tokens)
         except EntitlementError as exc:
@@ -157,12 +202,15 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
     output_tokens = llm_metering.estimate_response_tokens(result)
     llm_metering.record_usage(org_id, input_tokens=input_tokens, output_tokens=output_tokens)
     try:
-        record_llm_usage(
-            principal,
-            usage_class=usage_class,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+        if usage_class == "execute_chat":
+            record_execute_pool_usage(org_id, input_tokens=input_tokens, output_tokens=output_tokens)
+        else:
+            record_llm_usage(
+                principal,
+                usage_class=usage_class,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
     except Exception as exc:  # noqa: BLE001
         raise entitlement_http_error(exc) from exc
     return result
@@ -186,16 +234,17 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
     Usage is metered once, after the full text is known — never per chunk. Only text/vision
     tasks that ask for `on_delta` (currently just `copilot_reply`) should hit this path; every
     other task keeps using the blocking endpoints above."""
-    _require_studio_client(request)
+    client = _require_known_client(request)
     principal = current_principal(request)
-    org_id = principal.workspace_id
     usage_class = str(body.usage_class or "compile").strip()
     if usage_class not in ALLOWED_USAGE_CLASSES:
         raise HTTPException(status_code=400, detail="invalid_usage_class")
+    org_id = _resolve_execute_chat_workspace(principal, body) if usage_class == "execute_chat" else principal.workspace_id
 
     try:
         ensure_trial_active(principal)
-        register_request_machine(request, principal)
+        if client != _EXECUTE_CLIENT_HEADER:
+            register_request_machine(request, principal)
     except EntitlementError as exc:
         raise entitlement_http_error(exc) from exc
 
@@ -203,7 +252,12 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
         raise HTTPException(status_code=429, detail="quota_exceeded")
 
     input_tokens = llm_metering.estimate_request_tokens(body.payload)
-    if usage_class == "human_edit":
+    if usage_class == "execute_chat":
+        try:
+            ensure_execute_pool_available(org_id, estimated_tokens=input_tokens)
+        except EntitlementError as exc:
+            raise entitlement_http_error(exc) from exc
+    elif usage_class == "human_edit":
         try:
             ensure_human_edit_available(principal, estimated_tokens=input_tokens)
         except EntitlementError as exc:
@@ -257,8 +311,11 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
 
     threading.Thread(target=_worker, daemon=True).start()
 
+    is_tool_calling_task = body.task == "execute_chat"
+
     def _generate():
         full_text_parts: list[str] = []
+        saw_tool_call = False
         worker_error: Exception | None = None
         try:
             while True:
@@ -268,14 +325,27 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
                 if isinstance(item, Exception):
                     worker_error = item
                     break
-                full_text_parts.append(item)
-                yield f"data: {json.dumps({'delta': item})}\n\n"
+                if is_tool_calling_task:
+                    # item is {"type": "text"|"tool_call", ...} — forwarded as-is
+                    # so the caller (Execute's turn loop) can tell tool-call
+                    # fragments apart from prose; only text counts toward the
+                    # final full_text/usage estimate below.
+                    if item.get("type") == "text":
+                        full_text_parts.append(item["text"])
+                    elif item.get("type") == "tool_call":
+                        saw_tool_call = True
+                    yield f"data: {json.dumps(item)}\n\n"
+                else:
+                    full_text_parts.append(item)
+                    yield f"data: {json.dumps({'delta': item})}\n\n"
 
             full_text = "".join(full_text_parts)
-            if not full_text:
+            if not full_text and not saw_tool_call:
                 # BUILD-33: distinguish "every provider genuinely failed" from "a reasoning
                 # model spent its whole budget on hidden chain-of-thought and wrote nothing" —
                 # the router already labels the latter in error_detail before giving up.
+                # (A tool-call-only turn with no prose is a normal execute_chat outcome,
+                # not this failure — saw_tool_call above excludes it.)
                 if worker_error:
                     message = str(worker_error)
                 elif any(line.startswith("reasoning_only_no_content") for line in error_detail):
@@ -288,10 +358,13 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
             output_tokens = llm_metering.estimate_response_tokens({"text": full_text})
             llm_metering.record_usage(org_id, input_tokens=input_tokens, output_tokens=output_tokens)
             try:
-                record_llm_usage(
-                    principal, usage_class=usage_class,
-                    input_tokens=input_tokens, output_tokens=output_tokens,
-                )
+                if usage_class == "execute_chat":
+                    record_execute_pool_usage(org_id, input_tokens=input_tokens, output_tokens=output_tokens)
+                else:
+                    record_llm_usage(
+                        principal, usage_class=usage_class,
+                        input_tokens=input_tokens, output_tokens=output_tokens,
+                    )
             except Exception:  # noqa: BLE001 — the reply already streamed to the client; headers
                 # are long committed by this point, so an entitlement-recording failure here can
                 # only be logged, never turned into an HTTP error the way _meter_and_call does.
@@ -316,7 +389,7 @@ def proxy_vision_stream(body: ProxyBody, request: Request) -> StreamingResponse:
 @router.get("/usage")
 def proxy_usage(request: Request) -> dict[str, Any]:
     """Current-month usage for the calling org (Build Studio shows this in Settings)."""
-    _require_studio_client(request)
+    _require_known_client(request)
     principal = current_principal(request)
     org_id = principal.workspace_id
     usage = llm_metering.get_usage(org_id)

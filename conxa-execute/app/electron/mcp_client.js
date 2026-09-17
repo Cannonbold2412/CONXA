@@ -10,8 +10,7 @@
 
 const { connectStdio, toolText } = require("../vendor/opencode/mcp/stdio");
 const { resolveRuntimeCommand } = require("./runtime_path");
-const { classifyRunResult, extractRunId } = require("./classify");
-const { CHAT_TOOLS } = require("./chat_tools");
+const { classifyRunResult, extractRunId, CHAT_TOOLS } = require("./classify");
 
 let engine = null; // { client, transport }
 
@@ -68,14 +67,26 @@ async function callTool(name, args) {
   return toolText(res);
 }
 
+function badReplyError(toolName, text) {
+  // A non-JSON reply from list_skills/get_skill_inputs means the runtime hit
+  // a protocol error, not that there are zero skills / zero inputs — treating
+  // it as "empty" would show the user a confident wrong answer (e.g. "no
+  // skills installed" when the runtime actually failed to respond sanely).
+  console.error(`mcp_client: ${toolName} returned an unparseable reply:`, text);
+  const err = new Error(`CONXA couldn't read the runtime's reply to ${toolName}. Restart CONXA and try again.`);
+  err.code = "runtime_bad_reply";
+  return err;
+}
+
 async function listSkills() {
   const text = await callTool("list_skills", {});
+  let parsed;
   try {
-    const parsed = JSON.parse(text);
-    return { ok: true, skills: parsed.skills || [], total: parsed.total || 0, raw: text };
+    parsed = JSON.parse(text);
   } catch {
-    return { ok: true, skills: [], total: 0, raw: text };
+    throw badReplyError("list_skills", text);
   }
+  return { ok: true, skills: parsed.skills || [], total: parsed.total || 0 };
 }
 
 async function getSkillInputs(skill, workspace_id) {
@@ -84,9 +95,9 @@ async function getSkillInputs(skill, workspace_id) {
     ...(workspace_id ? { workspace_id } : {}),
   });
   try {
-    return { ok: true, schema: JSON.parse(text), raw: text };
+    return { ok: true, schema: JSON.parse(text) };
   } catch {
-    return { ok: true, schema: {}, raw: text };
+    throw badReplyError("get_skill_inputs", text);
   }
 }
 
@@ -117,16 +128,10 @@ async function listChatTools() {
 }
 
 module.exports = {
-  classifyRunResult,
-  extractRunId,
-  CHAT_TOOLS,
-  ensureEngine,
   stopEngine,
   callTool,
   listSkills,
   getSkillInputs,
   executeSkill,
   listChatTools,
-  resolveRuntimeCommand,
-  runtimeMissingError,
 };

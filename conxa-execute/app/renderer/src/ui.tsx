@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import iconUrl from "./assets/icon.png";
+import { useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes } from "react";
 
 export function Icon({ d, size = 16 }: { d: string; size?: number }) {
   return (
@@ -11,16 +10,12 @@ export function Icon({ d, size = 16 }: { d: string; size?: number }) {
 
 export const paths = {
   plus: "M12 5v14M5 12h14",
-  search: "M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3",
   panel: "M3 5h18v14H3zM9 5v14",
   settings: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.6.9 1 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z",
   x: "M18 6 6 18M6 6l12 12",
   send: "M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z",
-  moon: "M21 14.5A8.5 8.5 0 1 1 9.5 3 7 7 0 0 0 21 14.5z",
   chevron: "M6 9l6 6 6-6",
-  play: "M8 5v14l11-7z",
   list: "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01",
-  spark: "M12 2l1.8 6.2L20 10l-6.2 1.8L12 18l-1.8-6.2L4 10l6.2-1.8L12 2z",
   dots: "M12 12h.01M12 5h.01M12 19h.01",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
   menu: "M4 6h16M4 12h16M4 18h16",
@@ -31,15 +26,21 @@ export const paths = {
   restore: "M5 9V5h4M19 9V5h-4M5 15v4h4M19 15v4h-4",
 };
 
-export function Logo({ size = 28, className = "" }: { size?: number; className?: string }) {
+const BUTTON_VARIANT_CLASS = {
+  primary: "bg-fg text-bg hover:opacity-90",
+  secondary: "border border-line text-fg-muted hover:bg-bg-hover",
+};
+
+export function Button({
+  variant = "primary",
+  className = "",
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" }) {
   return (
-    <img
-      src={iconUrl}
-      alt="CONXA"
-      width={size}
-      height={size}
-      className={`shrink-0 rounded-lg ${className}`}
-      draggable={false}
+    <button
+      type="button"
+      className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${BUTTON_VARIANT_CLASS[variant]} ${className}`}
+      {...rest}
     />
   );
 }
@@ -50,14 +51,12 @@ export function Row({
   active,
   onClick,
   onDelete,
-  showMenu = true,
 }: {
   icon?: ReactNode;
   children: ReactNode;
   active?: boolean;
   onClick?: () => void;
   onDelete?: () => void;
-  showMenu?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -81,7 +80,7 @@ export function Row({
         {icon}
         <span className="min-w-0 flex-1 truncate">{children}</span>
       </button>
-      {showMenu && onDelete && (
+      {onDelete && (
         <div ref={menuRef} className="relative shrink-0 pr-1">
           <button
             type="button"

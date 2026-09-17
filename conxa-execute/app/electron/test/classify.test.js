@@ -1,8 +1,7 @@
 "use strict";
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { classifyRunResult, extractRunId } = require("../classify");
-const { CHAT_TOOLS } = require("../chat_tools");
+const { classifyRunResult, extractRunId, CHAT_TOOLS } = require("../classify");
 
 describe("classifyRunResult", () => {
   it("marks Done. as completed", () => {

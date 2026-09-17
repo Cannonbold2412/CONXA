@@ -2,17 +2,17 @@ OpenCode (anomalyco/opencode)
 Commit: a935432b5ce337523dfc5014629a09bc16784c42
 License: MIT (see vendor/opencode/LICENSE)
 
-This product includes a sliced copy of OpenCode’s agent loop and OpenAI-compatible
-provider (packages/llm), plus a stdio MCP client derived from their MCP module.
-TUI, desktop, IDE, and default shell/file tools are not included.
+This product includes hand-ported, edited copies of pieces of OpenCode's agent
+loop, MCP client, storage service, and context-overflow pruning — not a
+vendored copy of any OpenCode package. See vendor/opencode/README.md for
+exactly which upstream file each of the following was derived from and what
+was changed:
 
-Also includes an adapted port of OpenCode's storage service (packages/opencode/
-src/storage/storage.ts) and context-overflow pruning (packages/opencode/src/
-session/compaction.ts, overflow.ts) — see vendor/opencode/storage/storage.js and
-vendor/opencode/session/compaction.js for the specific substitutions made (their
-private @opencode-ai/core internals and Git-based migrations are not included;
-locking uses the public effect package's Semaphore rather than TxReentrantLock,
-and the message schema is conxa-execute's own flat OpenAI-chat shape rather than
-OpenCode's parts-based SessionV1 schema — full rationale in each file's header).
+  - vendor/opencode/loop/run_turn.js       (agent loop + tool dispatch)
+  - vendor/opencode/mcp/stdio.js           (stdio MCP client)
+  - vendor/opencode/storage/storage.js     (session storage)
+  - vendor/opencode/session/compaction.js  (context-overflow pruning)
+
+TUI, desktop, IDE, and default shell/file tools are not included.
 
 Copyright (c) 2025 opencode

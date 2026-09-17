@@ -108,6 +108,16 @@ On HTTP 401, `LLMProxyClient` retries once after triggering token refresh. On HT
 
 ---
 
+### 1.1a Conxa Execute Authentication (Clerk PKCE, same Clerk app as Build Studio)
+
+`conxa-execute/app/electron/auth_service.js` runs the same PKCE shape as §1.1 above (S256, token refresh with 60s leeway, tokens encrypted via Electron `safeStorage` to `userData/clerk-session.bin`) against the **same** `clerk.conxa.in` instance — not a separate Clerk application. It uses its own OAuth client (`CONXA_EXECUTE_CLERK_CLIENT_ID`, distinct from Build Studio's) so the two apps' local callback servers never collide: Execute listens on `127.0.0.1:52841-52850` (path `/cb`), Build Studio on `52741-52750`. Scope is `profile email offline_access user:org:read` — the extra scope is needed so the token carries `org_id`, though the personal/team context switcher (below) resolves this server-side via the Clerk Backend API rather than trusting the token's own claim.
+
+The Clerk domain/client-id pair is baked into the packaged app at build time via `electron-builder.yml`'s `extraMetadata` (a packaged Electron app doesn't inherit the builder's shell environment) — `main.js` promotes `package.json`'s `conxaExecuteClerkDomain`/`conxaExecuteClerkClientId` fields into `process.env` at startup before `auth_service.js` reads them.
+
+Once signed in, every API call (chat, entitlements) goes through conxa-cloud's normal `/api/v1/*` surface with header `X-Conxa-Client: conxa-execute`, `usage_class: "execute_chat"` for the LLM proxy — see `docs/TRD.md` §3.6 for the chat proxy shape and §13.4c for the personal/team context switcher (`GET /api/v1/execute/contexts`) that resolves which workspace a chat turn bills against.
+
+---
+
 ### 1.2 Cloud API Authentication (Clerk JWT verification)
 
 All Conxa Cloud API endpoints except a small public allowlist require a valid Clerk JWT.

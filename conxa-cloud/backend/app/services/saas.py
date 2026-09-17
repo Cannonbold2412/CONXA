@@ -204,6 +204,33 @@ def _clerk_org_role(user_id: str, org_id: str) -> str | None:
     return None
 
 
+def clerk_user_organizations(user_id: str) -> list[dict[str, Any]] | None:
+    """Every Clerk organization this user belongs to — used by Conxa Execute's
+    personal/team context switcher, which needs the full list up front rather
+    than the one org_id a given JWT happens to carry. Returns None (not an
+    empty list) when the lookup itself fails, so callers can tell "no orgs"
+    apart from "couldn't check" and fall back to just the personal workspace.
+    Requires CLERK_SECRET_KEY, same as _clerk_org_role above."""
+    secret = settings.clerk_secret_key.strip()
+    if not secret:
+        return None
+    url = f"https://api.clerk.com/v1/users/{user_id}/organization_memberships?limit=100"
+    req = urllib.request.Request(url)
+    req.add_header("Authorization", f"Bearer {secret}")
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    out: list[dict[str, Any]] = []
+    for m in data.get("data", []) if isinstance(data, dict) else []:
+        org = m.get("organization") if isinstance(m, dict) else None
+        if isinstance(org, dict) and org.get("id"):
+            out.append({"workspace_id": org["id"], "workspace_name": org.get("name") or org["id"], "role": m.get("role")})
+    return out
+
+
 def visible_workspace_ids_for(principal: Principal) -> list[str]:
     ids = [principal.workspace_id]
     personal_id = personal_workspace_id(principal.user_id)

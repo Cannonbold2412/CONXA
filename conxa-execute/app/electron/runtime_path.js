@@ -7,10 +7,16 @@ const path = require("path");
 function resolveRuntimeCommand() {
   if (process.env.CONXA_EXECUTE_RUNTIME) {
     const cmd = process.env.CONXA_EXECUTE_RUNTIME;
+    if (!fs.existsSync(cmd)) {
+      // An explicit override that points nowhere is almost certainly a
+      // misconfigured dev environment, not "use the normal install" — falling
+      // through silently would make a typo look like a missing install.
+      throw new Error(`CONXA_EXECUTE_RUNTIME is set to "${cmd}", but nothing exists there.`);
+    }
     const extra = process.env.CONXA_EXECUTE_RUNTIME_ARGS
       ? process.env.CONXA_EXECUTE_RUNTIME_ARGS.split(" ").filter(Boolean)
       : [];
-    if (fs.existsSync(cmd)) return { command: cmd, args: extra };
+    return { command: cmd, args: extra };
   }
   const roots = [];
   if (process.env.CONXA_DIR) roots.push(process.env.CONXA_DIR);

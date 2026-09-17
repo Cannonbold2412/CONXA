@@ -13,7 +13,7 @@
     "build:renderer": "vite build --config renderer/vite.config.mts",
     "build": "npm run build:renderer && electron-builder --config electron-builder.yml",
     "typecheck": "tsc --noEmit -p renderer/tsconfig.json",
-    "test": "node --test electron/test/loop.test.js electron/test/classify.test.js"
+    "test": "node --test electron/test/loop.test.js electron/test/classify.test.js electron/test/execute_client.test.js"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
@@ -29,7 +29,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "effect": "^3.22.1",
     "electron-updater": "^6.3.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0"

@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from conxa_core.config import settings
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -14,11 +13,14 @@ from app.api.machine_binding import register_request_machine
 from app.api.updates_routes import _require_admin
 from app.services.entitlements import (
     PLAN_LIMITS,
+    auto_claim_pending_grants_for,
     claim_execute_grant,
     commit_compile_credit,
     create_execute_grant,
     current_entitlements,
+    execute_pool_status,
     get_installer_domain,
+    list_claimed_grant_workspaces_for,
     list_execute_grants,
     list_machines,
     refund_compile_credit,
@@ -29,7 +31,13 @@ from app.services.entitlements import (
     set_installer_domain,
 )
 from app.services.rbac import require_admin
-from app.services.saas import upsert_billing, workspace_ids_for_email
+from app.services.saas import (
+    clerk_user_organizations,
+    personal_workspace_id,
+    upsert_billing,
+    workspace_ids_for_email,
+    workspace_name_for,
+)
 
 router = APIRouter(tags=["entitlements"])
 _ASSIGNABLE_PLANS = {"free", "starter", "pro", "enterprise"}
@@ -152,17 +160,17 @@ def get_execute_grants(request: Request) -> dict[str, Any]:
 @router.post("/entitlements/execute-grants")
 def post_create_execute_grant(body: CreateExecuteGrantBody, request: Request) -> dict[str, Any]:
     """Invite a person to claim an Execute seat, independent of Build Studio
-    org membership — checked against the workspace's execute_seats cap. No
-    transactional email sender exists yet; the admin shares invite_url
-    directly (Slack/email) until one is built."""
+    org membership — checked against the workspace's execute_seats cap.
+    Nothing further to send them: the grant auto-claims the next time that
+    email signs into Conxa Execute (see auto_claim_pending_grants_for) —
+    Execute and Build Studio share one Clerk app now, so no invite link or
+    code is needed."""
     principal = current_principal(request)
     require_admin(principal)
     try:
-        grant = create_execute_grant(principal, body.email)
+        return create_execute_grant(principal, body.email)
     except Exception as exc:  # noqa: BLE001
         raise entitlement_http_error(exc) from exc
-    invite_url = f"{settings.app_url.rstrip('/')}/claim/{grant['grant_id']}"
-    return {**grant, "invite_url": invite_url}
 
 
 @router.post("/entitlements/execute-grants/revoke")
@@ -176,15 +184,68 @@ def post_revoke_execute_grant(body: RevokeExecuteGrantBody, request: Request) ->
 @router.post("/entitlements/execute-grants/claim")
 def post_claim_execute_grant(body: ClaimExecuteGrantBody, request: Request) -> dict[str, Any]:
     """Phase-1 claim path: a signed-in Cloud Dashboard user claims a grant
-    made out to their own email. Conxa Execute's own claim screen (once
-    shipped) relays through the internal service bridge instead — see
-    app/api/execute_bridge_routes.py — so this stays useful as a fallback
-    and for support/testing."""
+    made out to their own email. The normal path is now automatic — see
+    GET /api/v1/execute/contexts's auto_claim_pending_grants_for call — so
+    this stays useful only as a support/testing fallback."""
     principal = current_principal(request)
     try:
         return claim_execute_grant(grant_id=body.grant_id, user_id=principal.user_id, email=principal.email or "")
     except Exception as exc:  # noqa: BLE001
         raise entitlement_http_error(exc) from exc
+
+
+@router.get("/execute/contexts")
+def get_execute_contexts(request: Request) -> dict[str, Any]:
+    """Conxa Execute's personal/team context switcher: every workspace this
+    signed-in Clerk user can use Execute under. Called right after sign-in,
+    which is also the trigger for auto-claiming any pending Execute grant
+    invited to this person's verified email (see auto_claim_pending_grants_for
+    — this replaces the old copy-paste invite-code flow now that Execute and
+    Build Studio share one Clerk app). A full workspace member gets Execute
+    for free as part of the team plan; a grant-only person gets it without
+    ever becoming a member (see claim_execute_grant's docstring)."""
+    principal = current_principal(request)
+    if principal.email:
+        auto_claim_pending_grants_for(user_id=principal.user_id, email=principal.email)
+
+    contexts: dict[str, dict[str, Any]] = {}
+
+    personal_id = personal_workspace_id(principal.user_id)
+    contexts[personal_id] = {"workspace_id": personal_id, "workspace_name": "Personal", "kind": "personal"}
+
+    orgs = clerk_user_organizations(principal.user_id)
+    if orgs is None:
+        # Clerk lookup unavailable — fall back to just the org this request's
+        # own token carries, rather than showing no team context at all.
+        if principal.workspace_id != personal_id:
+            contexts[principal.workspace_id] = {
+                "workspace_id": principal.workspace_id,
+                "workspace_name": principal.workspace_name,
+                "kind": "member",
+            }
+    else:
+        for org in orgs:
+            contexts[org["workspace_id"]] = {
+                "workspace_id": org["workspace_id"],
+                "workspace_name": org["workspace_name"],
+                "kind": "member",
+            }
+
+    for grant in list_claimed_grant_workspaces_for(principal.user_id):
+        ws_id = grant["workspace_id"]
+        if ws_id in contexts:
+            continue  # already have Execute via full membership — no need to also show the grant
+        contexts[ws_id] = {"workspace_id": ws_id, "workspace_name": workspace_name_for(ws_id), "kind": "grant"}
+
+    for ctx in contexts.values():
+        if ctx["kind"] == "personal":
+            continue
+        try:
+            ctx["credits_remaining"] = execute_pool_status(ctx["workspace_id"])["remaining"]
+        except Exception:  # noqa: BLE001
+            ctx["credits_remaining"] = None
+
+    return {"contexts": list(contexts.values()), "active_workspace_id": principal.workspace_id}
 
 
 @router.get("/entitlements/installer-domain")
