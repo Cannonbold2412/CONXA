@@ -93,18 +93,37 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.EXECUTE_VERSION }}
-          name: Conxa Execute ${{ env.EXECUTE_VERSION }}
-          files: |
-            conxa-execute/app/dist/execute/*.exe
-            conxa-execute/app/dist/execute/*.exe.blockmap
-            conxa-execute/app/dist/execute/latest*.yml
+        shell: pwsh
+        run: |
+          $tag = "${{ env.EXECUTE_VERSION }}"
+          $files = Get-ChildItem -Path conxa-execute/app/dist/execute/* -Include *.exe,*.exe.blockmap,latest*.yml
+          if (-not $files) {
+            Write-Error "No release assets matched under conxa-execute/app/dist/execute"
+            exit 1
+          }
+
           # Prereleases (execute-v1.2.3-beta.N / -rc.N / -dev.N) never reach the stable
           # auto-update channel — same rule as Build Studio.
-          prerelease: ${{ contains(env.EXECUTE_VERSION, '-dev') || contains(env.EXECUTE_VERSION, 'beta') || contains(env.EXECUTE_VERSION, '-rc') }}
-          fail_on_unmatched_files: true
+          $isPrerelease = $tag -match '-dev' -or $tag -match 'beta' -or $tag -match '-rc'
+
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            $createArgs = @($tag, "--title", "Conxa Execute $tag", "--generate-notes")
+            if ($isPrerelease) { $createArgs += "--prerelease" }
+            gh release create @createArgs
+            if ($LASTEXITCODE -ne 0) { Write-Error "gh release create failed"; exit 1 }
+          }
+
+          # softprops' release-not-yet-discoverable race can leave the first
+          # asset upload hitting a transient "Error saving asset" — retry it.
+          $uploaded = $false
+          for ($i = 1; $i -le 3; $i++) {
+            gh release upload $tag $($files.FullName) --clobber
+            if ($LASTEXITCODE -eq 0) { $uploaded = $true; break }
+            Write-Warning "gh release upload attempt $i failed, retrying in 10s..."
+            Start-Sleep -Seconds 10
+          }
+          if (-not $uploaded) { Write-Error "gh release upload failed after 3 attempts"; exit 1 }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

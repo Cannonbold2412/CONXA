@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Conxa Execute's release publishing no longer fails outright on a one-off hiccup — 2026-09-17
+When Conxa Execute publishes a new release, it uploads a few files to GitHub — the installer, and some small support files. Every so often GitHub itself briefly stumbles partway through that upload, and the whole release used to fail and need a person to manually re-run it. It's like a delivery driver giving up after one closed gate instead of trying again a minute later. Now the upload automatically tries again a couple of times before giving up, so a brief hiccup no longer stops a release.
+
 ## Fixed a confusing startup message that blamed your plan when the real problem was the internet — 2026-09-17
 When Build Studio couldn't reach Conxa Cloud on startup — say, on a bad connection — it showed a message claiming Conxa Cloud couldn't confirm your plan, even though your plan was never the issue. That happened because one shared piece of code used the "can't check your plan" label for every kind of connection failure, not just plan-related ones. It's like a delivery app blaming your payment method when the real problem is that it simply couldn't reach the server at all. The message now correctly says the connection failed, so people aren't sent chasing a billing problem that doesn't exist.
 
