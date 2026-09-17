@@ -329,15 +329,10 @@ function ExecuteSeatsPanel({ seatMeter }: { seatMeter?: EntitlementMeter }) {
 
   const createM = useMutation({
     mutationFn: createExecuteGrant,
-    onSuccess: async (grant) => {
+    onSuccess: (grant) => {
       setEmail('')
       queryClient.invalidateQueries({ queryKey: queryKeys.executeGrants })
-      try {
-        await navigator.clipboard.writeText(grant.invite_url)
-        toast.success(`Invite link copied for ${grant.email}`)
-      } catch {
-        toast.success(`Invite created for ${grant.email}`)
-      }
+      toast.success(`Invited ${grant.email} — access starts automatically the next time they sign into Conxa Execute with that email.`)
     },
     onError: (err: unknown) => toast.error(err instanceof Error ? err.message : 'Could not create invite'),
   })
@@ -347,15 +342,6 @@ function ExecuteSeatsPanel({ seatMeter }: { seatMeter?: EntitlementMeter }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.executeGrants }),
     onError: (err: unknown) => toast.error(err instanceof Error ? err.message : 'Could not revoke seat'),
   })
-
-  async function copyLink(grantId: string) {
-    try {
-      await navigator.clipboard.writeText(`${window.location.origin}/claim/${grantId}`)
-      toast.success('Invite link copied')
-    } catch {
-      toast.error('Could not copy link')
-    }
-  }
 
   const grants: ExecuteGrant[] = grantsQ.data?.grants ?? []
   const statusTone: Record<ExecuteGrant['status'], Tone> = { pending: 'neutral', claimed: 'good', revoked: 'bad' }
@@ -427,11 +413,6 @@ function ExecuteSeatsPanel({ seatMeter }: { seatMeter?: EntitlementMeter }) {
                   </td>
                   <td className="px-4 py-3 align-top text-right">
                     <div className="flex justify-end gap-1">
-                      {grant.status === 'pending' ? (
-                        <Button size="sm" variant="ghost" className="text-zinc-400 hover:text-white" onClick={() => copyLink(grant.grant_id)}>
-                          Copy link
-                        </Button>
-                      ) : null}
                       {grant.status !== 'revoked' ? (
                         <Button
                           size="sm"

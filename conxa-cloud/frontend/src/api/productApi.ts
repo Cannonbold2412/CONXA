@@ -231,12 +231,12 @@ export function fetchExecuteGrants(): Promise<{ grants: ExecuteGrant[] }> {
   return apiFetch('/entitlements/execute-grants').then((r) => json<{ grants: ExecuteGrant[] }>(r))
 }
 
-export function createExecuteGrant(email: string): Promise<ExecuteGrant & { invite_url: string }> {
+export function createExecuteGrant(email: string): Promise<ExecuteGrant> {
   return apiFetch('/entitlements/execute-grants', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email }),
-  }).then((r) => json<ExecuteGrant & { invite_url: string }>(r))
+  }).then((r) => json<ExecuteGrant>(r))
 }
 
 export function revokeExecuteGrant(grantId: string): Promise<{ grant_id: string; revoked: boolean }> {
