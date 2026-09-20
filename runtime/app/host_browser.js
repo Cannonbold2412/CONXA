@@ -10,7 +10,9 @@
  *   - CONXA_HOST_BROWSER_CDP   the Chrome DevTools Protocol endpoint of its own
  *                              Electron process (chromium.connectOverCDP target)
  *   - CONXA_HOST_CONTROL_URL   a loopback HTTP control channel Execute runs, used to
- *                              ask it to create/destroy a WebContentsView per run
+ *                              ask it to create a WebContentsView (new_view/new_tab, with an
+ *                              optional tab label) and destroy one (close_view — a single tab,
+ *                              e.g. a finished login) or a whole run's worth (run_end)
  *
  * Every other client (Claude Desktop, the scheduler, the Build Studio sandbox) never
  * sets these, so endpoint() returns null and browser.js's existing chromium.launch()
@@ -93,10 +95,10 @@ async function _seedStorageState(context, page, storageState) {
 // already created — callers must use this instead of context.newPage(), which
 // Electron doesn't support) and `hostOwned: true` so teardownExecBrowser() knows to
 // disconnect rather than close.
-async function acquire({ runId, storageState }) {
+async function acquire({ runId, storageState, label }) {
   const cdp = endpoint();
   if (!cdp) throw new Error("host_browser: CONXA_HOST_BROWSER_CDP not set");
-  const { markerUrl } = await _controlPost("new_view", { runId });
+  const { markerUrl, tabId } = await _controlPost("new_view", { runId, label });
   const browser = await chromium.connectOverCDP(cdp);
   const context = browser.contexts()[0];
   if (!context) {
@@ -105,7 +107,7 @@ async function acquire({ runId, storageState }) {
   }
   const page = await _findPageByMarker(context, markerUrl, runId);
   await _seedStorageState(context, page, storageState);
-  return { browser, context, page, hostOwned: true };
+  return { browser, context, page, hostOwned: true, hostTabId: tabId };
 }
 
 // Execute's control channel responds with the about:blank-with-marker URL it loaded
@@ -126,17 +128,21 @@ async function _findPageByMarker(context, markerUrl, runId) {
 // unsupported against Electron, so this is a control-channel round trip identical
 // in shape to acquire()'s first step, just without re-seeding storageState (the new
 // tab shares the run's existing context/cookies already).
-async function newTab({ context, runId }) {
-  const { markerUrl } = await _controlPost("new_tab", { runId });
+async function newTab({ context, runId, label }) {
+  const { markerUrl } = await _controlPost("new_tab", { runId, label });
   return _findPageByMarker(context, markerUrl, runId);
 }
 
-// Tell Execute the run is over so it can destroy the view(s) and their partition.
+// Tell Execute a view (or the whole run) is done. With `tabId` only that one view goes — a
+// login that finished must not take its sibling logins' views down with it (a group pack opens
+// one login per missing app, all under the same runId). Without it the run is over and Execute
+// destroys every view plus the partition.
 // The CDP `browser` handle itself is only ever disconnected (see
 // teardownExecBrowser in browser.js) — closing it would tear down Execute's whole
 // browser process out from under the app.
-function release({ runId }) {
-  return _controlPost("run_end", { runId }).catch(() => {});
+function release({ runId, tabId }) {
+  const req = tabId ? _controlPost("close_view", { runId, tabId }) : _controlPost("run_end", { runId });
+  return req.catch(() => {});
   // ponytail: best-effort — a failed run_end leaks one view until Execute's own
   // idle cleanup (or app restart) reclaims it; never worth failing a run over.
 }

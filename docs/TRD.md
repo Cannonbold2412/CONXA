@@ -650,6 +650,19 @@ Execute's panel being unavailable.
 - **Per-run isolation.** Each run's view(s) live in their own non-persistent Electron partition
   (`conxa-run-<runId>`, no `persist:` prefix — in-memory, gone when the run ends) — nothing about
   one run's cookies or storage can leak into a sibling's.
+- **Tab-addressable panel (2026-09-20).** A group pack opens one interactive login per missing app,
+  all under the same `runId`, so a run routinely holds several views. The panel therefore renders a
+  Chrome-style header (`BrowserPanel.tsx`): a chip per tab with ×, `+`, back/forward/reload, an
+  editable URL field, ⋮ / expand / close; a run selector row appears only when more than one run is
+  live. Login tabs are labelled with the pack's app name — `label` rides on the `new_view` /
+  `new_tab` control ops (both now also return `tabId`); any other tab shows its live page title,
+  then hostname. Teardown is **tab-scoped for logins, run-scoped for run end**: the control channel
+  gained `close_view { runId, tabId }` (→ `browser_panel.js::closeTab`, which promotes a neighbour
+  and falls through to `runEnd` when the last tab goes), and `host_browser.js::release({ runId,
+  tabId })` posts it when given a `tabId`, `run_end` otherwise. Before this, a finished login posted
+  `run_end` and destroyed every sibling login's view. A login tab closed by hand never fires the CDP
+  `disconnected` event (the connection is Execute's whole process), so
+  `_waitForInteractiveAuth`'s 1.5 s poll also resolves when the login page is closed.
 - **Stage 2 (also shipped 2026-09-17): login and hand-over/review in the panel.**
   `browser.js::_openInteractiveAuthWindow` gets the identical host branch as a skill run's own
   context — a login window is just another headed context, so `beginInteractiveAuth`'s existing

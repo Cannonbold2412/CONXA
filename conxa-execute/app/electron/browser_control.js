@@ -6,10 +6,12 @@
  * bound to 127.0.0.1 only, random per-process token so nothing else on the machine can
  * drive it blind, JSON in and out.
  *
- * Three ops, each mapping straight onto a browser_panel.js function:
- *   new_view { runId }          -> { markerUrl }   first tab of a run
- *   new_tab  { runId }          -> { markerUrl }   a tab_open step's later tab
- *   run_end  { runId }          -> { ok: true }    destroy the run's views + partition
+ * Four ops, each mapping straight onto a browser_panel.js function:
+ *   new_view   { runId, label? }  -> { markerUrl, tabId }   first tab of a run
+ *   new_tab    { runId, label? }  -> { markerUrl, tabId }   a tab_open step's later tab
+ *   close_view { runId, tabId }   -> { ok: true }           destroy ONE view (a finished login)
+ *   run_end    { runId }          -> { ok: true }           destroy the run's views + partition
+ * `label` names the tab in the panel's strip (a login tab carries its app name).
  */
 const http = require("http");
 const crypto = require("crypto");
@@ -56,12 +58,16 @@ function start() {
   });
 }
 
-async function _dispatch({ op, runId }) {
+async function _dispatch({ op, runId, tabId, label }) {
   if (!runId) throw new Error("missing runId");
   switch (op) {
-    case "new_view": return { markerUrl: panel.newView(runId) };
-    case "new_tab":  return { markerUrl: panel.newTab(runId) };
-    case "run_end":  await panel.runEnd(runId); return { ok: true };
+    case "new_view":   return panel.newView(runId, { label });
+    case "new_tab":    return panel.newTab(runId, { label });
+    case "close_view":
+      if (!tabId) throw new Error("missing tabId");
+      await panel.closeTab(runId, tabId);
+      return { ok: true };
+    case "run_end":    await panel.runEnd(runId); return { ok: true };
     default: throw new Error(`unknown op: ${op}`);
   }
 }

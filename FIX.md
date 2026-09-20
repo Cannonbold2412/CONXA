@@ -2,6 +2,12 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The built-in browser in Conxa Execute now works like a real browser, one sign-in at a time — 2026-09-20
+When a task needed you to sign in to two apps, both sign-in pages opened but you could only ever see one, and finishing one quietly shut the other — like two people sharing a phone booth where the first to leave locks the door on the second. The browser now has a proper tab bar with a close button on every tab, a back button, a reload button and an address bar, and each sign-in tab is named after its app. Closing or finishing one sign-in leaves the others open, so you can go through them one after another and then watch the task run.
+
+## You can now drag the built-in browser wider or narrower in Conxa Execute — 2026-09-20
+The browser that slides in beside the chat used to be stuck at a fixed size, like a window nailed to the wall. Now there is a thin handle on its left edge: drag it left or right to give the browser or the chat more room. Conxa remembers your chosen width the next time you open the app.
+
 ## Found out why Build Studio kept running an old engine, and made the failure visible — 2026-09-20
 Build Studio was checking for a new engine every time it opened, downloading it, and then quietly throwing it away because the safety check on the file didn't match what the cloud said it should be — like a delivery being refused at the door every single day, with nobody told. The fingerprint we publish for the engine is typed in by hand in one place and generated automatically in another, and the two had drifted apart. Build Studio now shows the problem in a banner instead of hiding it, so this can't go unnoticed again, and we are shipping a fresh engine release to clear it.
 

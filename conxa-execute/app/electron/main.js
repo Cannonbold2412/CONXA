@@ -278,6 +278,26 @@ ipcMain.handle("panel:select-tab", (_e, payload) => {
   return { ok: true };
 });
 
+ipcMain.handle("panel:close-tab", async (_e, payload) => {
+  const { runId, tabId } = payload || {};
+  if (!runId || !tabId) return { ok: false };
+  await browserPanel.closeTab(runId, tabId);
+  return { ok: true };
+});
+
+ipcMain.handle("panel:navigate", (_e, payload) => {
+  const { runId, tabId, action, url } = payload || {};
+  if (!runId || !tabId) return { ok: false };
+  return { ok: browserPanel.navigate(runId, tabId, { action, url }) };
+});
+
+ipcMain.handle("panel:new-tab", (_e, payload) => {
+  const { runId } = payload || {};
+  if (!runId) return { ok: false };
+  browserPanel.newTab(runId);
+  return { ok: true };
+});
+
 const SYSTEM_PROMPT = `You are CONXA. You run recorded Conxa skills on this machine, but only when the user asks you to.
 
 Rules:

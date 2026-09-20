@@ -29,7 +29,17 @@ export type Identity = { user_id: string; name?: string; email?: string };
 
 export type PanelRect = { x: number; y: number; width: number; height: number };
 
-export type PanelTab = { id: string; active: boolean };
+export type PanelTab = {
+  id: string;
+  active: boolean;
+  label: string;
+  url: string;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  loading: boolean;
+};
+
+export type PanelNavAction = "back" | "forward" | "reload" | "stop" | "load";
 
 export type ExecuteContext = {
   workspace_id: string;
@@ -76,6 +86,9 @@ export type Bridge = {
   panel: {
     setBounds: (p: { runId: string; tabId: string; rect: PanelRect }) => Promise<{ ok: boolean }>;
     selectTab: (p: { runId: string; tabId: string; rect?: PanelRect }) => Promise<{ ok: boolean }>;
+    closeTab: (p: { runId: string; tabId: string }) => Promise<{ ok: boolean }>;
+    navigate: (p: { runId: string; tabId: string; action: PanelNavAction; url?: string }) => Promise<{ ok: boolean }>;
+    newTab: (p: { runId: string }) => Promise<{ ok: boolean }>;
     onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[] }) => void) => () => void;
   };
   windowControls: {

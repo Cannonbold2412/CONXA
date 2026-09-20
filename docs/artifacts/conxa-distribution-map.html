@@ -1,0 +1,736 @@
+<title>Conxa Distribution Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --ground: #F2F4F6;
+    --surface: #FFFFFF;
+    --surface-sunk: #E9EDF1;
+    --ink: #151A21;
+    --ink-soft: #4E5967;
+    --ink-faint: #7C8794;
+    --rule: #D6DCE3;
+    --rule-soft: #E4E9EE;
+    --accent: #0B6E6E;
+    --accent-soft: #D9EDEB;
+    --live: #1A6B37;
+    --live-soft: #DDEEE2;
+    --staged: #9A5410;
+    --staged-soft: #F6E8D6;
+    --stop: #A8261F;
+    --stop-soft: #F6DEDC;
+    --shadow: 0 1px 2px rgba(21, 26, 33, .05), 0 8px 24px -18px rgba(21, 26, 33, .35);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #101418;
+      --surface: #171C22;
+      --surface-sunk: #1E242B;
+      --ink: #E9EDF1;
+      --ink-soft: #A5B0BC;
+      --ink-faint: #76818D;
+      --rule: #2C343D;
+      --rule-soft: #232A32;
+      --accent: #56BFB6;
+      --accent-soft: #14312F;
+      --live: #74C48D;
+      --live-soft: #142C1C;
+      --staged: #DDA45C;
+      --staged-soft: #312614;
+      --stop: #E08B84;
+      --stop-soft: #331C1A;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -18px rgba(0, 0, 0, .9);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #101418;
+    --surface: #171C22;
+    --surface-sunk: #1E242B;
+    --ink: #E9EDF1;
+    --ink-soft: #A5B0BC;
+    --ink-faint: #76818D;
+    --rule: #2C343D;
+    --rule-soft: #232A32;
+    --accent: #56BFB6;
+    --accent-soft: #14312F;
+    --live: #74C48D;
+    --live-soft: #142C1C;
+    --staged: #DDA45C;
+    --staged-soft: #312614;
+    --stop: #E08B84;
+    --stop-soft: #331C1A;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -18px rgba(0, 0, 0, .9);
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 0 96px;
+  }
+
+  /* ---- type roles ---- */
+  h1, h2, h3, .eyebrow, .label, th, .chip, .btn {
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+  }
+  code, .mono, .ver, td.mono {
+    font-family: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  }
+  h1 {
+    font-size: clamp(2.1rem, 6.5vw, 3.1rem);
+    font-weight: 700;
+    letter-spacing: -.025em;
+    line-height: 1.05;
+    margin: 0 0 .5rem;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: clamp(1.3rem, 3.6vw, 1.6rem);
+    font-weight: 600;
+    letter-spacing: -.015em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1.02rem;
+    font-weight: 600;
+    letter-spacing: -.005em;
+    margin: 0 0 .35rem;
+  }
+  p { margin: 0 0 1rem; }
+  p:last-child { margin-bottom: 0; }
+  .lede {
+    font-size: 1.16rem;
+    color: var(--ink-soft);
+    max-width: 62ch;
+  }
+  .eyebrow {
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  a { color: var(--accent); }
+  code {
+    font-size: .855em;
+    background: var(--surface-sunk);
+    border-radius: 3px;
+    padding: .08em .34em;
+    color: var(--ink);
+    word-break: break-word;
+  }
+  strong { font-weight: 600; }
+
+  /* ---- masthead ---- */
+  header.mast {
+    padding-block: 56px 40px;
+    border-bottom: 2px solid var(--ink);
+  }
+  .mast-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    margin-top: 20px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .74rem;
+    color: var(--ink-faint);
+    letter-spacing: .02em;
+  }
+  .mast-meta span::before { content: "▸ "; color: var(--accent); }
+
+  /* ---- sections ---- */
+  section { padding-block: 44px; border-bottom: 1px solid var(--rule); }
+  section:last-of-type { border-bottom: 0; }
+  .sec-head { margin-bottom: 22px; }
+  .sec-head .eyebrow { display: block; margin-bottom: 6px; }
+  .body-col { max-width: 68ch; }
+
+  /* ---- three-owner board ---- */
+  .board {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin: 24px 0 8px;
+  }
+  @media (max-width: 680px) { .board { grid-template-columns: 1fr; } }
+  .col {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--accent);
+    border-radius: 2px;
+    padding: 16px 16px 18px;
+    box-shadow: var(--shadow);
+  }
+  .col .who {
+    font-family: Archivo, sans-serif;
+    font-weight: 600;
+    font-size: .93rem;
+    margin-bottom: 2px;
+  }
+  .col .role {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .68rem;
+    text-transform: uppercase;
+    letter-spacing: .09em;
+    color: var(--ink-faint);
+    margin-bottom: 12px;
+  }
+  .col ul { margin: 0; padding-left: 1.05em; }
+  .col li { font-size: .92rem; color: var(--ink-soft); margin-bottom: .4rem; line-height: 1.5; }
+  .col li:last-child { margin-bottom: 0; }
+  .flowline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .72rem;
+    color: var(--ink-faint);
+    margin-top: 14px;
+    letter-spacing: .02em;
+  }
+  .flowline .bar { flex: 1; height: 1px; background: var(--rule); }
+
+  /* ---- artifact cards ---- */
+  .artifacts { display: grid; gap: 12px; margin-top: 22px; }
+  .art {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px 18px;
+    align-items: start;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    padding: 14px 16px;
+  }
+  .art .name { font-family: "IBM Plex Mono", monospace; font-weight: 500; font-size: .9rem; }
+  .art .desc { grid-column: 1 / -1; font-size: .94rem; color: var(--ink-soft); }
+  .chip {
+    font-size: .64rem;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .chip.c-studio { background: var(--accent-soft); color: var(--accent); }
+  .chip.c-cloud { background: var(--staged-soft); color: var(--staged); }
+  .chip.c-user { background: var(--live-soft); color: var(--live); }
+
+  /* ---- numbered sequence ---- */
+  ol.steps { list-style: none; margin: 22px 0 0; padding: 0; counter-reset: s; }
+  ol.steps > li {
+    counter-increment: s;
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 16px;
+    padding-bottom: 20px;
+    position: relative;
+  }
+  ol.steps > li::before {
+    content: counter(s, decimal-leading-zero);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .8rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    width: 34px; height: 34px;
+    display: grid; place-items: center;
+    z-index: 1;
+  }
+  ol.steps > li:not(:last-child)::after {
+    content: "";
+    position: absolute;
+    left: 17px; top: 34px; bottom: 0;
+    width: 1px;
+    background: var(--rule);
+  }
+  ol.steps p { font-size: .96rem; color: var(--ink-soft); margin: 0; }
+  ol.steps p + p { margin-top: .5rem; }
+
+  /* ---- tables ---- */
+  .tablewrap { overflow-x: auto; margin: 22px 0 0; border: 1px solid var(--rule); border-radius: 2px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: .9rem; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--rule-soft); vertical-align: top; }
+  th {
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    background: var(--surface-sunk);
+    border-bottom: 1px solid var(--rule);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td { color: var(--ink-soft); }
+  td:first-child { color: var(--ink); }
+  td.mono { font-size: .82rem; font-variant-numeric: tabular-nums; }
+
+  /* ---- gate list ---- */
+  .gates { display: grid; gap: 0; margin-top: 20px; border-top: 1px solid var(--rule); }
+  .gate {
+    display: grid;
+    grid-template-columns: 26px 1fr;
+    gap: 14px;
+    padding: 14px 2px 14px 0;
+    border-top: 1px solid var(--rule-soft);
+  }
+  .gate:first-child { border-top: 0; }
+  .gate .g-no {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .72rem;
+    color: var(--accent);
+    padding-top: .18rem;
+  }
+  .gate p { font-size: .93rem; margin: 0; color: var(--ink-soft); }
+  .gate b { color: var(--ink); font-weight: 600; }
+
+  /* ---- callout ---- */
+  .note {
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    border-radius: 2px;
+    padding: 16px 18px;
+    margin-top: 22px;
+  }
+  .note .label {
+    display: block;
+    font-size: .66rem;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--staged);
+    margin-bottom: 6px;
+  }
+  .note p { font-size: .95rem; color: var(--ink-soft); }
+  .note.key .label { color: var(--accent); }
+
+  /* ---- ledger (state diagram) ---- */
+  .ledger { display: grid; gap: 0; margin-top: 22px; border: 1px solid var(--rule); background: var(--surface); border-radius: 2px; }
+  .lrow { display: grid; grid-template-columns: 116px 1fr; gap: 16px; padding: 14px 16px; border-bottom: 1px solid var(--rule-soft); }
+  .lrow:last-child { border-bottom: 0; }
+  @media (max-width: 560px) { .lrow { grid-template-columns: 1fr; gap: 6px; } }
+  .state {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .74rem;
+    font-weight: 500;
+    letter-spacing: .02em;
+    padding: 3px 9px;
+    border-radius: 2px;
+    justify-self: start;
+    height: fit-content;
+  }
+  .s-ready { background: var(--staged-soft); color: var(--staged); }
+  .s-live { background: var(--live-soft); color: var(--live); }
+  .s-back { background: var(--surface-sunk); color: var(--ink-faint); }
+  .s-stop { background: var(--stop-soft); color: var(--stop); }
+  .lrow p { font-size: .93rem; margin: 0; color: var(--ink-soft); }
+
+  /* ---- footer ---- */
+  footer {
+    padding-block: 36px 0;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: .74rem;
+    color: var(--ink-faint);
+    line-height: 1.7;
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">Distribution &amp; update architecture</p>
+    <h1>Conxa Distribution Map</h1>
+    <p class="lede">Five separate things ship to five separate places on five separate clocks. This is what each one is, who pushes it, and exactly how a new version reaches a customer's laptop — in plain language.</p>
+    <div class="mast-meta">
+      <span>Recording &amp; compiling: local</span>
+      <span>Execution: local</span>
+      <span>Cloud: coordination only</span>
+    </div>
+  </header>
+
+  <!-- ============ 1 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">The shape of it</span>
+      <h2>Three owners, one direction of travel</h2>
+    </div>
+    <div class="body-col">
+      <p>Nothing in Conxa runs "in the cloud" the way people usually mean. A SaaS company records and compiles workflows on its own Windows machine. The cloud stores the result and hands it out. The customer's own laptop runs it. Work only ever flows left to right.</p>
+    </div>
+
+    <div class="board">
+      <div class="col">
+        <div class="who">The SaaS company</div>
+        <div class="role">Build Studio · Windows</div>
+        <ul>
+          <li>Records a browser workflow</li>
+          <li>Compiles it into a skill — all locally</li>
+          <li>Publishes it upward</li>
+          <li>Optionally builds the customer installer</li>
+        </ul>
+      </div>
+      <div class="col">
+        <div class="who">Conxa Cloud</div>
+        <div class="role">Render + Vercel</div>
+        <ul>
+          <li>Stores published skills</li>
+          <li>Decides what is live (Release)</li>
+          <li>Serves one signed update manifest</li>
+          <li>Collects usage telemetry, bills</li>
+        </ul>
+      </div>
+      <div class="col">
+        <div class="who">The end customer</div>
+        <div class="role">Runtime · their machine</div>
+        <ul>
+          <li>Runs one installer, once</li>
+          <li>Skills execute in their own browser</li>
+          <li>Updates arrive silently</li>
+          <li>Never logs into Conxa</li>
+        </ul>
+      </div>
+    </div>
+    <div class="flowline"><span>publish</span><span class="bar"></span><span>release</span><span class="bar"></span><span>sync</span></div>
+
+    <div class="note key">
+      <span class="label">Why this matters</span>
+      <p>Because execution never touches Conxa's servers, an outage on Conxa's side cannot stop a customer's automation from running. The worst a cloud outage does is delay an update. Everything on disk keeps working from its last-known-good copy.</p>
+    </div>
+  </section>
+
+  <!-- ============ 2 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Inventory</span>
+      <h2>The five shippable artifacts</h2>
+    </div>
+    <div class="body-col">
+      <p>People assume "the product" is one download. It is five, and they update independently on purpose — so a two-line fix to a skill does not require anyone to reinstall an 85&nbsp;MB program.</p>
+    </div>
+
+    <div class="artifacts">
+      <div class="art">
+        <div class="name">acme.com-Agent-Setup.exe</div>
+        <span class="chip c-studio">built in Studio</span>
+        <p class="desc">The company-branded installer the end customer double-clicks. Named after the company's own domain. Built once; almost never rebuilt.</p>
+      </div>
+      <div class="art">
+        <div class="name">conxa-runtime.exe &nbsp;<span style="color:var(--ink-faint)">(host layer)</span></div>
+        <span class="chip c-cloud">cloud-updated</span>
+        <p class="desc">The heavy engine: Node, Playwright, all the libraries. Roughly 85&nbsp;MB. Changes a few times a year. This is the file every AI agent app is pointed at.</p>
+      </div>
+      <div class="art">
+        <div class="name">conxa-app &nbsp;<span style="color:var(--ink-faint)">(app layer)</span></div>
+        <span class="chip c-cloud">cloud-updated</span>
+        <p class="desc">The actual logic — step executor, element resolver, recovery, sync. About 60&nbsp;KB zipped. Changes every release. This is where virtually all improvement ships.</p>
+      </div>
+      <div class="art">
+        <div class="name">skill packs</div>
+        <span class="chip c-cloud">cloud-updated</span>
+        <p class="desc">A handful of small data files per workflow. One skill can be updated without touching any other skill.</p>
+      </div>
+      <div class="art">
+        <div class="name">Conxa Execute &amp; Build Studio</div>
+        <span class="chip c-user">desktop apps</span>
+        <p class="desc">Two ordinary Electron desktop apps with ordinary self-updaters. Studio is for the company that builds skills; Execute is a chat app for whoever runs them.</p>
+      </div>
+    </div>
+
+    <div class="note">
+      <span class="label">The split that does the work</span>
+      <p>Splitting the runtime into a big, rarely-changing engine and a tiny, frequently-changing logic layer is the single most important decision in this whole design. It means shipping a fix is a 60&nbsp;KB download that lands the same second the app opens — not an 85&nbsp;MB re-download and not a reinstall.</p>
+    </div>
+  </section>
+
+  <!-- ============ 3 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">The surprise</span>
+      <h2>The installer contains almost nothing</h2>
+    </div>
+    <div class="body-col">
+      <p>You would expect a company's installer to carry that company's skills inside it. It deliberately doesn't. The installer ships the engine, the logic layer, and <em>one small text file</em> — <code>pack.json</code> — which holds the company's identity, the address to phone home to, and two tokens: one to download skills, one to report usage.</p>
+      <p>Zero skill files are inside the <code>.exe</code>. The runtime downloads all of them on its very first run, using exactly the same code path it will use for every update afterward.</p>
+      <p>That is a deliberate trade. It means there is only ever <em>one</em> way skills land on disk, so the "first install" case can't silently drift out of sync with the "routine update" case. It also means an installer built months ago still delivers today's skills — because it was never carrying yesterday's.</p>
+    </div>
+
+    <div class="note">
+      <span class="label">The guard rail</span>
+      <p>The build refuses to produce an installer whose <code>pack.json</code> has no sync token — i.e. one whose skills were never published. You cannot accidentally ship a customer an installer that phones home to nowhere.</p>
+    </div>
+  </section>
+
+  <!-- ============ 4 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Install day</span>
+      <h2>What happens in the ninety seconds after the double-click</h2>
+    </div>
+    <div class="body-col">
+      <p>This is a genuine sequence — each step depends on the one before it — so it is worth reading in order. The whole thing is a per-user install: no administrator password, no system-wide changes.</p>
+    </div>
+
+    <ol class="steps">
+      <li>
+        <div>
+          <h3>Files land in the user's home folder</h3>
+          <p>The engine, the logic layer, and <code>pack.json</code> are written under <code>~/.conxa</code>. Nothing goes into Program Files, nothing needs elevation.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>A private browser is downloaded</h3>
+          <p>The installer asks the engine to fetch its own copy of Chromium. Conxa never drives the customer's personal Chrome, so their own browsing, profiles and extensions are untouched.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>First sync pulls every skill down</h3>
+          <p>The engine calls the cloud with its sync token and receives the company's skills. Each file is checksum-verified and written atomically — write to a temporary name, verify, then rename into place. If anything fails halfway, the previous state is restored rather than left half-written.</p>
+          <p>Each skill lands in its own versioned folder with a pointer marking which version is active. That pointer is the mechanism that makes instant rollback possible later.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Every AI agent app on the machine is registered</h3>
+          <p>The engine detects which agent apps are installed — Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Codex, Zed, Copilot CLI and about a dozen more — and adds itself to each one's configuration. Comments and formatting in those files are preserved, writes are atomic, and it will never overwrite an entry that isn't its own.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>Each agent app is told what the skills do</h3>
+          <p>A short instructions file is dropped into each registered app so the AI actually knows these tools exist and reaches for them. This happens after the sync, not before — there's nothing to describe until the skills have arrived.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h3>The installer reports honestly</h3>
+          <p>A status line is written and shown in the final dialog — for example "15 ok, 3 not installed, 1 left alone, 1 FAILED". This exists because the installer's exit code only fails if <em>every</em> app failed; without the status line, 14 successes and 1 failure would have shown a cheerful "Setup complete!".</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ============ 5 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">The core mechanism</span>
+      <h2>Four update clocks, running at different speeds</h2>
+    </div>
+    <div class="body-col">
+      <p>This table is the heart of the whole design. Each artifact has its own trigger and its own moment of taking effect — and the differences are not accidents, they follow from physics.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr><th>Artifact</th><th>Size</th><th>Checked when</th><th>Takes effect</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>App layer <span style="color:var(--ink-faint)">(logic)</span></td>
+            <td class="mono">~60 KB</td>
+            <td>Every launch, <em>before</em> the logic loads</td>
+            <td><strong style="color:var(--live)">The same launch</strong> — instantly</td>
+          </tr>
+          <tr>
+            <td>Host engine</td>
+            <td class="mono">~85 MB</td>
+            <td>Every launch, just after startup</td>
+            <td><strong style="color:var(--staged)">Next time the app is reopened</strong></td>
+          </tr>
+          <tr>
+            <td>Skills</td>
+            <td class="mono">a few KB</td>
+            <td>Every launch (skipped if synced &lt;5 min ago)</td>
+            <td><strong style="color:var(--live)">Immediately after download</strong></td>
+          </tr>
+          <tr>
+            <td>Conxa Execute / Build Studio</td>
+            <td class="mono">~100 MB</td>
+            <td>On app start</td>
+            <td><strong style="color:var(--staged)">On quit &amp; relaunch</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="body-col" style="margin-top:26px">
+      <h3>Why the logic layer lands instantly but the engine can't</h3>
+      <p>The logic-layer check runs <em>before</em> the program has loaded any of its own code. Nothing is in memory yet, so swapping the files on disk and then loading them is completely safe — the update is live for the very launch that downloaded it. The download budget is deliberately tight (a three-second check, two short retries for the zip), because every millisecond here is a millisecond the user waits. Any failure at all — no network, bad signature, corrupt zip — is quietly swallowed and the program carries on with whatever it already had.</p>
+      <p>The engine is a different problem: a running program cannot overwrite its own executable file while it is running. So the new engine is downloaded into a <em>separate</em> folder, never touching the file the current process is executing from. Before it is made active, the new engine is launched once in self-check mode and must exit cleanly. A matching checksum only proves the download wasn't corrupted; it doesn't prove the program actually starts. If the self-check fails, the update is abandoned and the old, known-good engine stays active.</p>
+      <p>Because the new engine only takes over on the next cold start, the runtime politely refuses to begin new automation runs while an engine update is staged — telling the user to quit and reopen their AI app to finish. Scheduled background runs are exempt, and the block releases itself after three launches that never picked the update up, so nobody can get permanently stuck.</p>
+    </div>
+  </section>
+
+  <!-- ============ 6 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">The gatekeeper</span>
+      <h2>One signed file decides everything</h2>
+    </div>
+    <div class="body-col">
+      <p>There is no collection of update endpoints. There is a single manifest the runtime fetches fresh on every launch, listing the current version of every component plus its checksum. It is cryptographically signed by the cloud, and the runtime verifies that signature against a public key baked into the engine at build time.</p>
+      <p>A manifest that fails verification isn't partially trusted or retried — it's discarded exactly as if the network had been down. That is the whole defence against someone impersonating the update server: a forged manifest simply doesn't exist as far as the runtime is concerned.</p>
+      <p>Once verified, five independent gates decide whether any given component actually updates:</p>
+    </div>
+
+    <div class="gates">
+      <div class="gate"><span class="g-no">01</span><p><b>Is it actually newer?</b> A plain version comparison. Same or older is ignored.</p></div>
+      <div class="gate"><span class="g-no">02</span><p><b>Will the engine still run it?</b> Each logic-layer version declares the oldest engine it can run on. If the machine's engine is older than that, the update is refused outright — rather than installed, crashed, and rolled back on every single launch.</p></div>
+      <div class="gate"><span class="g-no">03</span><p><b>Is this machine in the rollout?</b> A share of machines can be let in first. The answer is computed from the machine's own install ID, so it's stable — a machine that's "out" at 20% stays out until the percentage rises, rather than flip-flopping on every check.</p></div>
+      <div class="gate"><span class="g-no">04</span><p><b>Is there a hard floor?</b> A minimum version can be set that overrides the staged rollout entirely. This is the emergency lever for a security fix: everybody, now.</p></div>
+      <div class="gate"><span class="g-no">05</span><p><b>Does the downloaded file match?</b> Checksums are verified on every artifact, every time, before anything is activated.</p></div>
+    </div>
+
+    <div class="note">
+      <span class="label">Operational note</span>
+      <p>If the cloud is misconfigured and loses its signing key, it would serve an <em>unsigned</em> manifest — which every runtime would then correctly discard, silently halting updates everywhere with no error visible on either side. So the cloud now refuses to start at all without its signing key. A loud failure at deploy time beats a silent one in the field.</p>
+    </div>
+  </section>
+
+  <!-- ============ 7 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">The human gate</span>
+      <h2>Publishing is not deploying</h2>
+    </div>
+    <div class="body-col">
+      <p>When a company publishes a skill from the Build Studio, nothing reaches a single customer. Publishing writes a permanent, immutable snapshot of that version and marks it <em>ready</em>. That's it. The live pointer doesn't move, the manifest doesn't change, and the sync endpoint still hands out the previous version.</p>
+      <p>A separate, deliberate action by a Conxa administrator — Release — is what makes it live. A version can sit ready for five minutes or five weeks; there is no timer and no auto-promotion.</p>
+    </div>
+
+    <div class="ledger">
+      <div class="lrow"><span class="state s-ready">ready</span><p>Published and permanently stored. Reviewable, diffable, testable. Invisible to every customer.</p></div>
+      <div class="lrow"><span class="state s-live">published</span><p>Released. The live pointer has moved; the next machine to sync gets it.</p></div>
+      <div class="lrow"><span class="state s-back">superseded</span><p>A newer version took the pointer. The old snapshot is untouched and still on disk — which is what makes rollback instant.</p></div>
+      <div class="lrow"><span class="state s-stop">failed release</span><p>Something broke mid-release. The live pointer never moved, so customers saw nothing. The version stays ready and the release can simply be retried — no republish needed.</p></div>
+    </div>
+
+    <div class="body-col" style="margin-top:24px">
+      <h3>Why the ordering is the safety property</h3>
+      <p>Inside a release, every step that could plausibly fail — writing files, updating records — happens <em>before</em> the live pointer moves. Moving the pointer is the very last act. So a half-finished release is always invisible rather than half-visible. There is no such thing as a customer receiving a partially-released skill.</p>
+      <p>Rollback is the same machinery with the steps that create things removed: it takes an older snapshot that already exists and moves the pointer back. Nothing is rebuilt, nothing is re-uploaded, nothing is recompiled. And it is always scoped to one workflow — there is no way to roll back a whole group by accident.</p>
+    </div>
+  </section>
+
+  <!-- ============ 8 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Failure design</span>
+      <h2>Every update can be undone without a download</h2>
+    </div>
+    <div class="body-col">
+      <p>The engine, the logic layer, and each individual skill all use the same on-disk trick. Each version lives in its own folder, and a pointer marks which one is active. Updating means writing a new folder and then moving the pointer. Rolling back means moving the pointer back — no network involved.</p>
+      <p>Old versions are kept (current plus two previous by default), and the version that was live immediately before an update is explicitly protected from cleanup. That is what guarantees a rollback in the same session never needs to re-download anything.</p>
+      <p>If the logic layer fails to load on startup, the program rolls the pointer back itself and retries, automatically, before the user sees anything. If a skill's files fail their checksum mid-sync, the previous folder is restored and the failure is recorded so the dashboard can show that deployment as failed — an entry that clears itself the moment that skill next updates successfully.</p>
+    </div>
+
+    <div class="note key">
+      <span class="label">The pattern, stated once</span>
+      <p>Download somewhere new. Verify it. Prove it runs. <em>Then</em> move the pointer. Keep the old copy. Every update path in Conxa is a variation on those five moves.</p>
+    </div>
+  </section>
+
+  <!-- ============ 9 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Where Execute sits</span>
+      <h2>Conxa Execute is a client, not a channel</h2>
+    </div>
+    <div class="body-col">
+      <p>Conxa Execute is a desktop chat app for people who want to run skills without wiring up Claude Desktop. It is important to be precise about what it is <em>not</em>: it is not a distribution channel, it does not carry skills, and it does not carry a runtime.</p>
+      <p>It looks for the engine the company installer already put on disk, at exactly the same location every AI agent app was pointed at, and talks to it the same way Claude Desktop does. If the installer was never run, Execute has nothing to drive. It is one more front door onto the same installation, alongside Claude Desktop, Cursor, and the background scheduler.</p>
+      <p>Execute's one genuine difference is cosmetic and local: when it drives a visible run, the browser appears in a panel inside Execute's own window instead of opening a separate Chromium window. Every other agent app takes the ordinary path — not because the runtime checks who's calling, but because only Execute passes the flag that switches it on.</p>
+      <p>Execute updates itself like any normal desktop app: it checks a feed on the cloud at startup, downloads in the background, and installs on quit. That is a completely separate clock from everything above.</p>
+    </div>
+
+    <div class="note">
+      <span class="label">Common confusion</span>
+      <p>"Installing Conxa Execute" and "installing the company's agent" are two different acts. The company installer delivers the engine and the skills; Execute is an optional nicer way to talk to them. Uninstalling Execute leaves every skill and every other agent app registration intact.</p>
+    </div>
+  </section>
+
+  <!-- ============ 10 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Identity &amp; trust</span>
+      <h2>Who is allowed to ask for what</h2>
+    </div>
+    <div class="body-col">
+      <p>Three different credentials cover three different jobs, and they're deliberately separate so a leak of one doesn't cascade.</p>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Credential</th><th>Held by</th><th>Can do</th><th>If leaked</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Company login</td><td>The SaaS company's staff</td>
+            <td>Record, compile, publish, build installers</td>
+            <td>Normal account compromise — but it still cannot release anything live</td>
+          </tr>
+          <tr>
+            <td>Sync token</td><td>Baked into each installer</td>
+            <td>Download that one company's skills, read-only</td>
+            <td>Read access to skill definitions; rotatable by re-minting</td>
+          </tr>
+          <tr>
+            <td>Tracking token</td><td>Baked into each installer</td>
+            <td>Report usage events for that company</td>
+            <td>Noise in telemetry; no read access to anything</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="body-col" style="margin-top:24px">
+      <p>The end customer never has a Conxa account and never logs in. They only ever log into their <em>own</em> target platform — and when they do, that browser session is encrypted on disk with a key unique to their machine, held in their operating system's keychain.</p>
+      <p>That last detail is the point of the whole separation: someone who obtains a company's installer gets the sync token, and with it the ability to read that company's skill definitions. They still cannot decrypt a single customer's saved login session, because the key for that never left the customer's machine and was never in the installer to begin with.</p>
+    </div>
+  </section>
+
+  <!-- ============ 11 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Two parallel worlds</span>
+      <h2>Dev and production never touch</h2>
+    </div>
+    <div class="body-col">
+      <p>A single switch selects one of two completely isolated stacks that can coexist on one machine. Different install folders, different data folders, different cloud addresses, different update channels — and a different registration key in every agent app's config, so a development install and a production install appear as two distinct entries that can never be mistaken for one another.</p>
+      <p>The defaults deliberately point in opposite directions on either side. A shipped customer install with nothing configured defaults to <strong>production</strong> — because the dangerous mistake on a customer machine is quietly using the development stack. A developer's workstation with nothing configured defaults to <strong>development</strong> — because the dangerous mistake there is accidentally touching production.</p>
+      <p>The cloud address a skill pack phones home to is frozen into it at publish time, not decided at runtime. An installer built against development can therefore never reach production, no matter how it is later configured.</p>
+    </div>
+  </section>
+
+  <!-- ============ 12 ============ -->
+  <section>
+    <div class="sec-head">
+      <span class="eyebrow">Summary</span>
+      <h2>The whole thing in six sentences</h2>
+    </div>
+    <div class="body-col">
+      <p>A company records and compiles workflows entirely on its own machine and publishes them to Conxa Cloud, where they sit as immutable, reviewed snapshots until an administrator releases them. Customers install one thin, company-branded program that contains the engine, the logic layer, and a single configuration file — no skills at all.</p>
+      <p>On first run that program downloads the skills itself, registers itself with every AI agent app on the machine, and tells each one what the skills do. From then on, every launch fetches one cryptographically signed manifest and independently decides whether to update the logic layer, the engine, and each individual skill — each on its own clock and each behind its own compatibility, rollout and checksum gates.</p>
+      <p>The tiny logic layer updates before it loads and is therefore live the same second; the heavy engine stages itself in a fresh folder, proves it boots, and takes over on the next launch. Everything can be undone by moving a pointer back, and nothing runs on Conxa's servers at any point.</p>
+    </div>
+  </section>
+
+  <footer>
+    Sources: docs/TRD.md §4 (runtime), §5.4–5.9 (tokens, publish, sync, self-update), §11 (update architecture), §16 (deployment) · installer_builder.py · setup.nsi.tmpl · updates_routes.py
+  </footer>
+
+</div>

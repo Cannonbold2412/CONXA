@@ -314,6 +314,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       `${names.join(", ")} in the window${plural ? "" : "s"} that just opened, then run the skill again.`;
     const pendings = await Promise.all(missingRequired.map((r) =>
       beginInteractiveAuth(`${workspace_id}__${r.app.id}`, r.app.login_url, {
+        label: r.app.name,
         storedState: r.stored,
         protectedUrl: r.app.success_url || r.app.login_url,
         authManager,
@@ -567,7 +568,7 @@ async function _validateSession(stored, protectedUrl) {
 async function _buildExecContext(stored, headless = false, opts = {}) {
   if (!headless && opts.runId && hostBrowser.endpoint()) {
     try {
-      return await hostBrowser.acquire({ runId: opts.runId, storageState: stored });
+      return await hostBrowser.acquire({ runId: opts.runId, storageState: stored, label: opts.label });
     } catch (e) {
       if (opts.logFn) opts.logFn("warn", "host_browser_fallback", { run_id: opts.runId, error: e.message });
     }
@@ -585,7 +586,7 @@ async function _buildExecContext(stored, headless = false, opts = {}) {
 // a chromium.launch()/goto() failure surfaces to the caller immediately instead of
 // being swallowed by a detached background task (see beginInteractiveAuth).
 async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
-  const { storedState, runId, logFn } = opts;
+  const { storedState, runId, logFn, label } = opts;
   // EXEC-41 Stage 2: a login window is just another headed browser, so it gets the exact
   // same host branch as a skill run's own context (see _buildExecContext) — Execute's panel,
   // not a separate OS window, when Execute is the client. One real, accepted trade-off: the
@@ -598,11 +599,11 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
   // connect failure here falling straight through to the launch path below.
   if (runId && hostBrowser.endpoint()) {
     try {
-      const { browser: loginBrowser, context: loginCtx, page: loginPage } =
-        await hostBrowser.acquire({ runId, storageState: storedState });
+      const { browser: loginBrowser, context: loginCtx, page: loginPage, hostTabId } =
+        await hostBrowser.acquire({ runId, storageState: storedState, label });
       await _maskAutomation(loginPage);
       await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-      return { loginBrowser, loginCtx, loginPage, hostOwned: true, hostRunId: runId };
+      return { loginBrowser, loginCtx, loginPage, hostOwned: true, hostRunId: runId, hostTabId };
     } catch (e) {
       if (logFn) logFn("warn", "host_browser_fallback", { run_id: runId, phase: "login", error: e.message });
     }
@@ -633,7 +634,7 @@ const LOGIN_WAIT_MS = 10 * 60 * 1000;
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   const { protectedUrl, waitMs = LOGIN_WAIT_MS } = opts;
-  const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId } = opened;
+  const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId, hostTabId } = opened;
   let lastUrl = "";
   let lastState = null;
   let _autoCloseScheduled = false;
@@ -645,7 +646,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   // until Execute's own idle cleanup reclaims it.
   const _closeLoginBrowser = async () => {
     try { if (loginBrowser.isConnected()) await loginBrowser.close(); } catch (_) {}
-    if (hostOwned && hostRunId) await hostBrowser.release({ runId: hostRunId });
+    if (hostOwned && hostRunId) await hostBrowser.release({ runId: hostRunId, tabId: hostTabId });
   };
 
   // Capture storageState when the user lands on an authenticated page. Scoped to
@@ -710,7 +711,14 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   // "a login window is already open".
   let timedOut = false;
   await new Promise(resolve => {
-    const interval = setInterval(() => { _captureIfAuthenticated().catch(() => {}); }, 1500);
+    const interval = setInterval(() => {
+      _captureIfAuthenticated().catch(() => {});
+      // A host-owned login shares Execute's CDP connection, so closing just this tab never fires
+      // "disconnected" — notice it here instead of waiting out the 10-minute deadline.
+      // ponytail: gives up if the user closes the ORIGINAL page after signing in via an OAuth
+      // popup; beginInteractiveAuth's one-shot reopen covers that.
+      if (hostOwned && loginPage.isClosed()) { clearInterval(interval); clearTimeout(deadline); resolve(); }
+    }, 1500);
     const deadline = setTimeout(() => { timedOut = true; clearInterval(interval); resolve(); }, waitMs);
     loginBrowser.on("disconnected", () => { clearInterval(interval); clearTimeout(deadline); resolve(); });
   });
@@ -747,7 +755,7 @@ const _pendingAuth = new Map();
 // with no session captured (user closed it before signing in) reopens once, then gives
 // up — the next call to this function starts a fresh attempt.
 async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
-  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId } = opts;
+  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId, label } = opts;
 
   const existing = _pendingAuth.get(workspace_id);
   if (existing && existing.status === "pending") {
@@ -758,7 +766,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 
   let opened;
   try {
-    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn });
+    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label });
   } catch (e) {
     // authPending stays true so the existing "gate on auth" handling in callers still
     // fires (they only branch on this flag) — only the message differs, carrying the
@@ -789,7 +797,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
         if (e.loginTimedOut) break;
         if (attempt === 0) {
           try {
-            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn });
+            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label });
           } catch (e2) {
             lastErr = e2;
             break;
@@ -848,6 +856,7 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   if (!targetUrl) throw new Error(`No target_url configured for workspace ${workspace_id}. Cannot authenticate.`);
 
   return beginInteractiveAuth(workspace_id, targetUrl, {
+    label: pack.name || workspace_id,
     storedState: lastKnownState,
     protectedUrl,
     authManager,

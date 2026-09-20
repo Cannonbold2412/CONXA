@@ -46,6 +46,9 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   panel: {
     setBounds: (payload) => ipcRenderer.invoke("panel:bounds", payload),
     selectTab: (payload) => ipcRenderer.invoke("panel:select-tab", payload),
+    closeTab: (payload) => ipcRenderer.invoke("panel:close-tab", payload),
+    navigate: (payload) => ipcRenderer.invoke("panel:navigate", payload),
+    newTab: (payload) => ipcRenderer.invoke("panel:new-tab", payload),
     onTabsChanged: (cb) => {
       const listener = (_e, payload) => cb(payload);
       ipcRenderer.on("panel:tabs", listener);

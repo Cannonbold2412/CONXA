@@ -35,17 +35,43 @@ function _markerUrl(runId, tabId) {
   return `about:blank?conxa_run=${encodeURIComponent(runId)}&conxa_tab=${encodeURIComponent(tabId)}`;
 }
 
+// The marker URL is an internal handle the runtime uses to find a view, not an address —
+// it must never reach the URL field or a tab label.
+function _isMarker(url) {
+  return !url || url.startsWith("about:blank");
+}
+
+function _hostOf(url) {
+  try { return new URL(url).hostname; } catch (_) { return ""; }
+}
+
+function _describeTab(run, t) {
+  const wc = t.view.webContents;
+  const url = wc.isDestroyed() ? "" : wc.getURL();
+  const title = wc.isDestroyed() ? "" : wc.getTitle();
+  const shown = _isMarker(url) ? "" : url;
+  return {
+    id: t.id,
+    active: t.id === run.activeTabId,
+    label: t.label || title || _hostOf(shown) || "New tab",
+    url: shown,
+    canGoBack: !wc.isDestroyed() && wc.navigationHistory.canGoBack(),
+    canGoForward: !wc.isDestroyed() && wc.navigationHistory.canGoForward(),
+    loading: !wc.isDestroyed() && wc.isLoading(),
+  };
+}
+
 function _emitTabsChanged(runId) {
   const run = _runs.get(runId);
   if (!run || !_onTabsChanged) return;
-  _onTabsChanged(runId, run.tabs.map((t) => ({ id: t.id, active: t.id === run.activeTabId })));
+  _onTabsChanged(runId, run.tabs.map((t) => _describeTab(run, t)));
 }
 
 // Create a view, wire its popup handler, and register it as a tab on `run`. The new tab
 // becomes the active one and the renderer is told — this is the only place that happens, so a
 // window.open() popup (an OAuth "Sign in with Google" leg) is shown exactly like a tab the
 // runtime asked for, instead of sitting at 0x0 unannounced.
-function _createTab(run, runId) {
+function _createTab(run, runId, label) {
   const tabId = crypto.randomBytes(4).toString("hex");
   const view = new WebContentsView({
     webPreferences: { partition: run.partition, sandbox: true },
@@ -59,9 +85,13 @@ function _createTab(run, runId) {
     if (url && url !== "about:blank") newView.webContents.loadURL(url).catch(() => {});
     return { action: "deny" }; // denied at the OS level; we already created our own view for it
   });
+  // Keep the renderer's tab strip (title, URL, back/forward, spinner) in step with the page.
+  for (const ev of ["page-title-updated", "did-navigate", "did-navigate-in-page", "did-start-loading", "did-stop-loading"]) {
+    view.webContents.on(ev, () => _emitTabsChanged(runId));
+  }
   view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until the renderer reports a rect
   view.webContents.loadURL(_markerUrl(runId, tabId)).catch(() => {});
-  run.tabs.push({ id: tabId, view, markerUrl: _markerUrl(runId, tabId) });
+  run.tabs.push({ id: tabId, view, markerUrl: _markerUrl(runId, tabId), label: label || null });
   if (_win) _win.contentView.addChildView(view);
   run.activeTabId = tabId;
   _emitTabsChanged(runId);
@@ -70,23 +100,72 @@ function _createTab(run, runId) {
 
 // Control-channel op: "new_view" — first tab of a run. Returns the marker URL the
 // runtime waits for (host_browser.js::_findPageByMarker).
-function newView(runId) {
+function newView(runId, { label } = {}) {
   let run = _runs.get(runId);
   if (!run) {
     run = { partition: _partitionFor(runId), tabs: [], activeTabId: null };
     _runs.set(runId, run);
   }
-  const tabId = _createTab(run, runId);
-  return run.tabs.find((t) => t.id === tabId).markerUrl;
+  const tabId = _createTab(run, runId, label);
+  return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
 }
 
 // Control-channel op: "new_tab" — a tab_open step's second (or later) tab in a run
 // that already has a panel open.
-function newTab(runId) {
+function newTab(runId, { label } = {}) {
   const run = _runs.get(runId);
   if (!run) throw new Error(`browser_panel: no run ${runId} to add a tab to`);
-  const tabId = _createTab(run, runId);
-  return run.tabs.find((t) => t.id === tabId).markerUrl;
+  const tabId = _createTab(run, runId, label);
+  return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
+}
+
+// Close ONE view. A login finishing (or the user hitting ×) must not take its sibling
+// logins down with it — that was the bug run_end's run-wide teardown caused. The last tab
+// out falls through to runEnd so destroy + partition wipe + empty emit stay in one place.
+async function closeTab(runId, tabId) {
+  const run = _runs.get(runId);
+  if (!run) return;
+  const idx = run.tabs.findIndex((t) => t.id === tabId);
+  if (idx === -1) return;
+  if (run.tabs.length === 1) return runEnd(runId);
+  const [gone] = run.tabs.splice(idx, 1);
+  try { if (_win) _win.contentView.removeChildView(gone.view); } catch (_) {}
+  try { gone.view.webContents.close(); } catch (_) {}
+  if (run.activeTabId === tabId) {
+    // Promote the neighbour; the renderer re-reports bounds for it on the next emit.
+    run.activeTabId = run.tabs[Math.min(idx, run.tabs.length - 1)].id;
+  }
+  _emitTabsChanged(runId);
+}
+
+// Address-bar behaviour for a typed string: a bare host gets https://, anything with a
+// scheme is left alone. No search fallback — this is an automation browser.
+function _normalizeUrl(raw) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return v;
+  return `https://${v}`;
+}
+
+function navigate(runId, tabId, { action, url } = {}) {
+  const run = _runs.get(runId);
+  const t = run && run.tabs.find((x) => x.id === tabId);
+  if (!t) return false;
+  const wc = t.view.webContents;
+  switch (action) {
+    case "back": wc.navigationHistory.goBack(); break;
+    case "forward": wc.navigationHistory.goForward(); break;
+    case "reload": wc.reload(); break;
+    case "stop": wc.stop(); break;
+    case "load": {
+      const target = _normalizeUrl(url);
+      if (!target) return false;
+      wc.loadURL(target).catch(() => {});
+      break;
+    }
+    default: return false;
+  }
+  return true;
 }
 
 // Control-channel op: "run_end" — destroy every view for this run and wipe its
@@ -123,4 +202,4 @@ function setActiveBounds(runId, tabId, rect) {
   run.activeTabId = tabId;
 }
 
-module.exports = { init, newView, newTab, runEnd, setActiveBounds };
+module.exports = { init, newView, newTab, closeTab, navigate, runEnd, setActiveBounds };
