@@ -116,9 +116,9 @@ function createWindow() {
   mainWindow.on("closed", () => settleConfirms(false));
 
   browserPanel.init(mainWindow, {
-    onTabsChanged: (runId, tabs) => {
+    onTabsChanged: (runId, tabs, meta) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("panel:tabs", { runId, tabs });
+        mainWindow.webContents.send("panel:tabs", { runId, tabs, ...meta });
       }
     },
   });
@@ -306,7 +306,8 @@ Rules:
 - Fill declared skill inputs from the user. Do not invent secret values.
 - If a run fails, read the failure text. Recovery (self-heal) happens inside the skill runtime; you may retry execute_skill with resume_from / step_overrides only when the failure text asks for them.
 - Do not run a shell, edit files, or browse the web yourself. There is no bash or write tool.
-- execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.`;
+- execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.
+- If execute_skill (or a result) says an application needs sign-in, call authenticate for that skill: it opens the sign-in tab(s) in the browser panel and waits while the user signs in. If it returns status "waiting", tell the user to finish signing in and call authenticate again; when it returns "signed_in", call execute_skill again. Never ask the user for their password.`;
 
 // A chat run never starts on the model's say-so alone: the renderer shows a confirm card and
 // the tool call waits here for the answer. The form path has its own explicit Run button, so

@@ -61,17 +61,19 @@ function _describeTab(run, t) {
   };
 }
 
-function _emitTabsChanged(runId) {
+// `meta.focus` tells the renderer to select this run even if another one already holds the
+// selection — set only for a login, which is blocking a run on the user.
+function _emitTabsChanged(runId, meta) {
   const run = _runs.get(runId);
   if (!run || !_onTabsChanged) return;
-  _onTabsChanged(runId, run.tabs.map((t) => _describeTab(run, t)));
+  _onTabsChanged(runId, run.tabs.map((t) => _describeTab(run, t)), meta);
 }
 
 // Create a view, wire its popup handler, and register it as a tab on `run`. The new tab
 // becomes the active one and the renderer is told — this is the only place that happens, so a
 // window.open() popup (an OAuth "Sign in with Google" leg) is shown exactly like a tab the
 // runtime asked for, instead of sitting at 0x0 unannounced.
-function _createTab(run, runId, label) {
+function _createTab(run, runId, label, meta) {
   const tabId = crypto.randomBytes(4).toString("hex");
   const view = new WebContentsView({
     webPreferences: { partition: run.partition, sandbox: true },
@@ -94,19 +96,19 @@ function _createTab(run, runId, label) {
   run.tabs.push({ id: tabId, view, markerUrl: _markerUrl(runId, tabId), label: label || null });
   if (_win) _win.contentView.addChildView(view);
   run.activeTabId = tabId;
-  _emitTabsChanged(runId);
+  _emitTabsChanged(runId, meta);
   return tabId;
 }
 
 // Control-channel op: "new_view" — first tab of a run. Returns the marker URL the
 // runtime waits for (host_browser.js::_findPageByMarker).
-function newView(runId, { label } = {}) {
+function newView(runId, { label, focus } = {}) {
   let run = _runs.get(runId);
   if (!run) {
     run = { partition: _partitionFor(runId), tabs: [], activeTabId: null };
     _runs.set(runId, run);
   }
-  const tabId = _createTab(run, runId, label);
+  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined);
   return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
 }
 

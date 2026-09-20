@@ -78,6 +78,12 @@ function _effectiveRecoveryTier(manifest) {
 // 240s client timeout. Build Studio's fast successful runs never approach this.
 const EXECUTION_DEADLINE_MS = Number(process.env.CONXA_EXECUTION_DEADLINE_MS) || 210000;
 
+// How long execute_skill's auth gate waits for the user to finish signing in before it gives up and
+// names the app still unsigned. Default stays under the MCP SDK's 60s request timeout; a client that
+// raises its own timeout (Conxa Execute) raises this via env. Sign-ins needing longer go through the
+// `authenticate` tool, which can block up to 10 minutes and is safe to call repeatedly.
+const AUTH_GATE_WAIT_MS = Number(process.env.CONXA_AUTH_GATE_WAIT_MS) || 45000;
+
 // ─── Parked recovery page (Tier 3/4 cross-call self-healing) ──────────────────
 // State + page-fingerprint helpers live in recovery_park.js; see that file's
 // header for why the failed page is parked instead of torn down.
@@ -127,9 +133,17 @@ if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
   const winInstallerChromium = process.platform === "win32"
     ? path.join(os.homedir(), "AppData", "Local", "Conxa", "chromium")
     : null;
+  // Last resort: Playwright's own default cache (where `npx playwright install` puts it), so a
+  // machine that already has Chromium there doesn't fail with "Executable doesn't exist" just
+  // because ~/.conxa/chromium was never created. Deliberately no auto-download here: clients that
+  // borrow their own browser (Conxa Execute) never need Chromium at all.
+  const playwrightDefault = process.platform === "win32" && process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, "ms-playwright")
+    : null;
   process.env.PLAYWRIGHT_BROWSERS_PATH =
-    (winInstallerChromium && !fs.existsSync(primaryChromium) && fs.existsSync(winInstallerChromium))
-      ? winInstallerChromium
+    fs.existsSync(primaryChromium) ? primaryChromium
+      : (winInstallerChromium && fs.existsSync(winInstallerChromium)) ? winInstallerChromium
+      : (playwrightDefault && fs.existsSync(playwrightDefault)) ? playwrightDefault
       : primaryChromium;
 }
 // Pass both dirs to browser.js
@@ -220,6 +234,9 @@ let uniqueDownloadName;
 let sweepOldRuns;
 let extractZipOnce;
 let getCachedBrowser;
+let getAuthContext;
+let awaitAuthPending;
+let describeAuthWait;
 let releaseCachedBrowser;
 let teardownExecBrowser;
 let captureReAuth;
@@ -243,6 +260,7 @@ try {
   authManager  = require("./auth_manager");
   ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
   ({ getCachedBrowser, releaseCachedBrowser, teardownExecBrowser, captureReAuth, gracefulShutdown,
+     getAuthContext, awaitAuthPending, describeAuthWait,
      _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
   ({ resolveTargetHosts } = require("./target_hosts"));
   ({ createTracker, mapErrorToCode, drainSpill } = require("./tracker"));
@@ -657,6 +675,44 @@ async function _handleTool(name, args, extra) {
   // ── get_execution_status ─────────────────────────────────────────────────────
   if (name === "get_execution_status") {
     return text(JSON.stringify({ active_runs: runRegistry.list() }));
+  }
+
+  // ── authenticate ─────────────────────────────────────────────────────────────
+  // Opens sign-in windows for whatever a skill needs and blocks (bounded) until the user finishes.
+  // Idempotent: a second call while a window is still open just re-waits on that same window.
+  if (name === "authenticate") {
+    const entry = args.skill ? _resolveSkill(String(args.skill), args.workspace_id ? String(args.workspace_id) : null) : null;
+    if (args.skill && !entry) return err(`Skill not found: ${args.skill}. Call list_skills first.`);
+    const workspaceId = entry ? entry.workspace_id : (args.workspace_id ? String(args.workspace_id) : "");
+    if (!workspaceId) return err("Pass skill (preferred) or workspace_id. Call list_skills first.");
+    const waitMs = Math.min(Math.max(Number(args.wait_seconds) || 45, 1), 600) * 1000;
+    const authOpts = {
+      headless: false, logFn: log, authOnly: true,
+      runId: `auth_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+      groupId: entry && entry.manifest && entry.manifest.group_id,
+      requiredAppIds: Array.isArray(args.apps) ? args.apps.map(String)
+        : (entry && Array.isArray(entry.manifest.required_apps) ? entry.manifest.required_apps : undefined),
+    };
+    const signedIn = { status: "signed_in", next: "Everything needed is signed in — call execute_skill." };
+    try {
+      let r = await getAuthContext(workspaceId, authManager, authOpts);
+      if (r.authenticated) return text(JSON.stringify(signedIn));
+      const waited = await awaitAuthPending(r, { timeoutMs: waitMs });
+      if (waited.every((w) => w.outcome === "captured")) {
+        r = await getAuthContext(workspaceId, authManager, authOpts);
+        return text(JSON.stringify(r.authenticated ? signedIn : { status: "waiting", message: r.message }));
+      }
+      const failed = waited.some((w) => w.outcome === "launch_failed");
+      return text(JSON.stringify({
+        status: failed ? "failed" : "waiting",
+        apps: waited.map((w) => ({ app: w.name, status: w.outcome === "captured" ? "signed_in" : w.outcome === "timeout" ? "waiting" : w.outcome === "launch_failed" ? "failed" : "closed" })),
+        message: describeAuthWait(waited),
+        next: failed ? "Fix the problem above; sign-in cannot start until it is resolved."
+          : "Call authenticate again to keep waiting (raise wait_seconds if the user needs longer), or tell the user to finish signing in.",
+      }));
+    } catch (e) {
+      return err(`Authentication failed: ${e.message}`);
+    }
   }
 
   // ── get_runtime_status ───────────────────────────────────────────────────────
@@ -1447,13 +1503,29 @@ async function _handleTool(name, args, extra) {
         _hostRelease = _lock.release;
         _phase("host_lock_acquired");
 
-        const _authResult = await getCachedBrowser(primary.entry.workspace_id, authManager, {
+        const _getBrowser = () => getCachedBrowser(primary.entry.workspace_id, authManager, {
           headless: !watch,
           logFn: log,
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
           requiredAppIds: _requiredAppIdsUnion,
           runId: _runId,
         });
+        let _authResult = await _getBrowser();
+        if (_authResult.authPending) {
+          // Sign-in windows were just opened. Wait for the user to finish instead of returning a
+          // "sign in, then run it again" that makes the caller loop. The wait counts against the
+          // run's deadline (exec.deadlineAt is fixed at start), so cap it to leave >= 60s to run.
+          _phase("auth_gate_wait_start");
+          const _waited = await awaitAuthPending(_authResult, {
+            timeoutMs: Math.min(AUTH_GATE_WAIT_MS, Math.max(0, exec.deadlineAt - Date.now() - 60000)),
+          });
+          _phase("auth_gate_wait_done");
+          if (_waited.every((w) => w.outcome === "captured")) {
+            _authResult = await _getBrowser(); // exactly one re-resolve, now that sessions are stored
+          } else {
+            _authResult = { ..._authResult, message: describeAuthWait(_waited) };
+          }
+        }
         _phase("browser_context_ready");
         if (_authResult.authPending) {
           // No valid session — a login window was just opened for the user. Nothing ran yet,

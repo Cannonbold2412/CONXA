@@ -54,9 +54,17 @@ function fetchJSON(url, opts = {}) {
 // requireOkStatus=false preserves sync.js's lenient behavior (consume body
 // regardless of status); manifest_manager rejects non-200 before consuming.
 function downloadBuffer(url, opts = {}) {
-  const { requireOkStatus = true, timeoutMs = 120000 } = opts;
+  const { requireOkStatus = true, timeoutMs = 120000, maxRedirects = 5 } = opts;
   return new Promise((resolve, reject) => {
     const req = get(url, (res) => {
+      // GitHub release assets always answer 302 -> a signed CDN URL; without following it
+      // every release-hosted artifact fails with "HTTP 302".
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        res.resume();
+        if (maxRedirects <= 0) return reject(new Error("too many redirects"));
+        const next = new URL(res.headers.location, url).href;
+        return downloadBuffer(next, { requireOkStatus, timeoutMs, maxRedirects: maxRedirects - 1 }).then(resolve, reject);
+      }
       if (requireOkStatus && res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
       const chunks = [];
       res.on("data", (c) => chunks.push(c));

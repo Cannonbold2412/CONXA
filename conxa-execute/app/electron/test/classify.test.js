@@ -19,8 +19,9 @@ describe("classifyRunResult", () => {
 });
 
 describe("chat tool lock", () => {
-  it("only allows the three Conxa MCP tools", () => {
-    assert.deepEqual([...CHAT_TOOLS].sort(), ["execute_skill", "get_skill_inputs", "list_skills"]);
+  it("only allows the four Conxa MCP tools", () => {
+    // authenticate opens sign-in windows for the user to type into; it never takes credentials.
+    assert.deepEqual([...CHAT_TOOLS].sort(), ["authenticate", "execute_skill", "get_skill_inputs", "list_skills"]);
     assert.equal(CHAT_TOOLS.has("bash"), false);
     assert.equal(CHAT_TOOLS.has("write"), false);
   });

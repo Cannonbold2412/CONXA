@@ -51,8 +51,8 @@ Module._load = realLoad;
 const removed = [];
 const added = [];
 const win = { contentView: { addChildView: (v) => added.push(v), removeChildView: (v) => removed.push(v) } };
-let last = null; // last onTabsChanged emit: { runId, tabs }
-panel.init(win, { onTabsChanged: (runId, tabs) => { last = { runId, tabs }; } });
+let last = null; // last onTabsChanged emit: { runId, tabs, meta }
+panel.init(win, { onTabsChanged: (runId, tabs, meta) => { last = { runId, tabs, meta }; } });
 
 test("newView returns the tabId and carries the label into the tab descriptor", () => {
   const { markerUrl, tabId } = panel.newView("run-a", { label: "GitHub" });
@@ -96,4 +96,11 @@ test("navigate maps each action onto the right webContents call and normalises t
   ]);
   assert.strictEqual(panel.navigate("run-b", tabId, { action: "bogus" }), false);
   assert.strictEqual(panel.navigate("run-b", "nope", { action: "reload" }), false, "unknown tab is a no-op");
+});
+
+test("a login view asks the renderer to take focus; an ordinary run view does not", () => {
+  panel.newView("run-plain", { label: "Run" });
+  assert.strictEqual(last.meta, undefined, "a run must not steal the panel from whatever is on screen");
+  panel.newView("run-login", { label: "GitHub", focus: true });
+  assert.deepStrictEqual(last.meta, { focus: true }, "a login is blocking a run on the user — it comes forward");
 });

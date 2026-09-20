@@ -21,9 +21,11 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import unquote
 
+import httpx
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 
+from conxa_core.config import settings
 from conxa_core.db import db_get, db_set
 from app.api.manifest_signer import load_signing_key, sign_manifest
 
@@ -392,6 +394,44 @@ def runtime_app_manifest() -> dict:
     }
 
 
+def _proxy_app_urls(app: dict) -> dict:
+    """Point the app zip at our own /updates/artifact route. Runtimes already in the field
+    (host-v3.2.1) bake in a downloader that treats GitHub's 302 as an error, so a GitHub
+    release URL can never be self-updated from; a direct 200 from here can. No-op without
+    SKILL_API_BASE_URL (local dev keeps the GitHub URL)."""
+    base = (settings.api_base_url or "").rstrip("/")
+    if not base:
+        return app
+    files = [
+        {**f, "url": f"{base}/api/v1/updates/artifact/{app['version']}/{f['filename']}"}
+        if f.get("filename", "").endswith(".zip") and "github.com/" in f.get("url", "")
+        else f
+        for f in app.get("files", [])
+    ]
+    return {**app, "files": files}
+
+
+_APP_TAG_RE = re.compile(r"^app-v\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$")
+_APP_ZIP_RE = re.compile(r"^conxa-app-app-v\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?\.zip$")
+
+
+@router.get("/updates/artifact/{tag}/{filename}", include_in_schema=False)
+def app_artifact(tag: str, filename: str) -> Response:
+    """Serve an app-layer release zip straight from GitHub with a direct 200. Allow-listed
+    to app zips only (fixed repo, strict tag/filename patterns) so it can't be used as an
+    open proxy; integrity is still the manifest's signed SHA-256, checked by the runtime."""
+    if not _APP_TAG_RE.match(tag) or not _APP_ZIP_RE.match(filename):
+        raise HTTPException(status_code=404, detail="not found")
+    try:
+        r = httpx.get(_release_url(tag, filename), follow_redirects=True, timeout=30)
+    except httpx.HTTPError as e:
+        logger.warning("app artifact fetch failed: %s", e)
+        raise HTTPException(status_code=502, detail="upstream unavailable")
+    if r.status_code != 200:
+        raise HTTPException(status_code=404 if r.status_code == 404 else 502, detail="upstream error")
+    return Response(content=r.content, media_type="application/zip")
+
+
 def _require_admin(authorization: str = Header(default="")) -> None:
     if not _ADMIN_TOKEN:
         raise HTTPException(status_code=503, detail="Admin token not configured")
@@ -448,7 +488,7 @@ def _compose_manifest(channel: str = _STABLE_CHANNEL) -> dict:
         "minimum_versions": db_get(manifest_ns, "minimum_versions") or {},
         "compatibility": db_get(manifest_ns, "compatibility") or {},
         "conxa_runtime": host,
-        "conxa_app": app,
+        "conxa_app": _proxy_app_urls(app),
         "skill_packs": skill_packs,
         "signature": "",
     }
@@ -474,7 +514,11 @@ def unified_manifest(channel: str | None = None) -> dict:
     """
     ch = _normalize_channel(channel)
     cached = db_get(_ns(_MANIFEST_NS, ch), "current")
-    return cached if cached is not None else _compose_manifest(ch)
+    # A manifest composed before _proxy_app_urls existed still carries the GitHub URL —
+    # recompose (and re-sign) once instead of waiting for the next publish.
+    if cached is not None and _proxy_app_urls(cached["conxa_app"]) == cached["conxa_app"]:
+        return cached
+    return _compose_manifest(ch)
 
 
 @router.post("/admin/component-versions/{component}", include_in_schema=False)

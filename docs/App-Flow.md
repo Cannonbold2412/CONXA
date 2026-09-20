@@ -619,10 +619,10 @@ sequenceDiagram
     RT->>RT: load execution.json + recovery.json
     RT->>RT: load storageState from cache/sessions/, validate against protected_url
     alt session missing or expired
-        RT->>Browser: open interactive login window (non-blocking)
-        RT-->>Claude: "A login window is open — sign in, then re-run the skill."
-        Claude-->>User: relays the message
-        Note over Browser,RT: capture + save happens in the background;<br/>next execute_skill call picks up the fresh session
+        RT->>Browser: open interactive login window(s)
+        User->>Browser: signs in
+        Browser-->>RT: session captured + saved
+        Note over RT,Claude: execute_skill waits for sign-in (default 45s) and continues<br/>in the same call. If it isn't done in time the reply says which app<br/>is still unsigned — Claude calls authenticate to keep waiting, then execute_skill
     else session valid
         RT->>Browser: launch Chromium (headed by default)
         loop For each step
@@ -640,9 +640,9 @@ sequenceDiagram
 ```
 
 A step failing mid-execution with a login redirect (session expired) follows the same
-non-blocking pattern: `isAuthFailure()` detects it, a login window opens in the background, and
-`execute_skill` returns immediately telling Claude to resume with `resume_from` once the user has
-signed in — see `docs/Auth-and-Updater.md` §1.3.
+pre-flight-only pattern: `isAuthFailure()` detects it and `execute_skill` fails immediately, telling
+Claude to call it again — that next call runs the pre-flight gate above, which opens the login
+window and waits — then resume with `resume_from`. See `docs/Auth-and-Updater.md` §1.3.
 
 **Dry-run (PROD-3-DRYRUN).** When a skill's last step is a hard-to-undo action (delete a record,
 send a payment), the user can ask to preview it first: `execute_skill(..., dry_run: true)` runs

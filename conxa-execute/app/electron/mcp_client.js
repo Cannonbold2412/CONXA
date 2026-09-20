@@ -27,6 +27,10 @@ async function ensureEngine() {
   const cmd = resolveRuntimeCommand();
   if (!cmd) throw runtimeMissingError();
   const env = { ...process.env };
+  // The runtime's auth gate now waits for the user to finish signing in (its default is sized for
+  // the MCP SDK's 60s request timeout). callTool below raises this client's own timeout, so let
+  // the gate wait longer here — 90s still leaves the run 120s of its 210s execution budget.
+  if (!env.CONXA_AUTH_GATE_WAIT_MS) env.CONXA_AUTH_GATE_WAIT_MS = "90000";
   if (cmd.conxaDir && !env.CONXA_DIR) env.CONXA_DIR = cmd.conxaDir;
   if (cmd.conxaDir && /[\\/]\.conxa-dev$/i.test(cmd.conxaDir) && !env.CONXA_ENV) {
     env.CONXA_ENV = "dev";
@@ -61,9 +65,14 @@ async function stopEngine() {
   }
 }
 
+// Tools that legitimately block on a person (sign-in) or a long run outlive the SDK's 60s default
+// request timeout. execute_skill: the runtime bounds itself at 210s; authenticate: up to 600s.
+const TOOL_TIMEOUT_MS = { execute_skill: 5 * 60 * 1000, authenticate: 11 * 60 * 1000 };
+
 async function callTool(name, args) {
   const client = await ensureEngine();
-  const res = await client.callTool({ name, arguments: args || {} });
+  const timeout = TOOL_TIMEOUT_MS[name];
+  const res = await client.callTool({ name, arguments: args || {} }, undefined, timeout ? { timeout } : undefined);
   return toolText(res);
 }
 

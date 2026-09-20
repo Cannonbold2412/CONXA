@@ -7,7 +7,8 @@
  * drive it blind, JSON in and out.
  *
  * Four ops, each mapping straight onto a browser_panel.js function:
- *   new_view   { runId, label? }  -> { markerUrl, tabId }   first tab of a run
+ *   new_view   { runId, label?, focus? } -> { markerUrl, tabId }   first tab of a run (focus: a login
+ *                                       — bring this run to the foreground even if another is selected)
  *   new_tab    { runId, label? }  -> { markerUrl, tabId }   a tab_open step's later tab
  *   close_view { runId, tabId }   -> { ok: true }           destroy ONE view (a finished login)
  *   run_end    { runId }          -> { ok: true }           destroy the run's views + partition
@@ -58,10 +59,10 @@ function start() {
   });
 }
 
-async function _dispatch({ op, runId, tabId, label }) {
+async function _dispatch({ op, runId, tabId, label, focus }) {
   if (!runId) throw new Error("missing runId");
   switch (op) {
-    case "new_view":   return panel.newView(runId, { label });
+    case "new_view":   return panel.newView(runId, { label, focus });
     case "new_tab":    return panel.newTab(runId, { label });
     case "close_view":
       if (!tabId) throw new Error("missing tabId");

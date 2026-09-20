@@ -111,3 +111,34 @@ def test_bare_hex_digest_env_var_imports_cleanly(monkeypatch):
     finally:
         monkeypatch.delenv("CONXA_APP_BUNDLE_SHA256", raising=False)
         importlib.reload(m)
+
+
+def test_app_zip_url_is_proxied_when_api_base_set(monkeypatch):
+    import app.api.updates_routes as m
+    monkeypatch.setattr(m.settings, "api_base_url", "https://apis.example")
+    app = {"version": "app-v3.2.3", "files": [
+        {"filename": "conxa-app-app-v3.2.3.zip", "url": "https://github.com/o/r/releases/download/app-v3.2.3/conxa-app-app-v3.2.3.zip", "sha256": "x"}]}
+    out = m._proxy_app_urls(app)["files"][0]
+    assert out["url"] == "https://apis.example/api/v1/updates/artifact/app-v3.2.3/conxa-app-app-v3.2.3.zip"
+    assert out["sha256"] == "x"
+    monkeypatch.setattr(m.settings, "api_base_url", "")
+    assert m._proxy_app_urls(app) == app
+
+
+def test_app_artifact_rejects_non_app_files():
+    assert client.get("/api/v1/updates/artifact/host-v3.2.1/conxa-runtime.exe").status_code == 404
+    assert client.get("/api/v1/updates/artifact/app-v3.2.3/..%2fevil.zip").status_code == 404
+
+
+def test_app_artifact_serves_upstream_bytes(monkeypatch):
+    import app.api.updates_routes as m
+
+    class R:
+        status_code = 200
+        content = b"PK-zip"
+
+    seen = {}
+    monkeypatch.setattr(m.httpx, "get", lambda url, **kw: seen.update(url=url) or R())
+    r = client.get("/api/v1/updates/artifact/app-v3.2.3/conxa-app-app-v3.2.3.zip")
+    assert r.status_code == 200 and r.content == b"PK-zip"
+    assert seen["url"].endswith("/releases/download/app-v3.2.3/conxa-app-app-v3.2.3.zip")

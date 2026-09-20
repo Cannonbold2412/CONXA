@@ -2342,6 +2342,8 @@ skipped, unchanged from before.
 
 **Deprecated shims** (kept for runtimes that haven't picked up the manifest-driven self-updater): `GET /api/v1/updates/conxa-runtime-manifest` and `GET /api/v1/updates/conxa-app-manifest` now derive their response from the same `component_versions` KV data instead of process-local globals.
 
+**App zip URL rewrite:** `_compose_manifest` rewrites `conxa_app` zip URLs from `github.com/.../releases/download/...` to `{SKILL_API_BASE_URL}/api/v1/updates/artifact/{tag}/{filename}` before signing (no-op when `SKILL_API_BASE_URL` is unset). The route allow-lists `app-vX.Y.Z` tags and `conxa-app-app-vX.Y.Z.zip` names only. `GET /manifest.json` recomposes once if the cached manifest still holds a GitHub URL.
+
 **KV namespaces:** `component_versions` (keys: `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}`) and `manifest` (keys: `current` — the composed+signed manifest; `skill_pack_index` — a list of `{company}:{skill}` identifiers, maintained because the filesystem-fallback KV store hashes keys and can't recover the original string, so skill entries can't be discovered by scanning `component_versions` directly; `minimum_versions`, `compatibility` — operator-set floors/gates).
 
 ### 5.9 Skill-Pack Delta Sync

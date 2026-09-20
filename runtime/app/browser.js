@@ -239,6 +239,12 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   const required = _filterRequiredApps(group.apps, opts.requiredAppIds);
   const requiredIds = new Set(required.map((a) => a.id));
 
+  // opts.authOnly: the `authenticate` tool only wants to know whether sign-in is complete (opening
+  // login windows for whatever is missing) — never a run context, so every site that would build
+  // one returns { authenticated: true } instead.
+  if (opts.authOnly && (group.apps.length === 0 || (Array.isArray(opts.requiredAppIds) && opts.requiredAppIds.length === 0))) {
+    return { authenticated: true };
+  }
   if (group.apps.length === 0) {
     const { browser, context } = await _buildExecContext(undefined, headless);
     return { browser, context, protectedUrl: "", sessionSource: "group-no-apps" };
@@ -312,6 +318,9 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       `This workflow belongs to the ${group.name} group and requires authentication to ` +
       `${required.length} application${required.length === 1 ? "" : "s"}. Sign in to ` +
       `${names.join(", ")} in the window${plural ? "" : "s"} that just opened, then run the skill again.`;
+    const alreadyOpenMessage =
+      `Sign-in for ${names.join(", ")} is already waiting in ${plural ? "an open window" : "open windows"} ` +
+      `— finish signing in there, then run the skill again.`;
     const pendings = await Promise.all(missingRequired.map((r) =>
       beginInteractiveAuth(`${workspace_id}__${r.app.id}`, r.app.login_url, {
         label: r.app.name,
@@ -330,11 +339,14 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     return {
       authPending: allPending,
       loginUrl: pendings[0] && pendings[0].loginUrl,
-      message: failed ? failed.message : (allPending ? message : pendings.find((p) => !p.authPending)?.message),
+      message: failed ? failed.message
+        : (allPending ? (pendings.every((p) => p.reason === "already_open") ? alreadyOpenMessage : message)
+          : pendings.find((p) => !p.authPending)?.message),
       apps: missingRequired.map((r, i) => ({ id: r.app.id, name: r.app.name, loginUrl: r.app.login_url, ...pendings[i] })),
     };
   }
 
+  if (opts.authOnly) return { authenticated: true };
   const merged = mergeStorageStates(results.filter((r) => r.valid).map((r) => r.stored));
   const { browser, context, page, hostOwned } = await _buildExecContext(merged, headless, opts);
   const protectedUrl = (required[0] && (required[0].success_url || required[0].login_url))
@@ -600,7 +612,7 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
   if (runId && hostBrowser.endpoint()) {
     try {
       const { browser: loginBrowser, context: loginCtx, page: loginPage, hostTabId } =
-        await hostBrowser.acquire({ runId, storageState: storedState, label });
+        await hostBrowser.acquire({ runId, storageState: storedState, label, focus: true });
       await _maskAutomation(loginPage);
       await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       return { loginBrowser, loginCtx, loginPage, hostOwned: true, hostRunId: runId, hostTabId };
@@ -759,8 +771,8 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 
   const existing = _pendingAuth.get(workspace_id);
   if (existing && existing.status === "pending") {
-    return { authPending: true, loginUrl: targetUrl,
-      message: `A login window for ${workspace_id} is already open. Sign in there, then re-run the skill.` };
+    return { authPending: true, loginUrl: targetUrl, key: workspace_id, reason: "already_open",
+      message: `A login window for ${label || workspace_id} is already open. Sign in there.` };
   }
   const reopened = existing && existing.status === "done" && existing.outcome === "abandoned";
 
@@ -771,13 +783,15 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
     // authPending stays true so the existing "gate on auth" handling in callers still
     // fires (they only branch on this flag) — only the message differs, carrying the
     // real failure instead of a claim that a window opened.
-    return { authPending: true, loginUrl: targetUrl, message: e.message, launchFailed: true };
+    return { authPending: true, loginUrl: targetUrl, key: workspace_id, reason: "launch_failed", message: e.message, launchFailed: true };
   }
 
   const handle = { status: "pending", outcome: null };
   _pendingAuth.set(workspace_id, handle);
 
-  (async () => {
+  // Callers (the execute_skill gate, the `authenticate` tool) await this via awaitInteractiveAuth.
+  // The body never rejects — every failure lands in handle.outcome/message below.
+  handle.settled = (async () => {
     let lastErr = null;
     let currentlyOpen = opened;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -813,7 +827,50 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   const message = reopened
     ? `The previous login window for ${workspace_id} was closed before signing in. Opened a new one — sign in there, then re-run the skill.`
     : `Opened a browser window for the user to log in to ${workspace_id}. Sign in there — the window closes on its own once you land on the app.`;
-  return { authPending: true, loginUrl: targetUrl, message };
+  return { authPending: true, loginUrl: targetUrl, key: workspace_id, reason: reopened ? "reopened" : "opened", message };
+}
+
+// Await the outcome of an in-flight interactive login started by beginInteractiveAuth.
+// Resolves to { outcome: "captured" | "abandoned" | "timeout" | "none", message? } and never throws.
+// A "timeout" here only means THIS caller stopped waiting — the login window stays open (its own
+// LOGIN_WAIT_MS deadline is untouched) so the user can still finish and a later call picks it up.
+async function awaitInteractiveAuth(key, { timeoutMs = 180000 } = {}) {
+  const h = _pendingAuth.get(key);
+  if (!h) return { outcome: "none" };
+  if (h.status === "done") return { outcome: h.outcome, message: h.message };
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve({ outcome: "timeout" }), timeoutMs); });
+  const settled = h.settled.then(() => ({ outcome: h.outcome, message: h.message }));
+  try { return await Promise.race([settled, timeout]); } finally { clearTimeout(timer); }
+}
+
+// Wait for every login window an authPending result opened (a group result carries one entry per
+// missing app in `apps`; a single-session result is its own entry). Skips entries that never got a
+// window (launch_failed) — there is nothing to wait for. Resolves to
+// [{ key, id?, name?, outcome, message? }], one per entry, in order.
+async function awaitAuthPending(result, { timeoutMs } = {}) {
+  const entries = Array.isArray(result.apps) ? result.apps : [result];
+  return Promise.all(entries.map(async (e) => ({
+    key: e.key, id: e.id, name: e.name || e.key,
+    ...(e.reason === "launch_failed"
+      ? { outcome: "launch_failed", message: e.message }
+      : await awaitInteractiveAuth(e.key, { timeoutMs })),
+  })));
+}
+
+// One honest sentence for whatever is still unsigned after awaitAuthPending — names the real state
+// (window still open vs closed vs never launched) instead of claiming a window "just opened".
+function describeAuthWait(waited) {
+  const pending = waited.filter((w) => w.outcome !== "captured");
+  if (pending.length === 0) return "";
+  const launch = pending.find((w) => w.outcome === "launch_failed");
+  if (launch) return launch.message;
+  const names = pending.map((w) => w.name).join(", ");
+  const closed = pending.filter((w) => w.outcome === "abandoned" || w.outcome === "none");
+  if (closed.length === pending.length) {
+    return `The sign-in window for ${names} was closed before sign-in finished. Call authenticate (or run the skill again) to get a new one.`;
+  }
+  return `Still waiting for sign-in to ${names} — the window is still open. Finish signing in there, then call authenticate or run the skill again.`;
 }
 
 async function getAuthContext(workspace_id, authManager, opts = {}) {
@@ -827,7 +884,7 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   // _resolveGroup's comment.
   const group = _resolveGroup(workspace_id, opts.groupId);
   if (group && group.apps && group.apps.length > 0) {
-    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds, runId: opts.runId });
+    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds, runId: opts.runId, authOnly: opts.authOnly });
   }
 
   const pack = _loadPack(workspace_id);
@@ -845,6 +902,7 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   const lastKnownState = stored; // best available (possibly expired) session — seeds the login window
   if (stored && await _validateSession(stored, protectedUrl)) {
     _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
+    if (opts.authOnly) return { authenticated: true };
     const { browser, context, page, hostOwned } = await _buildExecContext(stored, headless, opts);
     return {
       browser, context, page, hostOwned, protectedUrl,
@@ -965,6 +1023,10 @@ module.exports = {
   _filterRequiredApps,
   captureReAuth,
   beginInteractiveAuth,
+  awaitInteractiveAuth,
+  awaitAuthPending,
+  describeAuthWait,
+  _pendingAuth,
   gracefulShutdown,
   mergeStorageStates,
   _authMetaPath,

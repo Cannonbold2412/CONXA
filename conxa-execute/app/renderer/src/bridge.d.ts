@@ -89,7 +89,7 @@ export type Bridge = {
     closeTab: (p: { runId: string; tabId: string }) => Promise<{ ok: boolean }>;
     navigate: (p: { runId: string; tabId: string; action: PanelNavAction; url?: string }) => Promise<{ ok: boolean }>;
     newTab: (p: { runId: string }) => Promise<{ ok: boolean }>;
-    onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[] }) => void) => () => void;
+    onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[]; focus?: boolean }) => void) => () => void;
   };
   windowControls: {
     minimize: () => Promise<void>;

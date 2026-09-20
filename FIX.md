@@ -2,6 +2,12 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Signing in to an app no longer sends the assistant in circles — 2026-09-20
+When a task needed you to sign in, the assistant said "sign in, then run it again" the moment the sign-in window opened, without waiting for you — so it kept re-running the task and repeating the same sentence. Now the task waits while you sign in and carries on by itself once you are done. There is also a new "authenticate" step the assistant can use on its own to open the sign-in tabs and wait longer for you. If something really is broken, such as the browser failing to start, you now get that real reason instead of a false "a window just opened".
+
+## App updates now actually reach Conxa Execute — 2026-09-20
+Conxa Execute kept running the old version even after a new one was published, because the update tried to fetch the file from GitHub, which tells the downloader "it's over there" and the downloader gave up instead of going there — like a courier who turns back when told the parcel is at the next door. Now the cloud hands the file over directly, so machines that already have Conxa installed can pick up updates by themselves. The downloader was also taught to follow "it's over there" directions for future versions.
+
 ## The built-in browser in Conxa Execute now works like a real browser, one sign-in at a time — 2026-09-20
 When a task needed you to sign in to two apps, both sign-in pages opened but you could only ever see one, and finishing one quietly shut the other — like two people sharing a phone booth where the first to leave locks the door on the second. The browser now has a proper tab bar with a close button on every tab, a back button, a reload button and an address bar, and each sign-in tab is named after its app. Closing or finishing one sign-in leaves the others open, so you can go through them one after another and then watch the task run.
 

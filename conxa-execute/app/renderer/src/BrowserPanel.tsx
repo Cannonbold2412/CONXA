@@ -78,7 +78,7 @@ export function BrowserPanel() {
   });
 
   useEffect(() => {
-    return window.conxaExecute.panel.onTabsChanged(({ runId, tabs }) => {
+    return window.conxaExecute.panel.onTabsChanged(({ runId, tabs, focus }) => {
       setRuns((prev) => {
         if (tabs.length === 0) return prev.filter((r) => r.runId !== runId);
         const idx = prev.findIndex((r) => r.runId === runId);
@@ -89,8 +89,9 @@ export function BrowserPanel() {
       });
       // A brand-new run takes the foreground — this is the "slides in on execution"
       // moment. A run that already had the strip open (a second run starting while the
-      // first is still going) does not steal focus from whatever the user is looking at.
-      setSelected((cur) => (cur === null ? runId : cur));
+      // first is still going) does not steal focus from whatever the user is looking at —
+      // except a login (`focus`): it is blocking a run on the user, so it always comes forward.
+      setSelected((cur) => (cur === null || focus ? runId : cur));
     });
   }, []);
 

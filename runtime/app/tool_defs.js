@@ -128,6 +128,20 @@ const CORE_TOOL_DEFS = [
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {
+    name: "authenticate",
+    description: "Conxa automation: open sign-in windows for the applications a skill needs and wait for the user to finish. Call this when execute_skill reports that sign-in is needed, or before it to check. Blocks (default 45s, up to 600s via wait_seconds) while the user signs in; if it returns status \"waiting\", call it again to keep waiting — it re-waits on the same open window rather than opening another. status \"signed_in\" means execute_skill will not hit the sign-in gate.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        skill:        { type: "string", description: "The skill about to be run — resolves which workspace and applications need sign-in. Preferred." },
+        workspace_id: { type: "string", description: "Alternative to skill, or to disambiguate it." },
+        apps:         { type: "array", items: { type: "string" }, description: "Restrict to these application ids. Default: every application the skill requires." },
+        wait_seconds: { type: "number", description: "How long to block waiting for sign-in. Default 45, max 600." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "get_runtime_status",
     description: "Conxa automation: return the installed runtime version, Chromium revision, and skill pack versions. Use for diagnostics or to verify the runtime is up to date.",
     inputSchema: { type: "object", properties: {}, required: [] },

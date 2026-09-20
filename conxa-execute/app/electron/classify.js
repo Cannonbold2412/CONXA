@@ -2,7 +2,7 @@
 /** Copied from runtime/app/scheduler_daemon.js so form history matches scheduled runs. */
 
 /** Chat path: Conxa MCP tools only. No bash, write, or OpenCode default tools. */
-const CHAT_TOOLS = new Set(["list_skills", "get_skill_inputs", "execute_skill"]);
+const CHAT_TOOLS = new Set(["list_skills", "get_skill_inputs", "execute_skill", "authenticate"]);
 
 function classifyRunResult(text) {
   const t = String(text || "");

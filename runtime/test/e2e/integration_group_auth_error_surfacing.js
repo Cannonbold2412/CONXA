@@ -102,13 +102,28 @@ async function main() {
   try {
     await send("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1" } });
 
+    const t0 = Date.now();
     const resp = await send("tools/call", { name: "execute_skill", arguments: { skill: "group-skill", workspace_id: workspaceId, watch: false } });
     const text = resp?.result?.content?.[0]?.text || JSON.stringify(resp);
+    // The auth gate waits for sign-in — but never on a window that failed to launch (nobody can
+    // sign in to it), so a genuine launch failure must come back fast, not after the wait budget.
+    check(Date.now() - t0 < 15000, `a launch failure does not sit in the sign-in wait (took ${Date.now() - t0}ms)`);
 
     check(!/window that just opened|window.*opened for the user/i.test(text),
       `the misleading "window opened" message is not shown (got: ${text.slice(0, 200)})`);
     check(/browserType\.launch|Executable doesn't exist|playwright install/i.test(text),
       `the real browser-launch failure is surfaced (got: ${text.slice(0, 200)})`);
+
+    // The dedicated authenticate tool: listed, and reports the same real failure as structured status.
+    const listed = await send("tools/list");
+    check((listed?.result?.tools || []).some((t) => t.name === "authenticate"), "authenticate is listed as an MCP tool");
+    const auth = await send("tools/call", { name: "authenticate", arguments: { skill: "group-skill", workspace_id: workspaceId, wait_seconds: 5 } });
+    const authText = auth?.result?.content?.[0]?.text || JSON.stringify(auth);
+    let authJson = {};
+    try { authJson = JSON.parse(authText); } catch (_) {}
+    check(authJson.status === "failed", `authenticate reports status "failed" for a launch failure (got: ${authText.slice(0, 200)})`);
+    check(/browserType\.launch|Executable doesn't exist|playwright install/i.test(authText),
+      `authenticate surfaces the real browser-launch failure (got: ${authText.slice(0, 200)})`);
   } finally {
     child.kill();
     fs.rmSync(tmpRoot, { recursive: true, force: true });

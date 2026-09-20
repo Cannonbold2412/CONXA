@@ -95,10 +95,10 @@ async function _seedStorageState(context, page, storageState) {
 // already created — callers must use this instead of context.newPage(), which
 // Electron doesn't support) and `hostOwned: true` so teardownExecBrowser() knows to
 // disconnect rather than close.
-async function acquire({ runId, storageState, label }) {
+async function acquire({ runId, storageState, label, focus }) {
   const cdp = endpoint();
   if (!cdp) throw new Error("host_browser: CONXA_HOST_BROWSER_CDP not set");
-  const { markerUrl, tabId } = await _controlPost("new_view", { runId, label });
+  const { markerUrl, tabId } = await _controlPost("new_view", { runId, label, focus });
   const browser = await chromium.connectOverCDP(cdp);
   const context = browser.contexts()[0];
   if (!context) {
