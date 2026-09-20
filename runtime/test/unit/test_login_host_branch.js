@@ -66,3 +66,19 @@ test("without a runId, the login window never attempts the host branch even with
     delete process.env.CONXA_HOST_BROWSER_CDP;
   }
 });
+
+// A host-owned login shares Execute's CDP connection, so "disconnected" never fires when the
+// person just walks away — the wait must end on its own deadline, tear the login down, and
+// say so with a flag beginInteractiveAuth uses to skip its reopen-and-wait-again retry.
+test("an abandoned login times out, releases the login window, and flags the timeout", async () => {
+  const { _waitForInteractiveAuth } = require("../../app/browser");
+  let closed = false;
+  const loginBrowser = { on() {}, isConnected: () => true, close: async () => { closed = true; } };
+  const loginCtx = { on() {}, storageState: async () => { throw new Error("no state"); } };
+  const loginPage = { url: () => "about:blank", isClosed: () => false, on() {} };
+  await assert.rejects(
+    _waitForInteractiveAuth("ws_unit", { loginBrowser, loginCtx, loginPage }, { waitMs: 50 }),
+    (e) => e.loginTimedOut === true && /timed out/.test(e.message),
+  );
+  assert.ok(closed, "the login window must be closed on timeout");
+});

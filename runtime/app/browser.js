@@ -626,10 +626,13 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
   return { loginBrowser, loginCtx, loginPage };
 }
 
+// How long a login window may sit open before it is given up on.
+const LOGIN_WAIT_MS = 10 * 60 * 1000;
+
 // Wait for the user to finish signing in (or close the window) and return the
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
-  const { protectedUrl } = opts;
+  const { protectedUrl, waitMs = LOGIN_WAIT_MS } = opts;
   const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId } = opened;
   let lastUrl = "";
   let lastState = null;
@@ -701,9 +704,15 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   // Also run a periodic re-capture every 1.5 s for apps that write session tokens
   // into localStorage/sessionStorage via client JS after the page has loaded —
   // framenavigated fires before that JS runs, so the one-shot capture misses them.
+  // Bounded: a host-owned login shares a CDP connection with Execute's whole process, so
+  // "disconnected" never fires when the person just walks away from the panel — without a
+  // deadline that login stays pending forever and _pendingAuth turns every later run into
+  // "a login window is already open".
+  let timedOut = false;
   await new Promise(resolve => {
     const interval = setInterval(() => { _captureIfAuthenticated().catch(() => {}); }, 1500);
-    loginBrowser.on("disconnected", () => { clearInterval(interval); resolve(); });
+    const deadline = setTimeout(() => { timedOut = true; clearInterval(interval); resolve(); }, waitMs);
+    loginBrowser.on("disconnected", () => { clearInterval(interval); clearTimeout(deadline); resolve(); });
   });
 
   // Last-resort fallback: try once more in case context is still accessible.
@@ -712,6 +721,13 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   }
 
   await _closeLoginBrowser();
+
+  if (timedOut && !lastState) {
+    throw Object.assign(
+      new Error(`The login window for ${workspace_id} timed out before sign-in finished. Run the skill again to get a new one.`),
+      { loginTimedOut: true },
+    );
+  }
 
   const rejectReason = _rejectReasonForProtectedUrl(lastUrl);
   if (rejectReason) throw new Error(rejectReason);
@@ -768,7 +784,9 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
       } catch (e) {
         lastErr = e;
         // Reopen a fresh window for the retry — the previous one is already closed
-        // (disconnected is what got us here).
+        // (disconnected is what got us here). A timeout is different: nobody is there, so
+        // reopening would just put another unattended window up.
+        if (e.loginTimedOut) break;
         if (attempt === 0) {
           try {
             currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn });
@@ -954,5 +972,6 @@ module.exports = {
   _writeValidationCache,
   _buildExecContext,
   _openInteractiveAuthWindow,
+  _waitForInteractiveAuth,
   AUTH_VALIDATION_TTL_MS,
 };

@@ -306,6 +306,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
 // next cold start, same as before.
 const CONXA_API = process.env.CONXA_API_URL || "https://apis.conxa.in";
 const manifestManager = require("./manifest_manager");
+const { shouldGate, recordLaunch } = require("./update_gate");
 
 async function _checkForUpdates() {
   if (process.env.CONXA_SKIP_SELF_UPDATE === "1") return;
@@ -334,6 +335,30 @@ log("info", "mcp_connected", { version: RUNTIME_VERSION, conxa_dir: CONXA_DIR,
 // ─── 11. Async post-connect tasks ────────────────────────────────────────────
 // execute_skill awaits this promise before running so it always sees fresh data.
 // The promise always resolves (failures caught internally) — never hangs.
+// Host version the `current` junction points at when it is newer than the exe running this
+// process — an update was activated on disk but only a restart of whatever launched us picks
+// it up. Null for local dev builds (0.0.0-* never matches a release) and for a rolled-back
+// `current`. Armed once after startupSync so the answer can't change mid-session.
+let updateGate = { staged: null, gated: false };
+function _stagedHostVersion() {
+  if (IS_LOCAL_DEV_RUNTIME) return null;
+  try {
+    const staged = hostBridge.versionManager().currentVersion(path.join(CONXA_DIR, "conxa-runtime"));
+    return staged && semver.gt(semver.coerce(staged) || "0.0.0", semver.coerce(RUNTIME_VERSION) || "0.0.0") ? staged : null;
+  } catch (_) { return null; }
+}
+function _armUpdateGate() {
+  const staged = _stagedHostVersion();
+  const strikes = recordLaunch(CONXA_DATA_DIR, staged);
+  const gated = shouldGate({
+    running: RUNTIME_VERSION, staged, strikes,
+    skip: process.env.CONXA_SKIP_UPDATE_GATE === "1", isLocalDev: IS_LOCAL_DEV_RUNTIME,
+    gt: (a, b) => semver.gt(semver.coerce(a) || "0.0.0", semver.coerce(b) || "0.0.0"),
+  });
+  updateGate = { staged, gated };
+  if (staged) log("info", gated ? "update_gate_armed" : "update_gate_disarmed", { running: RUNTIME_VERSION, staged, strikes });
+}
+
 const startupSync = (async () => {
   try {
     await Promise.all([
@@ -359,6 +384,7 @@ const startupSync = (async () => {
         .catch(e => { log("warn", "telemetry_spill_drain_failed", { reason: e.message }); }),
     ]);
   } finally {
+    try { _armUpdateGate(); } catch (e) { log("warn", "update_gate_arm_failed", { reason: e.message }); }
     syncState.complete = true;
     skillIndex = skillLoader.loadSkillRegistry(SKILL_PACKS_DIR, CACHE_DIR);
     log("info", "sync_complete", { count: Object.keys(skillIndex).length });
@@ -664,6 +690,7 @@ async function _handleTool(name, args, extra) {
 
     return text(JSON.stringify({
       runtime_version: RUNTIME_VERSION,
+      staged_runtime_version: updateGate.staged,
       chromium_revision: chromiumRevision,
       platform: process.platform,
       install_id: INSTALL_ID,
@@ -749,6 +776,23 @@ async function _handleTool(name, args, extra) {
     // After the first call the promise is already settled — subsequent calls are instant.
     if (!syncState.complete) {
       await startupSync;
+    }
+
+    // A newer host exe is staged but this process is still the old one — refuse new runs so
+    // the user restarts and actually gets it, identically in every MCP client (Execute turns
+    // this same condition into its one-click dialog). Scheduled runs are exempt: their daemon
+    // spawns its own exe, so a chat-host restart wouldn't help and nobody is present to act.
+    if (updateGate.gated) {
+      if (trigger === "scheduled") {
+        log("info", "update_gate_skipped_scheduled", { staged: updateGate.staged });
+      } else {
+        let host = "this app";
+        try { host = server.getClientVersion()?.name || host; } catch (_) {}
+        return err(
+          `Conxa has been updated to ${updateGate.staged}. Quit and reopen ${host} to finish — ` +
+          `skills will run again as soon as it restarts.`
+        );
+      }
     }
 
     // Concurrency cap (RT-3): several runs may be genuinely active at once (separate chats, or
