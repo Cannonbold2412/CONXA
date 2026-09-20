@@ -393,7 +393,7 @@ Defined in `server.js` `_toolDefinitions()`:
 | `get_skill_inputs` | Return input schema for a skill |
 | `get_execution_status` | List every currently-running execution (there may be more than one — see §4.5) |
 | `cancel_execution` | Cancel a running execution; pass `run_id` when more than one is active |
-| `get_runtime_status` | Runtime diagnostics (non-mutating) |
+| `get_runtime_status` | Runtime diagnostics (non-mutating). `staged_runtime_version` is non-null when a host update is activated on disk but this process is still the old exe. Null on local dev builds. While it is set, the runtime also refuses new `execute_skill`/`execute_sequence` calls (`runtime/app/update_gate.js`) with "Quit and reopen <host> to finish" — the same rule in Claude Desktop and every other MCP client; scheduled runs are exempt, and the gate releases itself after 3 launches that never picked up the update (`CONXA_SKIP_UPDATE_GATE=1` disables it). |
 | `create_schedule` | Schedule a skill to run on this machine on a cron schedule (PROD-5, §4.6). Inputs stored encrypted locally. |
 | `list_schedules` | List local schedules with next run + last result (metadata only — input values never returned) |
 | `delete_schedule` | Permanently remove one local schedule |
@@ -635,9 +635,12 @@ Execute's panel being unavailable.
   Electron's CDP target implements neither `Target.createBrowserContext` (so `host_browser.js` uses
   `browser.contexts()[0]`, the one Electron exposes) nor `Target.createTarget` (so every new page —
   a `tab_open` step, a site-opened popup — has to be created by Execute itself, in
-  `browser_panel.js`, not by a Playwright `context.newPage()` call). A site-opened popup needs no
-  special handling beyond that: Execute's `setWindowOpenHandler` creates the sibling view, and
-  Playwright observes it as a normal `context.on("page")` event either way.
+  `browser_panel.js`, not by a Playwright `context.newPage()` call). A site-opened popup takes the
+  same path: Execute's `setWindowOpenHandler` creates the sibling view, and Playwright observes it
+  as a normal `context.on("page")` event. `browser_panel.js::_createTab` is the single place that
+  makes a new tab the run's active tab and tells the renderer (2026-09-20) — before that, a popup
+  or a `tab_open` tab was created at 0x0 and never announced, so an OAuth "Sign in with Google"
+  leg loaded into a view nobody could see.
 - **Teardown: `browser.js::teardownExecBrowser`.** One shared function, replacing what used to be
   four separate `if (watch) { context.close(); browser.close(); }` blocks in `server.js` plus one in
   `recovery_park.js::discardPark` — closing `context`/`browser` on a host-owned run would tear down
@@ -656,7 +659,12 @@ Execute's panel being unavailable.
   (`context.exposeBinding` + `context.addInitScript`, injected straight into the live page's own
   DOM) already worked unmodified against a host-owned context — confirmed by a dedicated spike
   (real injected-button click firing the binding, script re-applying after navigation) before
-  assuming it, not after.
+  assuming it, not after. A host-owned login shares Execute's whole-process CDP connection, so
+  "disconnected" never fires when the person just walks away; `_waitForInteractiveAuth` therefore
+  has a 10-minute deadline (`LOGIN_WAIT_MS`, 2026-09-20) that closes the login view and marks the
+  attempt abandoned with `loginTimedOut` (no reopen-and-wait-again retry) — without it
+  `_pendingAuth` stayed `pending` forever and every later run answered "a login window is already
+  open" until the runtime restarted.
   - **The real bug the design flagged going in, now fixed:** a resumed park's teardown used to
     report the *new* call's `runId` to Execute — wrong, since Execute registered the browser view
     under the ORIGINAL run's id, and every `execute_skill` call (including a resume) generates a
