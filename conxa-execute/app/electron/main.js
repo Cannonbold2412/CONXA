@@ -6,6 +6,7 @@
 
 const { app, BrowserWindow, ipcMain, Menu, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
+const crypto = require("crypto");
 const net = require("net");
 const path = require("path");
 const mcp = require("./mcp_client");
@@ -111,6 +112,8 @@ function createWindow() {
   };
   mainWindow.on("maximize", sendMaximizeState);
   mainWindow.on("unmaximize", sendMaximizeState);
+  // A chat turn parked on a confirm card must not hang forever if the window goes away.
+  mainWindow.on("closed", () => settleConfirms(false));
 
   browserPanel.init(mainWindow, {
     onTabsChanged: (runId, tabs) => {
@@ -275,14 +278,47 @@ ipcMain.handle("panel:select-tab", (_e, payload) => {
   return { ok: true };
 });
 
-const SYSTEM_PROMPT = `You are CONXA. You only run recorded Conxa skills on this machine.
+const SYSTEM_PROMPT = `You are CONXA. You run recorded Conxa skills on this machine, but only when the user asks you to.
 
 Rules:
-- Use list_skills, get_skill_inputs, then execute_skill. Nothing else.
+- If the user is greeting you, chatting, or asking a question, just answer. Do not call any tool.
+- Only when the user asks to run or automate something: use list_skills to find the skill, get_skill_inputs to see what it needs, then execute_skill. Never call execute_skill until the user has said which task they want and you have every required input from them.
 - Fill declared skill inputs from the user. Do not invent secret values.
 - If a run fails, read the failure text. Recovery (self-heal) happens inside the skill runtime; you may retry execute_skill with resume_from / step_overrides only when the failure text asks for them.
 - Do not run a shell, edit files, or browse the web yourself. There is no bash or write tool.
 - execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.`;
+
+// A chat run never starts on the model's say-so alone: the renderer shows a confirm card and
+// the tool call waits here for the answer. The form path has its own explicit Run button, so
+// only chat goes through this.
+const pendingConfirms = new Map(); // confirmId -> resolve(boolean)
+
+function confirmRun(requestId, args) {
+  return new Promise((resolve) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return resolve(false);
+    const id = crypto.randomUUID();
+    pendingConfirms.set(id, resolve);
+    mainWindow.webContents.send("chat:confirm-run", {
+      id,
+      requestId,
+      skill: args && args.skill,
+      inputs: args && args.inputs && typeof args.inputs === "object" ? args.inputs : {},
+    });
+  });
+}
+
+function settleConfirms(approved) {
+  for (const resolve of pendingConfirms.values()) resolve(approved);
+  pendingConfirms.clear();
+}
+
+handle("chat:confirm-run-reply", (_e, payload) => {
+  const resolve = pendingConfirms.get(payload && payload.id);
+  if (!resolve) return { ok: false };
+  pendingConfirms.delete(payload.id);
+  resolve(Boolean(payload.approved));
+  return { ok: true };
+});
 
 handle("chat:send", async (_e, payload) => {
   const full = settings.loadSettings();
@@ -313,6 +349,9 @@ handle("chat:send", async (_e, payload) => {
     chatCompletion: executeClient.makeChatCompletion({ targetWorkspaceId: full.activeWorkspaceId, onDelta }),
     executeTool: async (name, args) => {
       if (name === "execute_skill") {
+        if (!(await confirmRun(requestId, args))) {
+          return "The user declined to run this skill. Do not retry it; ask what they would like instead.";
+        }
         args = { ...args, watch: true };
       }
       const text = await mcp.callTool(name, args);

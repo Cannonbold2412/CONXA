@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ChatMessage, ExecuteContext, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
+import type { ChatMessage, ConfirmRun, ExecuteContext, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
 import { BrowserPanel } from "./BrowserPanel";
@@ -35,6 +35,13 @@ function fieldList(schema: Record<string, unknown>): { name: string; required: b
     required: required.has(name),
     description: String(props[name]?.description || ""),
   }));
+}
+
+// Confirm card shows what is about to run, but never echoes a secret back onto the screen.
+const SECRET_NAME = /pass|secret|token|key|pin\b/i;
+
+function shownInput(name: string, value: unknown) {
+  return SECRET_NAME.test(name) ? "••••••" : String(value ?? "");
 }
 
 function SkillPills({ skills, onPick, limit }: { skills: SkillRow[]; onPick: (s: SkillRow) => void; limit?: number }) {
@@ -76,6 +83,7 @@ export function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [chatLog, setChatLog] = useState<(ChatMessage & { error?: boolean })[]>([]);
   const [streamingMsg, setStreamingMsg] = useState<{ content: string; thinking: string } | null>(null);
+  const [pendingRun, setPendingRun] = useState<ConfirmRun | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -91,6 +99,14 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("conxa-theme") === "light" ? "light" : "dark"),
   );
+
+  useEffect(() => api.onConfirmRun(setPendingRun), [api]);
+
+  function answerRun(approved: boolean) {
+    if (!pendingRun) return;
+    api.confirmRunReply({ id: pendingRun.id, approved });
+    setPendingRun(null);
+  }
 
   useEffect(() => {
     document.documentElement.classList.remove("light", "dark");
@@ -608,6 +624,26 @@ export function App() {
                     <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
                   </div>
                 )
+              )}
+              {pendingRun && (
+                <div className="mx-auto max-w-[720px] rounded-xl border border-line bg-bg-elevated px-4 py-3">
+                  <div className="mb-1 text-[11px] text-fg-dim">Run this skill?</div>
+                  <div className="text-[15px] font-medium">{pendingRun.skill || "Unnamed skill"}</div>
+                  {Object.keys(pendingRun.inputs).length > 0 && (
+                    <dl className="mt-2 space-y-0.5 text-[13px] text-fg-muted">
+                      {Object.entries(pendingRun.inputs).map(([k, v]) => (
+                        <div key={k} className="flex gap-2">
+                          <dt className="shrink-0 text-fg-dim">{k}</dt>
+                          <dd className="min-w-0 break-words">{shownInput(k, v)}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  <div className="mt-3 flex gap-2">
+                    <Button onClick={() => answerRun(true)}>Run</Button>
+                    <Button variant="secondary" onClick={() => answerRun(false)}>Cancel</Button>
+                  </div>
+                </div>
               )}
               {streamingMsg && (
                 <div className="mx-auto max-w-[720px]">

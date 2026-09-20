@@ -27,6 +27,12 @@ contextBridge.exposeInMainWorld("conxaExecute", {
     ipcRenderer.on("chat:delta", listener);
     return () => ipcRenderer.removeListener("chat:delta", listener);
   },
+  onConfirmRun: (cb) => {
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on("chat:confirm-run", listener);
+    return () => ipcRenderer.removeListener("chat:confirm-run", listener);
+  },
+  confirmRunReply: (payload) => ipcRenderer.invoke("chat:confirm-run-reply", payload),
   listSessions: () => ipcRenderer.invoke("sessions:list"),
   createSession: () => ipcRenderer.invoke("sessions:create"),
   loadSession: (payload) => ipcRenderer.invoke("sessions:load", payload),

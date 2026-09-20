@@ -41,7 +41,10 @@ function _emitTabsChanged(runId) {
   _onTabsChanged(runId, run.tabs.map((t) => ({ id: t.id, active: t.id === run.activeTabId })));
 }
 
-// Create a view, wire its popup handler, and register it as a tab on `run`.
+// Create a view, wire its popup handler, and register it as a tab on `run`. The new tab
+// becomes the active one and the renderer is told — this is the only place that happens, so a
+// window.open() popup (an OAuth "Sign in with Google" leg) is shown exactly like a tab the
+// runtime asked for, instead of sitting at 0x0 unannounced.
 function _createTab(run, runId) {
   const tabId = crypto.randomBytes(4).toString("hex");
   const view = new WebContentsView({
@@ -60,6 +63,8 @@ function _createTab(run, runId) {
   view.webContents.loadURL(_markerUrl(runId, tabId)).catch(() => {});
   run.tabs.push({ id: tabId, view, markerUrl: _markerUrl(runId, tabId) });
   if (_win) _win.contentView.addChildView(view);
+  run.activeTabId = tabId;
+  _emitTabsChanged(runId);
   return tabId;
 }
 
@@ -72,8 +77,6 @@ function newView(runId) {
     _runs.set(runId, run);
   }
   const tabId = _createTab(run, runId);
-  run.activeTabId = tabId;
-  _emitTabsChanged(runId);
   return run.tabs.find((t) => t.id === tabId).markerUrl;
 }
 
@@ -83,7 +86,6 @@ function newTab(runId) {
   const run = _runs.get(runId);
   if (!run) throw new Error(`browser_panel: no run ${runId} to add a tab to`);
   const tabId = _createTab(run, runId);
-  _emitTabsChanged(runId);
   return run.tabs.find((t) => t.id === tabId).markerUrl;
 }
 

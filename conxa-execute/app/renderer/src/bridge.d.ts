@@ -19,6 +19,8 @@ export type ChatMessage = { role: string; content: string; thinking?: string };
 
 export type ChatDelta = { requestId: string; type: "text" | "reasoning"; text: string };
 
+export type ConfirmRun = { id: string; requestId?: string; skill?: string; inputs: Record<string, unknown> };
+
 export type SessionSummary = { id: string; title: string; createdAt: string; updatedAt: string };
 
 export type SessionDetail = SessionSummary & { messages: ChatMessage[] };
@@ -59,6 +61,8 @@ export type Bridge = {
   };
   chatSend: (p: { text: string; sessionId: string; requestId?: string }) => Promise<{ ok: boolean; text?: string; message?: string }>;
   onChatDelta: (cb: (p: ChatDelta) => void) => () => void;
+  onConfirmRun: (cb: (p: ConfirmRun) => void) => () => void;
+  confirmRunReply: (p: { id: string; approved: boolean }) => Promise<{ ok: boolean }>;
   listSessions: () => Promise<{ ok: boolean; sessions?: SessionSummary[]; message?: string }>;
   createSession: () => Promise<{ ok: boolean; session?: SessionSummary; message?: string }>;
   loadSession: (p: { id: string }) => Promise<{ ok: boolean; session?: SessionDetail; message?: string }>;
