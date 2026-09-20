@@ -1,0 +1,1 @@
+Introducing Conxa: record a cross-system workflow once, and your AI agent runs it forever — no API, nothing modified in the software, execution local on your own machine. One sentence in, three internal systems done. And when the screens get redesigned, the skill still finds its way.
