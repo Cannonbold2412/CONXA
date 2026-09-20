@@ -55,6 +55,8 @@
       "_note": "Extracted from server.js: parked-recovery state, keyed per skill (RT-3)." },
     { "name": "run_registry.js",      "profile": "default",
       "_note": "Extracted from server.js: multi-run execution registry (RT-3) — replaces the old single activeExecution slot." },
+    { "name": "update_gate.js",       "profile": "default",
+      "_note": "Extracted from server.js: refuses new runs while a newer host exe is staged but this process is still the old one." },
     { "name": "host_lock.js",         "profile": "default",
       "_note": "Per-external-host mutual exclusion (RT-3 follow-up) — serializes only runs that overlap on the same target platform." },
     { "name": "target_hosts.js",      "profile": "default",

@@ -155,6 +155,7 @@ type DepUpdateBanner =
   | { phase: 'idle' }
   | { phase: 'updating'; pct: number | null }
   | { phase: 'done' }
+  | { phase: 'failed'; dep: string; message: string }
 
 export function App() {
   // 'checking' = deps status not yet known, 'needed' = bootstrap required, 'ready' = deps ok
@@ -212,15 +213,27 @@ export function App() {
     const unsub = window.conxa.onEvent((ev) => {
       if (ev.phase !== 'bootstrap') return
       if (!ev.dep) {
-        if (ev.status === 'complete') setDepUpdateBanner({ phase: 'done' })
+        // 'complete' is emitted even when a dep failed, so it must not clear a failure.
+        if (ev.status === 'complete') {
+          setDepUpdateBanner((b) => (b.phase === 'failed' ? b : { phase: 'done' }))
+        }
         return
       }
       if (ev.status === 'downloading') {
         const pct = typeof ev.pct === 'number' ? Math.round(ev.pct as number) : null
-        setDepUpdateBanner({ phase: 'updating', pct })
+        // Deps download concurrently — a sibling still in flight must not paint over
+        // a failure the user hasn't read yet.
+        setDepUpdateBanner((b) => (b.phase === 'failed' ? b : { phase: 'updating', pct }))
       } else if (ev.status === 'error') {
-        // A dep failed — dismiss rather than leaving the banner stuck.
-        setDepUpdateBanner({ phase: 'idle' })
+        // Show it. A dep that fails here (checksum mismatch, blocked download) silently
+        // pins the user to the installed version forever — hiding it is how an app layer
+        // that never updated went unnoticed for weeks. Banner, not a blocking screen:
+        // the rest of the app still works on the old dep.
+        setDepUpdateBanner({
+          phase: 'failed',
+          dep: String(ev.dep),
+          message: String(ev.message ?? 'download failed'),
+        })
       }
     })
     cmd('bootstrap', {}).catch(() => {})
@@ -291,12 +304,31 @@ export function App() {
         <div className="fixed bottom-0 left-0 right-0 z-50 flex items-center gap-3 border-t border-white/8 bg-[#0d0f12]/95 px-4 py-2 backdrop-blur">
           {depUpdateBanner.phase === 'updating' ? (
             <span className="size-2 shrink-0 animate-pulse rounded-full bg-blue-500" />
+          ) : depUpdateBanner.phase === 'failed' ? (
+            <span className="size-2 shrink-0 rounded-full bg-red-500" />
           ) : (
             <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
           )}
-          <span className="flex-1 text-xs text-zinc-400">
-            {depUpdateBanner.phase === 'updating' ? 'Updating dependencies…' : 'Dependencies updated'}
+          <span
+            className={`flex-1 text-xs ${
+              depUpdateBanner.phase === 'failed' ? 'text-red-300' : 'text-zinc-400'
+            }`}
+          >
+            {depUpdateBanner.phase === 'updating'
+              ? 'Updating dependencies…'
+              : depUpdateBanner.phase === 'failed'
+                ? `Couldn't update ${depUpdateBanner.dep} — ${depUpdateBanner.message}. Still running the installed version.`
+                : 'Dependencies updated'}
           </span>
+          {depUpdateBanner.phase === 'failed' && (
+            <button
+              type="button"
+              onClick={() => setDepUpdateBanner({ phase: 'idle' })}
+              className="shrink-0 rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-white/8 hover:text-zinc-200"
+            >
+              Dismiss
+            </button>
+          )}
           {depUpdateBanner.phase === 'updating' && depUpdateBanner.pct != null && (
             <>
               <span className="text-xs tabular-nums text-zinc-500">{depUpdateBanner.pct}%</span>
