@@ -37,76 +37,22 @@ get its own category — it's tracked under **Cloud** (`CLOUD-1`) and **Product 
 
 ## Progress Dashboard
 
-Counts below are computed straight from the section headers in this file (unique item, resolved vs. still-open) — they are not hand-maintained, so they only go stale if an item is marked resolved/reopened without leaving its heading in the format `### ID — Title` / `### ~~ID — Title~~ — Resolved <date>`.
+Counts are of still-open items only. Resolved items live in [`Done.md`](Done.md) — move an item there (cut it from this file) when it is done, and adjust the count here.
 
-| Priority | Remaining | Total | Resolved |
-|---|---|---|---|
-| P0 — Critical / Time-Sensitive | 15 | 37 | 22 |
-| P1 — Blocking / Foundational | 3 | 11 | 8 |
-| P2 — High Value, Do Soon (incl. Discovered Items) | 35 | 55 | 20 |
-| P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 25 | 27 | 2 |
-| P4 — Low Urgency, Opportunistic | 28 | 36 | 8 |
-| **Total** | **106** | **166** | **60** |
+| Priority | Remaining |
+|---|---|
+| P0 — Critical / Time-Sensitive | 15 |
+| P1 — Blocking / Foundational | 3 |
+| P2 — High Value, Do Soon (incl. Discovered Items) | 35 |
+| P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 20 |
+| P4 — Low Urgency, Opportunistic | 28 |
+| **Total** | **101** |
 
 ---
 
-## P0 — Critical / Time-Sensitive (15 remaining / 37 total)
+## P0 — Critical / Time-Sensitive (15 remaining)
 
 **Added 2026-08-09, direct from the founders — supersedes every previously-tracked priority in this file.** The four items below are the reason the rest of this backlog shifted down one tier (old P0 → P1, old P1 → P2, old P2 → P3, old P3 → P4); no other item content changed, only the section labels. See the "Fourth pass" note at the bottom of this file.
-
-### ~~BUILD-29~~ — `workflow_review` has no prompt and isn't registered as a vision task: every compile silently degrades to rules-only — **Resolved 2026-09-12**
-
-Found 2026-09-12 while reviewing the compiler end to end. BUILD-26 merged `workflow_intent` +
-`workflow_semantics` into one multimodal `workflow_review` call, but the merge stopped at the
-caller: `conxa_core/llm/client.py::_openai_messages_for_task` had no branch for the task at all
-(fell through to a promptless default that serialized every step's `image_base64` as raw text),
-and the task was missing from the vision-task set, so it routed to the text model.
-
-**Correction to the original write-up:** there were **two** copies of the vision-task set, not
-three — `conxa_compile/llm/client.py` imports `_is_vision_task` from `conxa_core` rather than
-keeping its own copy.
-
-- **Resolution:** added the `workflow_review` branch to `_openai_messages_for_task` (merged
-  system prompt covering both the intent-graph and second-opinion contracts; per-step
-  `image_url` content blocks, not inlined base64), a `max_tokens` budget, and collapsed the two
-  vision-task sets into one shared `VISION_TASKS` constant in `conxa_core.llm.client`, imported
-  by the router as `_VISION_TASK_NAMES`. Added an image byte-budget trim in
-  `compiler/build.py::_trim_review_images` (drops highest-confidence steps' images first) and
-  excluded images from the response cache key so a differently-trimmed request can't collide
-  with another's cached answer. New test:
-  `conxa-cloud/tests/test_workflow_review_llm_task.py` (9 cases, all failing before the fix).
-  Full compile suite (`test_second_opinion.py`, `test_llm_router_modality.py`, and the rest of
-  `conxa-cloud/tests`) passes unchanged.
-
-### ~~BUILD-30~~ — `handler_hints.virtualized_container` is declared, never populated, never read — **Resolved 2026-09-12**
-
-Found 2026-09-12. The field existed in `conxa_core/models/skill_spec.py:181` and was copied
-through `compiler/date_picker.py` and surfaced in the editor DTO, but no compiler pass ever set
-it and no runtime module ever read it — so a virtualized grid's off-screen row failed
-identically to genuine breakage, and (when an entity binding was present) skipped the recovery
-cascade entirely.
-
-**Correction to the original write-up:** the fix text claimed "the recorder's ancestor chain
-already carries the scrollable ancestor's overflow/height" — it does not.
-`bridge.js::captureAncestors` records only `{tag, id, classes, outer_html}`; detection had to be
-inferred from `outer_html`, not read directly.
-
-- **Resolution:** `compiler/virtualized.py::detect_virtualized_container` (new, sibling of
-  `entity_binding.py`) walks the recorded ancestor chain for a known virtualization-library
-  class marker, an inline overflow+fixed-height scroll style, or (corroborating only, never
-  sufficient alone — `outer_html` is truncated at 2000 chars, undercounting rendered rows) an
-  `aria-rowcount`/`aria-setsize` overcount; wired into `compiler/build.py::_build_step`. At
-  runtime, `resolution.js::maybeScrollForVirtualization` scrolls the container (compiled hint →
-  entity-binding container → dominant scrollable element for a compiled choice/dropdown control
-  only, never for an ordinary miss with no evidence) and re-gathers before either
-  `entity_not_found` or `resolve_miss` becomes terminal — no second retry loop, it re-enters
-  `locators.js::withLocator`'s existing PRIMARY loop, whose deadline is extended once (bounded,
-  env-tunable, `CONXA_VIRTUAL_SCROLL=0` disables it) only when a scroll grounded in real
-  evidence ran and nothing was ever acted on. New tests: 10 runtime unit tests
-  (`test_virtual_scroll.js`) plus 6 Python detection tests
-  (`test_virtualized_container.py`), all passing; the full 658-test runtime suite and full
-  `conxa-cloud` suite pass unchanged. The CI execution gate (`gate_replay.js`) needs a packed
-  host exe and runs in CI, not locally verified in this pass.
 
 ### RECOV-2 — Deliver recovery artifacts to customer machines (phases 4–6 of the recovery redesign)
 
@@ -137,36 +83,6 @@ real before-picture instead of a suppressed sentence.
 Blocked on nothing. Full plan: `~/.claude/plans/create-a-end-to-merry-parrot.md`; design note:
 https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 
-### ~~REC-STALE-1 — Workflow-E fails partway through~~ — RESOLVED 2026-09-01
-Root-caused to six defects, all fixed and regression-tested; Workflow-E now runs all 29 steps to
-`steps_complete` from a clean sandbox, and passes with inputs other than the recorded ones
-(a different birth date, gender, names and city). See FIX.md and docs/TRD.md.
-
-1. `_finalize_payload_sync` built its event dict as an allow-list and never copied
-   `branch_hint` / `date_context` / `choice_context` / `optionality` / `post_condition` out of
-   the bridge payload, so all five were null in every recording ever made — the date-picker and
-   multiple-choice features were dead end-to-end despite being implemented and unit-tested.
-2. `_capture_a11y_async` called Playwright's thread-affine sync API from a worker thread and
-   raised `Cannot switch to a different thread` every time, so no a11y snapshot ever reached
-   disk and `resolves_to_nothing()` could not drop fabricated role+name selectors.
-3. `isInteractiveNode` omitted `gridcell`, so a calendar day click — the gesture that COMMITS a
-   date — was discarded as noise.
-4. `_parseDateFromString` fed `Date.parse` raw aria-label prose (`"…March 15th, 2007"`, which it
-   rejects) and formatted via `toISOString()`, shifting every date back a day on positive-offset
-   timezones.
-5. `findCalendarRoot` stopped at the first class-substring match walking up, so a day cell
-   (`react-datepicker__day` matches `[class*='datepicker']`) was reported as the whole calendar.
-6. Unmatchable selectors: truncated exact-match `text=` on `<select>` option content, a
-   depth-capped relative XPath emitted with an absolute `/` prefix, and `is_brittle_deep_chain`
-   discarding a deep CSS chain's durable tail. Plus `scoreCandidate` charging weight for
-   `inner_text` and `anchor_phrases` it could never earn.
-
-**Still open, found while here:** input bindings are named after the recorded ANSWER, not the
-question — that compile produced inputs named `sports` and `react_select_3_listbox`, and a
-`select_option` mismatch reports `Input "undefined"` instead of the binding name. A dependent
-dropdown's enum is also frozen from the recording (picking a different State still offers the
-recorded State's cities). None of these block a run; all deserve their own item.
-
 ### TEST-11 — Run the full manual testing suite in `docs/testing/` (re-invoke & reconfigure LLM keys first)
 - **Category:** Testing & Cleanup
 - **Description:** Execute every test plan currently living in [`docs/testing/`](docs/testing/) — consolidated since 2026-08-26 into [`01-WORKFLOWS-TO-TEST.md`](docs/testing/01-WORKFLOWS-TO-TEST.md) (pending work, sorted easy→hard; WF-1…WF-12) and [`02-WORKFLOWS-PASSED.md`](docs/testing/02-WORKFLOWS-PASSED.md) (manually-passed workflows + capability dashboard) — end to end, and fix whatever they surface. **Before any testing begins**, the LLM provider keys must be re-invoked (regenerated/refreshed) and re-configured: existing keys may be expired, rotated, or rate-limited, and a compile- or recovery-tier test failing on auth would waste the run and mask real defects. Re-run the router setup per `conxa-cloud/backend/ROUTER_SETUP.md` and verify each configured provider responds before starting the suites.
@@ -190,57 +106,6 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Success criteria:** the recording compiles to ≥50 steps untruncated; R1/R2/R5/R6 pass outright; R2's zero-result probe and R4 fail loudly; R7 produces clean refusals; R8 shows flat memory and run 8 ≈ run 1; every miss filed as its own TODO item with events.jsonl / recovery-log evidence attached; passing shapes promoted into `runtime/test/gate-skill/` after three consecutive clean passes.
 - **Found via:** hard-mode robustness review (2026-08-25).
 
-### ~~RT-3 — Reliable parallel workflow execution at runtime~~ — done 2026-08-22
-Decided model: true parallel execution, per-run browser context, capped at `CONXA_MAX_CONCURRENT_RUNS`
-(default 5) — not a serialized queue, since Claude Desktop abandons a `tools/call` at ~240s and one
-run's own wall-clock budget is already 210s, so a queued run would typically time out before it
-started. New `runtime/app/run_registry.js` replaces server.js's old single `activeExecution` slot
-with per-`runId` tracking; past the cap, `execute_skill`/`execute_sequence` are refused with a
-message naming the runs already in flight and pointing at the new `get_execution_status` tool — it
-never tells the caller to `cancel_execution`, which is what let one chat's agent kill another
-chat's run. `cancel_execution` now takes an optional `run_id`, required once more than one run is
-active. `browser.js`'s per-workspace headless browser cache became a lease (`busy` flag +
-`releaseCachedBrowser`) so two concurrent runs never share one live Playwright context — the actual
-collision that let one run's tab-popup registry and download listener fire for another run's pages
-— which also fixed a standalone bug where the old always-armed 90s idle timer could close a headless
-run's browser out from under it mid-execution. `recovery_park.js`'s single park slot became a `Map`
-keyed `${workspace_id}:${slug}` so one run parking a Tier B failure never discards a sibling run's
-parked recovery window; a park now holds its browser lease for its full TTL rather than the shorter
-idle-cache window. `run.js`/`tabs.js`/the tracker were already per-run (zero module-level mutable
-state) and needed no change. Deliberately left as-is: the retry budget (`retry_budget.js`) still
-keys by `${slug}:${stepIndex}` only, not by run — see its `ponytail:` comment and RT-3-RETRY-BUDGET
-below for why and the bounded worst case. Tests: `test/unit/test_run_registry.js` (admission/cap/
-cancel-routing/park-map isolation) and `test/e2e/integration_parallel_runs.js` (real Chromium: two
-concurrent `runPlan`s + two concurrent `getCachedBrowser` leases never share a context). Docs:
-`docs/TRD.md` §4.5 (new), `CLAUDE.md`/`AGENTS.md`/`README.md` tool-table corrections (also dropped
-the long-stale `refresh_skills` tool, which was never implemented).
-
-### ~~RT-4 — A re-authenticated group app stayed "expired" until the runtime process restarted~~ — done 2026-09-14
-**Category:** Runtime / Execution & Recovery. **Found via:** direct user report — Google Drive
-re-authenticated inside an Enterprise group, testing the workflow again still showed "requires
-authentication to 2 applications," but a Build Studio restart fixed it. Root cause: a group app's
-session lives in two files — encrypted `<key>_state.json` and plaintext `<key>_raw_state.json`
-(the latter written by Build Studio's `_stage_runtime_auth` when re-staging a freshly
-re-authenticated session, or by a save that fell back to plaintext per SG-11) — and
-`browser.js::_loadGroupAppSession` always preferred the encrypted file regardless of which was
-actually newer. The only thing that ever reconciled a fresher raw file into the encrypted one was
-`auth_manager.reencryptPlaintextSessions`, which runs exactly once per process, in `server.js`'s
-`startupSync`; since `conxa_compile/runtime_tool.py` caches and reuses the same runtime process
-across Test Skill clicks, that sweep never re-ran until the process was killed and respawned —
-hence "restart fixes it." Fixed by making session-file resolution recency-based at read time in
-one shared loader (`browser.js::_loadSessionForKey`, replacing `_loadGroupAppSession`'s body and
-the single-session path's duplicated `_hadEncryptedSession` logic in `getAuthContext` — one fix
-point instead of two that could drift): whichever of the encrypted/raw files has the newer mtime
-wins, and a winning raw file is promoted into the encrypted one on the spot (same steps the
-startup sweep already ran) so the cost is paid once, by whichever run first notices the fresher
-file, not deferred to the next restart. `reencryptPlaintextSessions` is unchanged — it remains
-useful at-rest hygiene, just no longer load-bearing for correctness. Same defect existed
-production-side too, on a different trigger (a save falling back to `saveRawSession` after an
-encryption failure) — the shared loader fixes both call sites at once. Tests:
-`runtime/test/unit/test_session_precedence.js` (new — newest-file-wins, promotion, deletion,
-no-regression on encrypted-only/raw-only/neither). Docs: `docs/TRD.md` §5.2a, `docs/Auth-and-
-Updater.md` §1.3.
-
 ### RT-3-RETRY-BUDGET — Per-skill retry budget shared across concurrent same-skill runs
 - **Category:** Runtime / Execution & Recovery
 - **Description:** `retry_budget.js` keys attempts by `${slug}:${stepIndex}` only (see its
@@ -259,32 +124,6 @@ Updater.md` §1.3.
   common.
 - **Complexity:** S.
 - **Found via:** RT-3 audit (2026-08-22).
-
-### ~~RT-3-HOST-LOCK — Prevent two concurrent runs from racing the same external platform~~ — done 2026-08-22
-RT-3's per-run isolation (browser context, download dir, recovery park, retry budget) only
-protects the runtime's OWN bookkeeping — it does nothing to stop two concurrently-running
-workflows that both touch the same external platform (e.g. one workflow's Render step and a
-different workflow's Render step, running at the same time) from racing at that platform's own
-application layer: a lost update when both mutate the same resource, one deploy cancelling
-another mid-flight, or bot/rate-limit detection tripped by two near-simultaneous automated
-sessions on one account. New `runtime/app/host_lock.js` adds a mutex keyed per external hostname
-— resolved from a non-group skill's `target_url`, or every required app's host for a Workflow
-Group (same `pack.json` `groups` lookup already used for auth pre-flight). A run acquires every
-host it will touch, atomically, before any browser work begins; a run needing an already-held
-host blocks (polling every 250ms) rather than racing it — **runs on different platforms still
-execute fully in parallel**, only genuine overlap serializes. The lock is held through a park
-exactly like the browser lease (a parked page is a live, uncommitted platform interaction) and
-released on every exit path, including a discarded/TTL'd park (`server.js`'s `_discardPark`
-wrapper). A blocked run's wait counts against its own execution deadline via the same
-`cancelCheck` function `runPlan` already uses, so a run that waits too long fails with the
-existing actionable deadline message (naming the blocking host/run) instead of hanging silently.
-`get_execution_status` now surfaces a blocked run's `waiting_for_host` field. Tests:
-`test/unit/test_host_lock.js` (atomicity, blocking, give-up-never-sticks, multi-host
-never-half-held, order-independence) and `test/e2e/integration_host_lock.js` (real MCP server,
-two skills sharing a target host — proves the second call visibly queues behind the first via
-`get_execution_status`, then both complete). Docs: `docs/TRD.md` §4.5, `CLAUDE.md`/`AGENTS.md`.
-- **Found via:** direct founder question (2026-08-22) — "what happens when two parallel workflows
-  both touch the same platform, is that a risk?"
 
 ### RT-3-CAP-SIZING — Derive the concurrency cap from machine specs instead of a flat number
 - **Category:** Runtime / MCP / Execution & Recovery
@@ -310,49 +149,6 @@ two skills sharing a target host — proves the second call visibly queues behin
 - **Found via:** direct founder question (2026-08-22) — "can we cap concurrency to whatever the
   laptop supports instead of a fixed number?"
 
-### ~~BUILD-16 — "Testing os picker" compile did not finish: recording on disk, no compiled skill~~ — RESOLVED 2026-08-18
-- **Category:** Builder / Compile
-- **Description:** The latest **Testing os picker** workflow compile did not finish. The recording session artifacts are on disk (`data/sessions/…`, workflow metadata present), but no compiled skill package was written — the workflow cannot be tested or published. Likely a regression in the recent in-Studio file-picker compile path (BUILD-12 and the 2026-08-18 upload-binding follow-ups), but the failure mode has not yet been diagnosed: compile may have hung, crashed silently, or exited without surfacing an error in the UI.
-- **Why required:** blocks verification of the os-picker / download→upload recording path that just shipped — the exact workflow shape the last two days of fixes were built for.
-- **Business value:** without a successful compile, the file-picker UX improvements cannot be validated end-to-end before customers hit them.
-- **Technical value:** forces a root-cause trace through `cmd_compile` → `pipeline/run.py` → `compiler/build.py` → `skill_package_builder.py` on a real session that reproduces the failure; whatever breaks here likely affects any workflow with a Studio file-picker step.
-- **Dependencies:** none blocking — this is the repro case.
-- **Suggested order:** immediate — diagnose and fix before any further os-picker or upload-binding changes.
-- **Complexity:** unknown until triaged — likely S–M if it's a surfaced error or missing guard; M–L if compile hangs on a new step shape.
-- **Success criteria:** the **Testing os picker** recording compiles to a skill package on disk; Build Studio shows compile success; a sandbox or runtime replay of the compiled skill completes the upload step without hanging.
-- **Found via:** direct user report (2026-08-18). **Repro artifact:** recording on disk, compiled skill absent.
-- **Root cause:** `SkillStep.action` is contractually `str | dict[str, Any]` — a `scroll` step's compiled action is `{"action": "scroll", "delta": ...}`, not a bare string. `upload_binding.py::apply_bindings_to_compiled_steps` (added in the download→upload binding work, c2718bd) filtered compiled steps with `getattr(s, "action", None) in {"upload", "upload_intent"}`, which raises `TypeError: unhashable type: 'dict'` the instant it hits a dict-action step — crashing `compile_skill_package` right after the workflow intent graph, before the package is written. Every recording with both a scroll step and an upload/upload_intent step (i.e. exactly this "Testing os picker" shape) hit it. Confirmed by direct repro against the real session (`53b2d323-ec54-4253-8698-afa07cb01fae`) with the actual `cmd_compile` handler.
-- **Fix:** `conxa-builder/python/conxa_compile/compiler/upload_binding.py` — added a local `_step_action_str()` helper matching the existing normalization pattern already used elsewhere in `build.py` (`action if isinstance(action, str) else (action or {}).get("action", "")`), used at both call sites that were doing a raw `getattr(...) in {...}` membership check. Regression test added: `conxa-cloud/tests/test_download_upload_binding.py::test_apply_bindings_to_compiled_steps_ignores_dict_action_steps`. Re-ran the real session through `cmd_compile` after the fix — compiled cleanly (9 steps, `compile_status: ok`, `min_confidence: 0.95`), upload step correctly bound to `{{downloaded_file_dir}}`.
-
-### ~~CLOUD-10 — Homepage: rebuild around the new positioning + pricing ladder~~ — **Resolved 2026-08-12**
-- **Resolution:** The homepage now carries the ladder story and the prices. `Hero` leads with the business
-  outcome ("Do the process once. Your AI does it from then on.") and a four-rung strip below the CTAs
-  (prove it on one machine → run it across your team → ship it to your own customers → white-label it);
-  `PricingTable` is mounted on `/` in a new `compact` mode showing all four live tiers, with the four
-  explainer columns staying on `/pricing`. The tier data is still the single server-generated source, so
-  the two pages can't drift. The twelve-section stack was consolidated to ten blocks: `Problem` +
-  `WhyAiNeedsIt` → `TheGap`, `OldVsNew` + `Outcomes` → `Reliability` (which replaces the three hand-drawn
-  SVGs with the real dashboard viz — `ExecutionFlow` showing a run self-healing at Tier A, and
-  `TierLadder` — labelled illustrative, since there is no customer proof yet), `Architecture` + `Security`
-  → `Trust`. Two adjacent bugs found and fixed while verifying: `/pricing` was never added to `proxy.ts`'s
-  public route matcher, so every anonymous visitor from the nav, the footer, the sitemap, and the new
-  homepage CTAs was redirected to sign-in; and `_plan_features` rendered Enterprise's 0-sentinel limits
-  literally, putting "0 seats / 0 machines / 0K Human Edit tokens" on the public pricing cards.
-- **Category:** Cloud / Frontend (Marketing)
-- **Description:** The 2026-08-09 pricing-ladder rewrite (`e7939b2`) rebuilt the dedicated `/pricing` page, the nav, the FAQ, and the public docs copy around one Free → Starter → Pro → Enterprise growth story — but never touched the homepage (`app/(marketing)/page.tsx`) itself. Confirmed by reading the file: it still renders its pre-existing `Hero` → `Problem` → `OldVsNew` → `HowItWorks` → `Examples` → `WhyAiNeedsIt` → `Outcomes` → `DemoStory` → `Architecture` → `Security` → `Faq` → `FinalCta` section stack, with no pricing section at all. Rewrite the homepage's hero/positioning copy to match the ladder story, and add a pricing preview section (reusing `PricingTable.tsx`'s tier data, linking through to `/pricing`) so a visitor sees who the product is for and what it costs without a second click.
-- **Why required:** the pricing-ladder rewrite was itself triggered by a demo where a prospective customer said the site and app were carrying messaging for two different kinds of customer at once. That rewrite fixed the dedicated pricing page, but a visitor who lands on `/` — the highest-traffic page — still sees neither the new story nor any price.
-- **Business value:** the homepage is the first thing nearly every visitor sees; if it doesn't carry the new positioning and pricing, the ladder rewrite doesn't reach the people it was built to convince.
-- **Technical value:** mostly copy plus one new section component reusing already-shipped tier data (`PricingTable.tsx`) — no new backend work, no schema change.
-- **Dependencies:** none — the pricing ladder data model and page already exist.
-- **Suggested order:** immediate, alongside the other three P0 items.
-- **Complexity:** S–M.
-- **Success criteria:** homepage hero/positioning copy matches the ladder story used on `/pricing`; a pricing section or preview is visible on the homepage itself, not just reachable via nav.
-
-### ~~BUILD-14 — Record/Compile page: workflow-centric counting + folder grouping~~ — done 2026-08-12
-Landed as **Workflow Groups**, with wider scope than originally described here: groups turned out to need to own shared multi-app authentication too (a real cross-app business workflow needs N apps signed in, not one), so group membership is no longer "pure organizational metadata" invisible to the runtime — `pack.json` carries a `groups` block and each skill's `manifest.json` carries `group_id`, both read by `runtime/browser.js` to resolve which sessions to load. That is a deliberate, explicit widening of this item's original invariant, made because the user's actual request required it; see `docs/TRD.md`'s Workflow Groups section for the resulting contract. The Compile page was also removed as part of this change (compiling now lives only on each workflow's own page). Follow-ups not done in this pass: `runtime/test/gate-skill`'s CI fixture pack still uses the pre-Groups format and doesn't exercise the new path (a `groups` block was deliberately not added to it in this pass — untangling that from the existing gate fixtures needs its own change, not to be rushed). **Update (2026-08-20):** creating or renaming a group in Build Studio now automatically creates/renames the matching folder on Conxa Cloud Skill Packages (same id and name), including when the group still has no published workflows.
-
-<details><summary>Original description</summary>
-
 ### BUILD-14 — Record/Compile page: workflow-centric counting + folder grouping
 - **Category:** Builder / Cloud
 - **Description:** Build Studio's record/compile screens (`PluginListSidebar.tsx`, `PluginSwitcher.tsx`) and the surrounding UI are built around counting and switching between "plugins" — but a single published plugin/skill pack can bundle many individually recorded workflows, and the cloud's entitlement layer already models that distinction internally (`entitlements.py::ensure_workflow_publishable(principal, plugin_id, workflow_ids)` treats workflows as the countable sub-unit of a plugin). Redesign the Record + Compile page to show and count **workflows**, not plugins, and add folder-style grouping (e.g., "Marketing", "Sales") so a vendor with a growing catalog can organize workflows into named groups. Add the backend support needed for a workflow→folder association as **pure organizational metadata** — a label attached to a workflow record, not a structural change to the compiled `SkillPackage`, its `IdentityBundle`, or anything the runtime reads. Grouping must never touch the skill contract (see `CLAUDE.md`'s Key Invariants and ARCH-3's contract/executor boundary) — moving a workflow between folders must be indistinguishable, from the runtime's perspective, from not moving it at all.
@@ -373,9 +169,6 @@ Landed as **Workflow Groups**, with wider scope than originally described here: 
 - **Dependencies:** none — the underlying group-auth code already ships.
 - **Complexity:** S.
 - **Update (2026-08-12):** skill-pack directories now nest under `{group_id}/` on disk (`skill-packs/{company}/{group_id}/{skill_slug}/`, see `docs/TRD.md` §5.2a/§11.1) — `skill_loader.js` requires this layout unconditionally, so `gate_replay.js`'s fixture-staging loop was updated to stage `gate-skill` under a `_default/` folder (matching the fallback `skill_loader.js` uses when a pack has no `skill_groups` map), keeping the gate green. That's the minimum fix to not break the gate — this item's original, broader scope (a real `groups` array + group-scoped app auth in the fixture, so `_resolveGroup`/`getGroupAuthContext` get exercised too, not just path resolution) is still open.
-
-### ~~RT-REFACTOR-1 — Runtime refactor audit follow-up: safety nets, boundary, monolith seams~~ — done 2026-08-22 (all follow-ups closed)
-Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): **Phase 0** — `runtime/host/min_host_gate.js` (pure min_host evaluation, 9 unit tests), invariant pins (`resolver.DEFAULT_UNIQUE_MARGIN===0.15`, `run.NOOP_STEP_TYPES` membership in `test/unit/test_invariants.js`), test restructure (`runtime/test/unit/` offline vs `test/e2e/` browser/exe scripts; `npm test` = unit only; both CI workflows updated; `gate_recovery_ceiling.js` wired into `build-runtime-app.yml`). **Phase 1** — env/path resolution routed through `env.js` via `host_bridge.env()` (fallback copies deleted); install-time `sync` subcommand now enforces the same min_host gate as the load path; dead `update-pending.json` reporting + `__manifestManager` branch removed; `_fetchJSON`/`_downloadBuffer` hoisted into `http_client.js` with per-call-site defaults preserved; `check_pkg_stubs.js` build guard added. **Phase 2** — `host-manifest.json` + `check_host_manifest.js` CI guard declaring every host-frozen module; `app/host_bridge.js` centralizes all `__hostRequire`/`__versionManager`/`__conxaEnv`/… guard idioms. **Phase 3** — extracted from server.js: `cli_installer.js`, `recovery_park.js`, unit-testable `failure_response.js` (+tests), `tool_defs.js`; run.js fully decomposed from ~1,790 lines to a ~300-line orchestration+barrel over one-way-dep seams: `step_utils` → `resolution` → `assertions`/`locators` → `handlers` → `cascade` (+ leaf `interpolate`, `run_config`, `recovery_log`, `retry_budget`, `uploads`); public barrel unchanged so server.js/tests are untouched consumers. **Phase 4** — `app/check_recovery_purity.js` mechanical zero-network guard for recovery.js wired into CI; `skill_loader.js` validation test suite added; dead machine-specific `test_mcp_client.js` deleted. **Physical boundary (2026-08-22):** runtime sources split into `runtime/host/` (exe-frozen: bootstrap, _pkg_stubs, mcp_register + toml/yaml families, cli_sync, min_host_gate) and `runtime/app/` (everything that ships in the app-layer zip, incl. the dual-shipped modules the exe also bundles); `host-manifest.json` documents the dual-shipped set and `check_host_manifest.js` walks the cross-folder require graph in CI; package.json entry points, obfuscation lists, gate staging, and all requires updated for the new layout (deployed layouts stay flat). Every new app-layer module is registered in `build-runtime-app.yml`'s obfuscation+staging lists and both gate scripts' APP_FILES. **Follow-ups closed (2026-08-22):** mcp_register's three near-identical JSON/TOML/YAML orchestrator bodies unified behind per-family adapters (`hosts`/`targets`/`apply`) with one shared `runFamily` owning detection gating, --only filtering, multi-file handling, and error accounting; the duplicated marker-span surgery (~35 lines × 2) merged into `app/marker_span.js` (`spliceSpan` + CAS-guarded `upsertMarkerSpan`), now dual-shipped and used by both `host/config_edit_toml.js` (foreign-entry check runs as a guard on the same read the CAS compares against — the existing test suite caught that ordering when a first draft got it wrong) and `app/durable_context.js`. Note: edits to files under `runtime/host/` (and to the dual-shipped `app/` modules listed in `host-manifest.json`) ship only with the next `host-v*` release; everything else ships with the next `app-v*`.
 
 ### ARCH-4 — Migrate installer generation from Build Studio to Conxa Cloud (CDN-hosted, one per workspace, swappable)
 - **Category:** Architecture / Cloud
@@ -432,59 +225,6 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Complexity:** unknown until reproduced — S if it's a timing/pacing issue, M if it's the hover-chain logic itself.
 - **Success criteria:** `the-internet.herokuapp.com`'s `/hovers` (hover avatar → click "View profile") replays clean at zero LLM tokens, both in isolation and inside the full mega-workflow take.
 
-### ~~EXEC-29~~ — Native JS dialog steps hang at live replay (WF-1 Leg F) — **Resolved 2026-09-04**
-- **Resolution:** Two independent defects, one shared cause: the human's dialog answer was modelled as a free-standing recorded step, sequenced independently of the click that caused it.
-  1. **Record-order defect:** the dialog server answers from its own request thread while the triggering click's own payload only reaches the recorder once the page's JS thread unblocks after the dialog closes, so the two could land in the raw event stream in either order. Two adjacent `dialog_accept` markers (a confirm's answer directly followed by a prompt's) tripped `clean_steps`'s duplicate-consecutive-action collapse — built for real double-clicks, which carry a target; a marker carries none — and silently dropped the second one, losing the prompt's typed answer. Fixed with `pipeline/run.py::_reorder_by_timestamp` (stable-sorts every recorded event by its own `action.timestamp` before any other processing) and by exempting every `MARKER_ACTIONS` step from `clean_steps`'s duplicate-collapse rule (`step_anchors.py`) — the same latent bug existed for two consecutive `download_observed` markers.
-  2. **Replay-deadlock defect:** a native dialog blocks the very Playwright call that opens it — `click()` does not resolve until the dialog is answered — so waiting for the *following* `dialog_accept` step to drain it deadlocks by construction: that step can never run because the step before it never returns. Fixed by having `run.js`'s per-step loop look one step ahead and pre-arm the answer via a one-shot `page.once("dialog", ...)` *before* dispatching the step that opens it, so the dialog resolves the instant it opens.
-  3. **Hardening (same investigation):** `cascade.js::recoverStep` now refuses to run any recovery stage while a dialog is pending (mirrors `verifyStep`'s existing `dialog_pending` short-circuit) instead of grinding through unbounded page calls against a frozen renderer; a new shared deadline seam (`runtime/app/page_eval.js`) wraps the highest-risk `.evaluate()` calls (the gate check every action goes through, and the failure-response inventory/overlay probes) so a blocked renderer surfaces as a typed failure in seconds rather than hanging past the run's own 210s watchdog (which is poll-based and cannot interrupt a single stuck call). See `docs/TRD.md` §10.3 and `docs/Backend-Schema.md` §3.4h for the full writeup.
-  4. **Not yet done:** not every `.evaluate()`/`.count()` call in `runtime/app/` is routed through the new seam yet, and there is no CI guard preventing a new unguarded call from being added — see the follow-up item below. The Build Studio's "Run Test" flow also still has no cancel button and no client-side timeout (`ipc.cmd`/`cmd_test_workflow` are unbounded; the only backstop is the 900s runtime-tool subprocess timeout) — filed separately below.
-- **Category:** Execution & Recovery
-- **Description:** WF-1 Leg F (`the-internet.herokuapp.com/javascript_alerts`: Alert/Confirm/Prompt accept, prompt text echoed) recorded cleanly but hung on replay in Studio Run Test — the browser sat on an open native alert for over two minutes before the run finally errored with a confusing "Target page, context or browser has been closed" (the user had closed the window manually) rather than anything naming a dialog.
-- **Found via:** live repro against session `7fb53d62` / run `r_mtm1ttc8_ilx68` in `~/.conxa-build-studio-dev`, 2026-09-04.
-
-### ~~EXEC-34~~ — Route every remaining `runtime/app/` `.evaluate()`/`.count()` call through the page_eval.js deadline seam, add a CI guard — **Resolved 2026-09-12**
-- **Category:** Execution & Recovery
-- **Description:** EXEC-29's fix converted the two highest-risk unbounded `page.evaluate()` call sites (the primary-resolution gate check that runs on every action, and the failure-response inventory/overlay probes) to route through the new `runtime/app/page_eval.js` deadline seam. The remaining raw `.evaluate()`/`.count()` sites in `runtime/app/` (`drift.js`, `dismiss_patterns.js`, `recovery_park.js`, `handlers.js`'s scroll/multiple-select checks, `resolve_adapter.js`, and a couple more in `resolution.js`) are lower-traffic but share the same theoretical hazard — a blocked renderer (a `beforeunload` prompt, a throttled background tab) leaves the call hanging with no way for the run's own watchdog to interrupt it.
-- **Why required:** consistency — a partial conversion means the hazard this fix exists to close can still be hit through an unconverted path, and a future contributor adding a new `.evaluate()` call has no signal telling them to use the seam instead of a bare call.
-- **Resolution:** added `countOn()` to `page_eval.js` (mirrors `evalOn`, same deadline/`EVAL_TIMED_OUT` sentinel, for Locator `.count()`). Converted every remaining bare call site: `dismiss_patterns.js`, `drift.js`, `failure_response.js` (both `getScrollY` sites), `handlers.js` (menu-open probe, scroll, upload-multiple probe), `recovery_park.js`, `resolution.js` (frame-existence check, entity-binding row count, descriptor gathering, DOM inventory), `assertions.js` (`anyRootHasMatch`, the hot VERIFY presence check). Every caller checks `=== EVAL_TIMED_OUT` explicitly and fails closed (a timed-out entity-binding count is treated as 0 matches, never as 1 — PROD-3's uniqueness gate must never guess on a hung call). New guard `runtime/app/check_page_eval_seam.js` (source scan, same shape as `check_recovery_purity.js`) fails the build if a bare `.evaluate(`/`.count(` appears in `runtime/app/*.js` outside `page_eval.js`/`page_scripts.js`, with a narrow allow-list for the two non-Playwright name collisions (`runRegistry.count()`, `policyGate.evaluate()`). Wired into `build-runtime-app.yml` alongside the existing guards; both files added to `check_app_layer_files.js`'s `EXCLUDE` set (CI-tool-only, like `check_recovery_purity.js`). Tests: `runtime/test/unit/test_page_eval_seam.js`.
-- **Dependencies:** `runtime/app/page_eval.js` (EXEC-29).
-- **Complexity:** S–M: mechanical for the call-site conversions, plus a small guard test (in the style of the existing recovery-purity/`app-layer-files.json` guards) asserting no bare `.evaluate(` appears in `runtime/app/` outside `page_eval.js`.
-- **Success criteria:** every `.evaluate()`/`.count()` call in `runtime/app/` routes through `evalOn`; a guard test fails if a new bare call is added.
-
-### ~~EXEC-35~~ — Build Studio's "Run Test" has no cancel button and no client-side timeout — **Resolved 2026-09-04**
-- **Category:** Studio / DX
-- **Description:** Found during the EXEC-29 investigation: `WorkflowTests.tsx`'s `runTest()`, the Electron IPC bridge (`ipc.cmd`), and `cmd_test_workflow` are all unbounded — the only backstops are the runtime's own 210s `EXECUTION_DEADLINE_MS` (which a wedged single Playwright call can bypass — see EXEC-29/EXEC-34) and `runtime_tool.py`'s 900s subprocess timeout. A hung test shows a frozen "Testing…" with no elapsed counter for up to 15 minutes, and `server.js` already exposes a working `cancel_execution` MCP tool that nothing in the Studio ever calls.
-- **Resolution:** `cmd_test_workflow` (`handlers/workflows.py`) now tracks each workflow's in-flight run in a small module-level registry (`_active_test_runs`), populated once the sandbox is staged and filled in with the runtime's `run_id` the moment it's known (relayed live through the existing `_phase_sink`/`test_phase` mechanism, seconds before the run finishes). A new `cmd_cancel_test_workflow` handler looks up that `run_id` and calls the runtime's existing `cancel_execution` MCP tool over the same cached stdio connection `call_runtime_tool` already keeps open — no new transport, no runtime-side change, and no risk to the persistent-process warm-start optimization (a raw process kill would have taken that down too). A cancel that lands before `run_id` is known just sets a flag `_phase_sink` checks once it arrives. `cmd_test_workflow` now also recognizes the runtime's "Execution cancelled." response text and returns a distinct `status: "cancelled"` instead of recording it as a failed test. On the frontend, `WorkflowTests.tsx` gained a Cancel button (visible only while a test is running) wired to a new `cancelTestWorkflow()` API call, and every "Testing…" label now shows live elapsed time via a 1s UI timer.
-- **Dependencies:** `runtime/app/server.js`'s existing `cancel_execution` tool; `conxa-builder/python/conxa_compile/runtime_tool.py`; `WorkflowTests.tsx`.
-- **Complexity:** M — needs a cancel affordance in the UI, a run_id round-trip to call `cancel_execution`, and probably a visible elapsed-time indicator.
-- **Success criteria:** a Run Test in progress can be cancelled from the UI and returns to idle within a few seconds; a test that runs past some visible threshold shows elapsed time, not just a static "Testing…" label.
-
-### ~~EXEC-30~~ — Replace blind auto-dismiss of unknown popups with Tier B reasoning at replay — **Resolved 2026-09-03**
-
-- **Resolution:** Tier A's `dismiss_patterns.js` ladder is unchanged. An `INTERCEPTED` failure that
-  survives it untouched is now flagged `unknownOverlay`; `failure_response.js` runs a live overlay
-  probe (`page_scripts.js::overlayProbe` — hit-tests three viewport points, walks to the outermost
-  dialog/modal/fixed/sticky ancestor covering ≥5% of the viewport, independent of the ordinary
-  50-entry DOM-order-truncated inventory) and merges its controls into the ranked digest tagged
-  `[overlay]`. The failure text names the overlay and offers `step_overrides["<idx>"].dismiss`
-  (`{ candidate_index }` / `{ selector }` / `{ escape: true }`), composable with a target override.
-  A nominated control is gated by `dismiss_patterns.js::isSafeDismissLabel` (allow-list beats
-  deny-list, deny wins on conflict, an unlabeled icon button trusted only inside dialog/modal
-  chrome) before it is ever clicked — PROD-3's no-guess rule applied to dismissal, so a genuine
-  commit-style dialog is never auto-dismissed. A successful dismissal is written to the host-scoped
-  learned store, so a repeat occurrence on that host clears at Tier A for zero tokens next time.
-  See `docs/TRD.md` §10.1 for the full mechanism.
-- **Category:** Execution & Recovery
-- **Description:** `dismiss_patterns.js` (Tier A, zero LLM tokens) is deliberately conservative — it only clicks accept/close affordances on a fixed list of known consent toolkits, scoped to dialog/modal chrome, reactive-only after an `INTERCEPTED` classification. That known-pattern list should stay, since it resolves the common cookie-banner case for free. The gap is what happens when a popup **doesn't** match the known list: today it just fails through to Tier B (or exhausts recovery) with no attempt at an unknown-but-dismissable overlay. Give Tier B armed-agent recovery an explicit "unexpected overlay" reasoning path — compare the live page against the expected/recorded state, recognize something unrecorded is covering the target ("the page should look like X, there's a Y sitting on top of it"), dismiss it (Escape / close / cancel — never a decline or destructive-adjacent affordance), and retry the original step — instead of failing outright. This is scoped to **runtime replay only** (`runtime/app/cascade.js` Tier A→B escalation); it does not touch record-time `optional_hint`/`try_dismiss` (§3.4d, Backend-Schema.md), which is a separate human-confirmed, compile-time mechanism for interstitials seen *during recording*.
-- **Why required:** unknown popups (A/B test modals, promo interstitials, browser permission prompts, one-off toolkit variants not in the known list) currently either go unhandled or would require someone to keep hand-expanding `KNOWN_DISMISS_SELECTORS` forever. Reasoning about expected-vs-actual page state generalizes past any fixed selector list.
-- **Business value:** fewer runs that fail purely because of an unrecorded, incidental popup — directly improves the "self-healing" reliability story for real-world sites, which are full of ad-hoc modals the compiler never saw.
-- **Technical value:** extends the existing Tier B armed-agent describe-then-match pattern (already used for element recovery) to overlay dismissal, rather than inventing a new mechanism; keeps Tier A's zero-token fast path intact for the majority case.
-- **Careful:** must stay behind the same PROD-3 destructive-halt discipline as everything else — an unexpected dialog that looks like a genuine confirm/commit step (not an incidental overlay) must not be auto-dismissed. Only cancel/close/escape-style dismissal, never accept/confirm on an unrecognized dialog.
-- **Dependencies:** none functionally, but should reuse `cascade.js`'s existing Tier A→B escalation plumbing and `failure_response.js::stepRecoveryContext` payload shape rather than adding a parallel path.
-- **Suggested order:** P2 — after EXEC-28/EXEC-29 land, since it's the same recovery-cascade area.
-- **Complexity:** M.
-- **Success criteria:** a popup not in `KNOWN_DISMISS_SELECTORS` (e.g. a promo modal on a test fixture) gets dismissed via Tier B reasoning and the original step succeeds on retry, with a distinct log/telemetry marker (not conflated with element-recovery Tier B calls); a genuine unrecorded confirm-style dialog is left alone / halts rather than being auto-accepted.
-
 ### EXEC-31 — WF-7's Tier 2 fixture variant no longer exercises the a11y recovery cascade
 - **Category:** Execution & Recovery
 - **Description:** Found running `docs/testing/04-COVERAGE-BUMP-RUNBOOK.md`'s R1 row (`?v=t2`) against skill `wf-7-dfe37300`, 2026-09-03. `resolver.js` walks every compiled `identity_bundle.signals` entry durability-ranked *before* `cascade.js`'s Tier 2 ever engages — the cascade only fires on a full resolver miss. The fixture's `t2` variant (`docs/testing/fixtures/recovery-fixture.html`) strips `data-testid`/`aria-label`/text but leaves `id="checkout-btn"` intact, and that id is already compiled in as identity signal #5 (`css-id`, durability 0.4275) in `execution.json`'s `identity_bundle.signals` — so the step resolves at Tier 0/primary and never reaches `cascade.js` at all. `recovery.log` showed zero recovery events for that row.
@@ -506,44 +246,6 @@ Landed (all from `docs/archive/refactors/runtime-refactor-audit.md`'s roadmap): 
 - **Suggested order:** low priority — cosmetic dashboard gap, not a correctness issue (the runtime-side gating and learned-store behavior are unaffected).
 - **Complexity:** S once the taxonomy question is settled.
 - **Success criteria:** a run containing an `overlay_dismissed` event shows up in the per-step recovery dashboard, however it's ultimately classified.
-
-### ~~EXEC-32~~ — `resume_from` without a matching `step_overrides` entry silently replays from a blank page — **Resolved 2026-09-03**
-- **Category:** Execution & Recovery
-- **Resolution:** `server.js` now refuses cleanly instead of falling through: when `resume_from` names a step index with a pending recovery park but the call supplies no `step_overrides` entry for it, the run is refused with `Step N has a pending recovery request awaiting your pick...` (event `recovery_resume_missing_override`), and — unlike the old silent path — the park is **kept alive** rather than discarded, so a follow-up call with the correct override still works. Scoped tightly via `_existingPark`: a `resume_from` with no override and *no* pending park (e.g. resuming after an auth pause on the same still-open page) is untouched and keeps working exactly as before. Verified live against the real dev runtime: two repeated forgetful resumes both got the clear message (park survived both), and the legitimate override-resume path (R3 of `04-COVERAGE-BUMP-RUNBOOK.md`) still completes normally — no regression.
-- **Description:** Found running WF-7's R5 row (repeated `?v=gone` recovery to trip the stagnation guard). Calling `execute_skill` with `resume_from: N` but no `step_overrides["N"]` does not resume the parked failed page — `server.js`'s resume/park branch requires `primary.steps[resumeFrom]._agent_override` to be set. Without it, the call silently starts a fresh run beginning at step N, skipping every earlier step including `navigate`, so the resumed step executes against `about:blank`. The tool response then reports a misleading `"Element not found (resolve miss)"` with a screenshot of a blank tab presented the same way as a real ground-truth failure, with nothing indicating the page was never navigated.
-- **Why required:** an agent (or any MCP caller) that sends `resume_from` without an override — a plausible mistake, since the two are logically separable inputs — gets a confusing, wrong diagnosis instead of a clear error naming the actual problem.
-- **Business value:** a misleading failure message burns an agent's reasoning budget chasing the wrong cause (looks like the target vanished, not like the caller misused the API).
-- **Technical value:** cheap, well-scoped fix — validate at the entry point instead of failing downstream with a confusing symptom.
-- **Careful:** fix at the API boundary (`server.js`, near the `resume_from` handling) rather than changing resume semantics broadly — a bare `resume_from` with no override might legitimately mean "just retry from here" to some caller, so decide between erroring clearly and implementing that literally (re-run the original selector after a fresh navigate). Either beats the current silent blank-page fallthrough.
-- **Dependencies:** none. Reproduces deterministically: `execute_skill` with `resume_from` set, `step_overrides` omitted, on any previously-failed step.
-- **Suggested order:** low priority, defensive/DX fix.
-- **Complexity:** S.
-- **Success criteria:** `resume_from` without a `step_overrides` entry for that step either (a) errors with a message naming the missing override, or (b) is documented and implemented as "retry step N after a fresh navigate" — never a silent blank-page attempt reported as a ground-truth element-not-found.
-- **Found via:** manual R0–R5 pass of `04-COVERAGE-BUMP-RUNBOOK.md`'s WF-7 recovery drill, 2026-09-03.
-
-### ~~BUILD-22 — Templatizer rewrote a step's selector with an unrelated input placeholder~~ — RESOLVED 2026-09-04
-Root cause was NOT the `_insert_tab_markers` desync this item originally guessed. It was two blind
-selector-rewrite passes in `skill_package_builder_saved_skill.py`
-(`_repair_parameterized_search_result_selectors` for `execution.json`,
-`_repair_saved_step_click_selectors` for `recovery.json`): each armed on ANY `type`/`fill` step
-whose value was a lone `{{placeholder}}` and unconditionally overwrote the NEXT `click` step's
-`text=` selector with it — no check the two were related. Confirmed via a second, independent
-recording (WF-2-S-F, jQuery UI autocomplete): typing `{{tags}}` then clicking the "JavaScript"
-suggestion produced `selector: text="{{tags}}"` on the click, same mechanism as this item's
-`text="{{user_password}}"`. Both passes deleted; a compiled step's selector now always matches its
-own identity bundle. Regression-pinned by
-`conxa-cloud/tests/test_saved_skill_selector_integrity.py` and an updated
-`test_skill_package_builder.py::test_saved_skill_does_not_rewrite_a_hardcoded_search_result_click_with_the_prior_input`.
-
-**Tradeoff accepted:** the deleted passes also implemented an intentional feature — a
-search-result click whose recorded text equals what was just typed got its selector rebound to the
-input placeholder, so a replay with a different search term still clicked the new result. That
-behavior is gone; such a click now keeps its literal recorded text and falls to the recovery
-cascade on a different input. Reintroducing this safely (gated on the click's own recorded text
-actually equaling the typed value, not merely "some click follows some type") is open work — see
-the new item below this one.
-
-<details><summary>Original description</summary>
 
 ### BUILD-22 — Templatizer rewrote a step's selector with an unrelated input placeholder
 - **Category:** Builder
@@ -604,129 +306,9 @@ the new item below this one.
 - **Complexity:** M — likely much smaller if the desync fix already accounts for the dropped steps; the compile-report accounting behavior (naming what was dropped/merged) is still a separate piece of work regardless.
 - **Success criteria:** every input event is accounted for in the compile report (emitted / merged into step N / dropped because X); `compile_status: "failed"` either blocks the publish path or surfaces an explicit, dismissable warning in Build Studio naming exactly what was lost.
 
-### ~~EXEC-15 — Multi-file upload: a single file-picker selection of N files compiles down to one file~~ — **Resolved 2026-08-16**
-- **Category:** Execution & Recovery
-- **Description:** A recorded upload that selects several files at once (`<input type="file" multiple>` — a drag-and-drop of 20 invoices, a multi-select in the OS file dialog) cannot survive compile or replay. `run.js`'s `upload` handler interpolates a single string from `step.value` and hands it to Playwright's `setInputFiles`, which does accept an array but is never given one; `skill_package_builder_saved_skill.py::_bind_downloads_to_uploads` likewise binds exactly one earlier download to one later upload by exact filename. There is no representation anywhere in the chain — recorder event, compiled step, runtime input — for "this upload carries N files". Needs: the recorder to capture the full selected-file list, a step value shape that can hold a list, `setInputFiles` called with an array, and the download→upload binding extended so a set of downloads can bind to one multi-file upload.
-- **Why required:** the single-file assumption is invisible until a customer records their real process. Build Studio will show the recording as fine; the loss happens silently at compile, and replay uploads one file (or none) while the run can still report success — the same "reports success, loses documents" class as the now-fixed EXEC-11 filename collision.
-- **Business value:** "upload this month's 20 invoices" is a multi-select in every real UI, not twenty separate dialogs. Without this, the bulk file-transfer workflows that make the best demos and the strongest enterprise pitch (pull a batch from system A, push it into system B) can only be automated by unrolling them into 40 brittle steps.
-- **Technical value:** forces a list-valued step value through the recorder → compiler → runtime contract, which the download-binding work already half-needs; also the natural place to decide how a *bulk* download (one click, one ZIP of 20) and a *bulk* upload compose.
-- **Dependencies:** none blocking. Builds directly on the 2026-08-15 download→upload binding.
-- **Suggested order:** confirm the failure first with the cheap 3-file replay in `docs/testing/01-WORKFLOWS-TO-TEST.md` Workflow 7 (Shape B), then size it.
-- **Complexity:** M — the runtime side is small (pass an array), the recorder and compiled-step contract changes are the real work.
-- **Success criteria:** a recorded workflow that selects ≥3 files in one upload control replays with all of them arriving; a `runtime/test/` fixture asserts `setInputFiles` receives an array of the right length and order.
-- **Found by:** the Workflow 7 / W-8 analysis in `docs/testing/01-WORKFLOWS-TO-TEST.md` (2026-08-16). **Not yet confirmed against a real recording** — code-read only.
-- **Update (2026-08-16, resolved):** solved by making the *input* carry a folder rather than by threading a file list through the recorder → compiler contract, which turned out to be unnecessary: `bridge.js` was already capturing the complete `input.files` list, so nothing was lost at record time. The runtime now resolves an upload step's value through `run.js::resolveUploadPaths`, which expands a **directory** into every file directly inside it (non-recursive, subdirectories excluded, naturally sorted so `invoice-2` precedes `invoice-10`) and always calls `setInputFiles` with an array — the single-file case is just an array of one, so there is no second code path. An empty folder throws, matching the existing empty-path rule (uploading nothing while reporting success is this action's worst failure mode). Compile-side, `_upload_input_descriptions` now tells the agent a folder path may be given when the page's control accepts more than one file. **Capability comes from the live element, not the recording:** when more than one file resolves, the handler asks the element itself (`locator.evaluate(el => el.multiple)`) and refuses a folder aimed at a single-file control with a message naming the count and what to pass instead. The count of files picked while recording is *not* the signal — a one-file recording against a multi-select control is perfectly normal — and probing the element stays correct for packs compiled before this existed and for a site that changes the control later. That refusal is flagged `badInput`, which surfaces immediately from `withLocator`'s retry loop and skips the recovery cascade in `runPlan` (same short-circuit shape as the `isAuthFailure` check beside it): re-finding the element cannot fix wrong input, and letting it reach Tier 3+ would spend LLM tokens on a caller mistake the message already explains. An unreadable probe stays permissive. **Why a folder and not a file list:** the MCP client pastes one location string instead of shuttling every file through the conversation, so the same mechanism that moves 20 files moves 200 at no extra prompt cost — the file count stops being bounded by the context window. Covered by nine new cases in `runtime/test/test_upload.js` (folder expansion, numeric sort, subdirectory exclusion, empty-folder throw, single-file passthrough, single-file-control refusal, no-probe-for-one-file, permissive-on-unreadable-probe, plus the three existing quote/whitespace cases updated for the array contract) and two in `conxa-cloud/tests/test_skill_package_builder.py` (the description offers a folder; it never claims a file count). **Still open:** confirming this against a real recorded multi-select replay (Workflow 7 Shape B in `docs/testing/01-WORKFLOWS-TO-TEST.md`) — this session had no browser or host exe to record with; and a *download-all → upload-all* binding, where a run's own `~/.conxa/downloads/{runId}/` folder is fed straight to a later upload step, which the folder mechanism now makes trivial but which nothing declares yet.
-
-### ~~EXEC-16 — No retention policy for per-run download workspaces~~ — **Resolved 2026-08-17**
-- **Resolution:** downloads now save under an isolated `{CONXA_DATA_DIR}/runs/{runId}/` workspace (previously `{CONXA_DIR}/downloads/{runId}/` — rooted under the *read-only* install dir, a latent bug independent of retention). `run.js::sweepOldRuns` deletes any sibling run directory older than `CONXA_RUN_RETENTION_DAYS` (default 7) at the start of every `execute_skill`/`execute_sequence` call, before the new run's directory is created — so cleanup fires regardless of how the *previous* run ended, deliberately not repeating EXEC-12's "only clears on success" bug shape. Covered by `runtime/test/test_run_retention.js`; `docs/TRD.md` §7.1 and `docs/testing/01-WORKFLOWS-TO-TEST.md` (W-7, Workflow 6) updated.
-- **Category:** Runtime / Execution & Recovery
-- **Description:** `server.js`'s download handler saved every download to `downloads/{runId}/`, but nothing ever deleted a finished run's directory — files accumulated on disk indefinitely, with no user/date label to identify whose files were whose.
-- **Why required:** unbounded disk growth for any customer running file-transfer skills repeatedly; a 20-file-per-day workflow was 20 files/day of dead weight forever.
-- **Found via:** `docs/testing/01-WORKFLOWS-TO-TEST.md` Workflow 6 / break-test table entry W-7.
-
-### ~~EXEC-17 — A zip download can't feed a multi-file upload~~ — **Resolved 2026-08-17**
-- **Resolution:** `run.js::resolveUploadPaths` now detects a `.zip` target (whether bound via `{{downloaded_file}}` or hand-typed as `file_path`) and extracts it via `adm-zip` into a sibling folder inside the same run's workspace, idempotently, before the existing folder-expansion logic runs — a multi-select upload now sees N separate files instead of one archive it can't use. One level of a single top-level wrapping folder inside the zip is auto-unwrapped; an empty/corrupt zip fails loudly, matching the function's existing empty-folder/empty-path rules. No cleanup needed — the extracted folder lives inside `runs/{runId}/` and is covered by EXEC-16's retention sweep. Covered by `runtime/test/test_upload_zip.js`; `docs/TRD.md` §7.1 and Workflow 7 Shape B in `docs/testing/01-WORKFLOWS-TO-TEST.md` updated.
-- **Category:** Runtime / Execution & Recovery
-- **Description:** a site's "download all" turns a multi-select into one `.zip` (e.g. filebin.net's "Download files"), but the destination site's upload control often wants files uploaded separately through a genuine `<input type="file" multiple>`. Nothing unpacked that zip before this fix — the upload step would try to upload the archive itself or find an "empty" folder.
-- **Why required:** this was the missing half of Workflow 7 Shape B — the download side already worked, but the reupload side was a dead end for any workflow whose source turns a batch into a single archive.
-- **Found via:** direct user report during this session, tied to `docs/testing/01-WORKFLOWS-TO-TEST.md` Workflow 7 Shape B. **Still open:** confirming against a real recorded Shape-B replay (unit-covered only so far — same caveat EXEC-15 carried before its own real-recording confirmation).
-- **Superseded 2026-08-16 by EXEC-20:** the "auto-extract a `.zip` upload target at replay time" behavior described above was replaced — extraction now happens eagerly at download time (both recording and replay), and an upload step uploads exactly what was recorded (the zip itself, or specific extracted files), never an inferred substitution. See EXEC-20 below for the full design and why the inference was removed.
-
-### ~~EXEC-18 — Recorded downloads had no durable, discoverable location during recording~~ — **Resolved 2026-08-17**
-- **Resolution:** `session.py`'s recording browser now launches with `downloads_path` set to a per-session workspace (`data/sessions/{session_id}/downloads/`, mirroring the runtime's `runs/{runId}/`), and `_on_download` now calls `download.save_as(...)` with a collision-safe name (`RecordingSession._unique_download_name`, a Python port of `run.js::uniqueDownloadName`, EXEC-11) instead of only logging metadata. `cmd_start_recording` now returns `downloads_dir` in its result so the Build Studio UI can point the person recording at it. **Note on scope:** the native OS "Choose File" dialog cannot be forced to open in a specific folder — Playwright exposes no such API — so this relies on Chromium's own "last used folder" behavior in Build Studio's dedicated recording profile, which is best-effort, not a guaranteed contract. A one-time UI toast surfacing `downloads_dir` on first `download_observed` (the plan's fallback for when the native dialog doesn't auto-default there) was **not** built in this pass — the renderer's live recording-event architecture wasn't explored deeply enough this session to wire it confidently; `downloads_dir` is already returned from `cmd_start_recording` for whoever picks this up. Covered by `conxa-cloud/tests/test_recorder_session.py`'s three new `_unique_download_name` cases; `docs/TRD.md` updated.
-- **Category:** Recorder / Build Studio
-- **Description:** the recording browser never persisted a download anywhere controlled — no `downloads_path` was set and `_on_download` never called `save_as`, so a file downloaded mid-recording landed in Playwright's own managed temp location and was not something the person recording could navigate to, with no relationship to the upload dialog that typically follows it.
-- **Why required:** a person recording a download→upload workflow had no way to see or manually re-select the file they'd just downloaded — every other part of this repo's download story (replay-time isolation, EXEC-16's retention, EXEC-17's auto-unzip) assumed a durable, discoverable location, which recording alone lacked.
-- **Found via:** direct user report during this session.
-- **Still open:** the UI toast fallback described above; and confirming live, on a real Windows machine, whether Chromium's native Open-File dialog actually defaults to `downloads_dir` in practice — this session had no way to drive a real headed browser to observe it directly.
-
-### ~~EXEC-19 — A stale file from an earlier bulk upload can leak into a later one in the same multi-app run~~ — **Resolved 2026-08-25**
-- **Resolution:** `handlers.js`'s `upload` handler now deletes every file it just uploaded (`fs.unlinkSync`, best-effort) right after `setInputFiles` succeeds, but only when the resolved value was an exact match for `inputs.downloaded_files_dir` — the compiler-controlled bulk placeholder — never for a hand-authored `{{file_path}}` that happens to point at a real directory. This makes on-disk state match the FIFO consumption rule `upload_binding.py` already enforces logically at compile time. No new placeholder or per-batch subfolder was added, matching the discussed fix direction. Covered by two new `runtime/test/unit/test_upload.js` cases: one proving a chained A→B, C→D scenario uploads only C's file to D (A's files are deleted after B consumes them), and one proving a plain `{{file_path}}` directory is never touched. `docs/TRD.md` updated.
-- **Category:** Runtime / Execution & Recovery
-- **Description:** The 2026-08-16 bulk-upload binding (`_bind_downloads_to_uploads` matching a whole multi-select upload to `{{downloaded_files_dir}}`) resolves to the run's single, shared `{CONXA_DATA_DIR}/runs/{runId}/` folder — the same folder every download in that run writes into, with no per-app or per-batch subfolder. For a workflow chaining more than two apps in one run (A downloads → B bulk-uploads → C downloads more → D bulk-uploads), nothing removes A's files from the folder once B has uploaded them, so D's `{{downloaded_files_dir}}` resolution can pick up A's stale leftovers alongside C's genuinely-intended files — a real cross-batch leak, even though the compiler's compile-time matching correctly scoped D's binding to only C's files. Single-file bindings (`{{downloaded_file_N}}`) don't have this problem, since each references one exact path, never a folder scan.
-- **Why required:** this is the one gap in an otherwise-solid per-run isolation story, and it's the kind of failure that reports success while silently uploading extra files — the same "reports success, wrong data" class as the now-fixed EXEC-11.
-- **Fix direction (discussed, not yet built):** delete-after-consume — once a bulk upload step successfully finishes `setInputFiles` against a `{{downloaded_files_dir}}` resolution, delete exactly the files it just uploaded from that folder. This mirrors a rule the compiler already enforces logically (`_bind_downloads_to_uploads`'s FIFO consumption already prevents one downloaded file from being bound to two different upload steps), so deleting the file after it's genuinely uploaded just makes the on-disk state match a rule that already exists — no new placeholder, no per-batch subfolder machinery. (Considered and rejected for now: per-batch subfolders with an indexed `{{downloaded_files_dir_N}}` placeholder — more precise, but real new complexity for a scenario that needs 3+ chained apps in one run to trigger at all.)
-- **Business value:** protects the "20 files, never mixed" guarantee for the one workflow shape it doesn't yet fully cover — more than two download/upload hops chained inside a single run.
-- **Technical value:** small, local change — a few lines in `run.js`'s `upload` handler right after a successful `setInputFiles` call using a folder-resolved value.
-- **Dependencies:** none. Builds on the 2026-08-16 bulk-upload binding work.
-- **Complexity:** S.
-- **Success criteria:** a workflow with two chained download→bulk-upload cycles in one run (A→B, then C→D) uploads to D only the files C downloaded, never A's; a `runtime/test/` fixture proves a file consumed by one bulk upload is gone from the folder before a later step resolves it.
-- **Found via:** direct user question during this session (2026-08-16), while reviewing the newly-shipped bulk-upload binding.
-
-### ~~EXEC-20 — Zip downloads now always extract; an upload replays exactly what was recorded~~ — **Resolved 2026-08-16**
-- **Resolution:** Replaced EXEC-17's replay-time inference ("upload target is a `.zip` → silently extract and upload its contents") with an explicit, symmetric record→replay contract. **Recorder** (`session.py::_on_download`): a downloaded `.zip` is now extracted immediately via stdlib `zipfile` into a sibling folder (same shape as `run.js::extractZipOnce` — stem-named folder, unwraps one single top-level wrapping folder), and the resulting member filenames are recorded on the `download_observed` event as a new `zip_members` field — so the person recording can see and pick either the zip itself or its contents in the native file picker, and the compiler can later tell which one they picked without needing the zip file itself at compile time. **Compiler** (`skill_package_builder_saved_skill.py::_bind_downloads_to_uploads`): a recorded upload matching a zip's own filename still binds to `{{downloaded_file}}` (uploads the zip verbatim now, not its contents); a single recorded file matching one member of an earlier zip binds to that exact extracted file (`{{downloaded_file_N_dir}}/name.pdf` — a literal filename appended after the interpolated folder, no new runtime syntax needed); a multi-select recorded upload binds to the whole extracted folder (`{{downloaded_file_N_dir}}`) only when the recorded names are *exactly* that zip's entire remaining member set — a partial subset is left untouched (no way to express "these files but not the rest of the folder" today). **Runtime**: `server.js`'s download listener now calls `extractZipOnce` eagerly right after `saveAs`, not lazily inside `resolveUploadPaths`; `run.js`'s `download_observed` handler binds the new `downloaded_file_dir`/`downloaded_file_N_dir` inputs from the eagerly-computed extraction folder; `resolveUploadPaths` no longer special-cases a `.zip` target at all — it uploads it verbatim like any other single file. Covered by 8 new Python cases in `conxa-cloud/tests/test_download_upload_binding.py` and `test_recorder_session.py`, and rewritten/extended `runtime/test/test_upload_zip.js` (extraction behavior moved from `resolveUploadPaths` tests to `extractZipOnce` tests, plus new `download_observed` placeholder-wiring cases).
-- **Category:** Runtime / Execution & Recovery / Recorder
-- **Description:** EXEC-17 made the runtime *guess* what to do with a zip upload target. That guess was only ever needed because, at record time, nothing existed on disk but the zip itself — the person recording had no way to select individual files even if the destination wanted them. Once the zip is extracted at record time too, that limitation disappears, and the inference can be replaced by literal fidelity: replay uploads whatever was actually picked while recording.
-- **Why required:** direct user design discussion during this session — an inferred "upload target is a zip, so let's unzip it" is wrong the moment someone genuinely wants to upload the zip itself, or wants to hand-pick specific files out of it rather than the whole batch.
-- **Compatibility note:** any skill compiled under EXEC-17's old behavior that relies on "zip in, contents out" needs re-recording (or hand-pointing its `file_path` input at the already-extracted folder) to keep working under the new, literal contract — this is the direct, intended consequence of replacing an inference with fidelity.
-- **Found via:** direct user question and design discussion during this session (2026-08-16).
-
-### ~~EXEC-13 — AI Review Step: pause execution mid-workflow and use Claude as a reasoning checkpoint~~ — **Resolved 2026-09-14**
-- **Resolution:** The runtime and compiler halves shipped in an earlier session (`ff49b1f`, `0b26c36`) — this entry had simply never been marked done. This pass closed every gap that made the feature real to a *human* author rather than only to a hand-edited JSON file: **(1) Authoring UI** — `ai_review` is now insertable from Human Edit's Add-action menu (`ADD_ACTION_OPTIONS`), `workflow_mutations.py::_new_manual_step` scaffolds a loadable step (blank prompt, canonical yes/no+why schema, `on_failure: abort`), `StepEditorDTO`/`step_to_dto` project the `ai_review_*` fields the renderer needs, and `StepConfigForm.tsx` gained a config block: prompt textarea, a preset picker (yes/no+reason, a single text value, or no schema) that fills an editable raw-JSON textarea, an on-failure select (abort/use a default/continue), and a default-value field — following the `check_kind`/`ParameterizationDrawer` precedents already in the file. **(2) Studio sandbox testability** — `cmd_test_workflow` no longer fails outright the moment a review step pauses: it now runs a bounded (max 5) answer-and-resume loop, detecting a pause via `_meta["conxa/ai_review"]` on the `execute_skill` result (`runtime/app/review_pause.js::buildReviewRequest` now returns this alongside `content`; falls back to parsing the prose `resume_from:` line if `_meta` doesn't survive), answering it itself through the metered cloud proxy (`_answer_ai_review`, `usage_class="human_edit"` — the same `ensure_human_edit_available`/`record_llm_usage` path every other Human Edit vision call already uses, no new entitlement surface), and resuming with `resume_from`/`review_results`. The answerer tries the text-model route first (a new `ai_review` task in `conxa_core/llm/client.py::_openai_messages_for_task`, deliberately *not* added to `VISION_TASKS` — multimodal providers accept the image on either route, only the *model selected* differs) and falls back once to `route_vision` on a `CloudUnreachable` failure; `QuotaExceeded`/`EntitlementBlocked` propagate immediately rather than burning a second blocked call. The runtime's resume-adoption branch (`server.js`) is no longer gated on `_effAgentEnabled` — that flag governs escalation into Tier 1-4 recovery, and an `ai_review` pause was never part of that cascade (the matching park-creation branch was already unconditional; this closed the one-sided gap). **(3) Live DOM in the request** — `buildReviewRequest` now sends the same `domInventory()` live-element list `failure_response.js`'s Tier B context already uses, alongside the prompt and screenshot. **(4) Unconfigured steps fail loud, not silent** — a prompt-less `ai_review` step (inserted but never filled in) is now dropped at build time with an actionable warning ("AI Review has no prompt yet…"), the same drop-and-warn shape `drag_drop` already used, instead of the generic `ValueError` every other unexportable action still raises. Tests: `runtime/test/unit/test_ai_review.js` (+6 cases: DOM block, `_meta`), `conxa-cloud/tests/test_ai_review_mutations.py` (new — scaffold, insertability, DTO round-trip), `conxa-cloud/tests/test_ai_review_studio_answer.py` (new, 16 cases — pause detection incl. the prose fallback, context/image extraction, the hand-rolled schema validator, the text-then-vision fallback, quota/entitlement propagation), plus a builder case for the drop-and-warn path. Full runtime (`npm test`) and cloud (`pytest tests`, 1490 passed) suites green.
-- **Deliberately not built in this pass:** (a) **build-time reference screenshots** — the field, the patch-gate validation, the serializer pass-through, and the runtime's `_loadReferenceScreenshot` loader all already existed and still work exactly as before (a step whose `ai_review_reference_screenshot_ref` happens to point at a neighboring recorded step's `visuals/Image_N` still sends it); nothing writes one for an *inserted* step, since `_write_saved_visual_assets` only ever walks recorded steps' `signals.visual`, and this pass's product decision was that the checkpoint reasons about the live page, not a recorded baseline — see this entry's original spec below for the baseline-comparison framing that was explicitly dropped. (b) **branching on a review's answer** — `if_present`/`try_dismiss`/`wait_for_one_of` (EXEC-1) all branch on a live DOM probe; nothing in `branch` interpolates `{{…}}`, so a review's output can be *read* by a later step's placeholder but cannot itself gate whether a step runs. This is the same gap the destructive-after-`ai_review` patch-gate lint already routes authors around today (branch on the answer via a conditional inserted after the review, rather than reading it straight into a destructive step's target) — a value-driven conditional primitive doesn't exist yet to close it properly.
-- **Still needs a docs pass:** `docs/TRD.md`, `docs/Backend-Schema.md`, `docs/cost_model.md`, `docs/UI-UX-Brief.md`, and `CLAUDE.md`'s Key Invariants (the "this is not a violation of the zero-token recovery rule" note this entry called for) — tracked as the remaining step of this same pass, not a separate backlog item.
-- **Category:** Execution & Recovery / Builder / Product Strategy
-- **Description (original spec, partly superseded — see Resolution):** A new author-configured step type (working name `ai_review`) that deliberately pauses a running workflow, asks Claude a stored question about the *live* page, and feeds Claude's structured answer back into the run as an input that later steps consume. Configured during **Human Edit** in the Build Studio, each AI review step stores three things in the skill package: (1) the **reference screenshot** captured at record time (the "this is what it looked like when it worked" baseline Claude compares against), (2) the **prompt/instruction** to evaluate, and (3) the **expected structured output schema** the answer must conform to. At runtime on the customer's machine: execution reaches the step → pauses → the current screenshot is captured and sent with the stored prompt and reference screenshot → Claude reasons and returns the configured structured output → the engine validates it against the schema and binds it into `inputs` under the step's output name → execution continues, with later steps (including conditionals) reading that value. Canonical example: *"Is this element present on the page? Return `yes`/`no` and briefly explain why."* Execution must not advance past the step until a valid response is bound, with explicit timeout, retry, failure, and invalid-output handling.
-- **Why required:** today every decision a workflow makes is fixed at compile time. Any real business process contains judgement calls a recorded selector cannot express — "did this actually save?", "is this the right customer record?", "is there an error banner I should stop on?", "which of these three layouts am I looking at?". Without a reasoning checkpoint, those workflows either can't be automated at all or are automated on a blind assumption that silently does the wrong thing. This is the feature that turns a deterministic replayer into something that can handle the messy middle of a real process.
-- **Business value:** this is the "AI-native" half of the pitch made real rather than positional — a workflow that can *check its own work mid-run* and stop or branch on what it sees is a materially different product from one that replays clicks. It also opens the workflows that today get rejected during scoping as "too judgement-heavy to record." Pairs directly with the metered **Human Edit pool** that already exists in the entitlement model (`conxa-cloud/backend/app/services/entitlements.py::ensure_human_edit_available`), giving the feature a billing home on day one.
-- **Technical value — most of this already exists, and that is the point:** the runtime already implements this exact pause → ask-Claude → consume-structured-answer → resume loop, just narrowly, for Tier B self-healing. Reuse it rather than building a second mechanism:
-  - **The parked page** (`runtime/server.js` ~L63-102, `_parkedRecovery`, `PARK_TTL_MS`) already keeps the live browser/context/page alive across MCP calls specifically so the agent can reason about a page and then act on *that same DOM*. An AI review step is the same shape — park, ask, resume — with a planned pause instead of a failure as the trigger. The existing `capturePageFingerprint` / `PARK_DIVERGENCE_TOLERANCE` drift check applies unchanged and is exactly what stops Claude from answering about a page that has since re-rendered.
-  - **The structured resume path** already exists: `execute_skill` takes `resume_from` + `step_overrides` (`runtime/server.js` ~L472, ~L494) and `applyStepOverrides` binds the agent's structured answer back into the run. An AI review step needs a sibling parameter (e.g. `review_results`, keyed by step index the same way) and the same validation discipline.
-  - **Screenshot-to-agent** is already wired for Tier B vision recovery — the recovery request already ships a screenshot plus structured context to Claude.
-  - **Output-to-input plumbing** already exists: Human Edit already converts recorded literals into named runtime inputs (see `conxa-cloud/tests/test_plugin_builder.py::test_normalizes_human_edit_input_id_to_runtime_name`, `test_preserves_human_edit_placeholders_and_removes_recorded_literal`). An AI review step's output is the same kind of named input — the only change is that it is populated at runtime by Claude instead of by the caller.
-  - Editor-side, the new action registers in `conxa_compile/editor/action_registry.py` (`ACTION_KIND_ORDER` / `INSERTABLE_ACTIONS` / `ACTION_LABELS`); it is a value-bearing, non-selector, insertable action.
-- **Critical architectural constraint — "wait for Claude" cannot be a blocking call over MCP:** in the MCP relationship the runtime is the *server* and Claude Desktop is the *client*. A server cannot synchronously call its client, so the runtime **cannot** block in-process waiting for Claude the way it would block on an HTTP request. The wait must be implemented as **park-and-resume across two MCP calls** — return a review request, park the live page, resume when Claude calls back — which is precisely why the Tier B parked-page machinery above is the right foundation and why "just await the model" is not an available design. Any implementation that appears to block is either wrong or is silently taking the cloud-proxy path below.
-- **Two execution paths, mirroring the existing recovery-ceiling split:**
-  - **Agent-mediated (default, under Claude Desktop):** park → return the review request → Claude answers → resume. Costs Conxa **zero** LLM tokens because it runs on the customer's own Claude subscription, exactly like Tier B recovery today.
-  - **Cloud vision proxy (fallback, no agent present):** a genuine blocking call to `POST /api/v1/llm/proxy/vision`. Required for the **Build Studio sandbox test path**, where a workflow is replayed with no agent in the loop (`conxa_runtime.py`'s sandbox) — otherwise every workflow containing a review step becomes untestable in Studio, which would be a serious authoring regression. This path does cost Conxa tokens, so it should meter against the Human Edit pool and belongs in `docs/cost_model.md`.
-  - The `CONXA_MAX_RECOVERY_TIER` Studio=2 / MCP=4 distinction already encodes exactly this "is an agent available?" question — reuse that signal rather than inventing a second one.
-- **Failure handling (must be explicit, author-configured, and default to safe):** the step needs a stored `on_failure` policy — `abort` (default), `use_default` (fall back to a configured value), or `continue`. Cases to handle distinctly, because they are different failures: **timeout** (agent never resumes — the existing `PARK_TTL_MS` already covers the park lifetime, so a review step must not leak a browser); **invalid output** (response fails schema validation — retry with the validation error fed back, bounded, then apply `on_failure`); **refusal/empty** (Claude declines or returns nothing); and **page drift** (the live page changed while Claude was reasoning — reuse the existing park-divergence check and re-ask rather than acting on a stale answer). Retries must be bounded and, given EXEC-12, must not reuse the recovery retry-budget map — a review retry is not a recovery attempt and should not consume that budget.
-- **Invariant note — this is NOT a violation of the zero-token recovery rule, and must be documented so it doesn't read as one:** `CLAUDE.md` forbids *silent* LLM fallbacks in compiled-selector and a11y resolution paths, and requires Tier A recovery to cost zero tokens. An AI review step is an explicit, author-placed, visible-in-the-editor step whose entire purpose is to invoke reasoning — it is not a fallback, silent or otherwise, and it does not sit in the resolution path. When this lands, `CLAUDE.md`'s Key Invariants and `docs/TRD.md` should be updated to state that distinction plainly, or the next engineer will reasonably read the feature as breaking the rule.
-- **Safety interaction (read before implementing):** an AI review step whose output gates a destructive action is precisely the risk `PROD-3` exists to contain. A model-supplied value must never be allowed to select *which record* a destructive step acts on without entity binding. Recommend that review outputs be permitted to gate *whether* a step runs (branch/abort) before they are permitted to supply *what* it acts on — and that an irreversible step downstream of a review step be flagged in the editor.
-- **Dependencies:** none blocking — the parked-page and resume machinery already ship. Sequence *after* EXEC-12 (the retry-budget bug), since review retries and recovery retries will otherwise interact badly in the same session. Design alongside `PROD-3` for the destructive-action interaction, and alongside `EXEC-1` (conditional steps), since a review output whose value nothing can branch on is only half a feature — "return yes/no" is only useful if a later step can act on the difference.
-- **Suggested order:** immediate. This is the highest-leverage item in this section because it changes what the product *can do*, not just how reliably it does it — and because the hard infrastructure (cross-call park/resume with a live page) is already built and proven in the recovery path.
-- **Complexity:** L — the runtime half is moderate (a new step type reusing existing park/resume), the editor/compile half is moderate (config UI, schema authoring, package fields), and the schema-validation + failure-policy surface is where the real care goes. Not XL, specifically because the cross-call machinery already exists.
-- **Success criteria:** a workflow containing an AI review step configured with a reference screenshot, a prompt, and an output schema compiles, publishes, and replays end to end on a customer machine; at the review step execution pauses, Claude receives the live screenshot plus the stored prompt, returns output conforming to the schema, and a later step demonstrably behaves differently based on that value; an invalid response is retried and then handled per the configured `on_failure` policy rather than crashing or silently continuing; a review step that is never answered closes its parked browser via TTL and leaks nothing; the same workflow is testable in the Build Studio sandbox with no agent present; and a `runtime/test/` fixture covers the valid, invalid, and timeout paths.
-
-### ~~EXEC-14 — A second tab opened mid-run can leak in the headless/cached-browser path~~ — **Resolved 2026-08-15**
-- **Resolution:** every exit path in `execute_skill` (success, cancelled, session-expired, non-parkable failure, and the parkable-failure branch, which keeps only the parked page) now closes every tab the run opened beyond `page`, via `tabs.js::closeExtraTabs` against a per-call `_openedTabs` set fed by a `_context.on("page", ...)` listener. `_openedTabs` is declared outside the try block (alongside `page`/`_context`) so the outer catch's cancelled/session-expired/failure branches can all see it, not just the success path. Covered by `runtime/test/test_tabs.js` (`closeExtraTabs` unit tests: keeps the right page, accepts a Set or single page or no `keep` at all, skips already-closed pages, isolates one page's `close()` throwing from the rest, no-ops on an empty set).
-- **Category:** Runtime / Execution & Recovery
-- **Description:** Discovered while building multi-tab support (EXEC-10). On a **failed** run, `server.js` now closes a second tab opened mid-run before it can leak (`_failedPage !== page` guard, alongside the pre-existing single-page close). On a **successful** run, no equivalent guard exists: `server.js`'s success path only closes the run's original `page`; when `watch: false` (the default headless path, whose browser is cached and reused across calls by `browser.js`'s per-company idle cache), any second tab a successful run opened is never closed and stays open for the life of that cached browser.
-- **Why required:** every successful multi-tab skill run in headless mode leaks one Playwright page per extra tab it opened, for as long as the company's browser stays cached (`IDLE_MS`, 5 minutes by default, refreshed on reuse) — repeated runs of the same multi-tab skill accumulate open pages indefinitely within that window.
-- **Business value:** low urgency until multi-tab skills are common in production, but a customer running a multi-tab skill repeatedly in the background (headless, no `watch`) would see steadily growing memory/handle usage with no error to point at.
-- **Technical value:** small, well-scoped fix directly analogous to the failure-path guard already added — same shape, opposite branch.
-- **Dependencies:** multi-tab support (this session's work: `runtime/tabs.js`, `SkillStep.tab`).
-- **Suggested order:** low — real but not urgent; bundle with the next runtime touch rather than a standalone release.
-- **Complexity:** S.
-- **Success criteria:** a headless multi-tab run that opens a second tab and succeeds leaves no extra open page behind in the cached browser context; a `runtime/test/` fixture (fake context tracking `newPage()`/`close()` calls) proves it.
-
-### ~~EXEC-11 — Downloaded files with duplicate names silently overwrite each other~~ — **Resolved 2026-08-15**
-- **Resolution:** the download handler now reserves a distinct destination name per run (`report.pdf` → `report (2).pdf`) via `run.js::uniqueDownloadName`, claimed synchronously before the async `saveAs` so concurrent downloads can't both take the same name. Covered by `runtime/test/test_download_naming.js`.
-- **Category:** Runtime / Execution & Recovery
-- **Description:** `runtime/server.js`'s download handler (~L1204-1217) saves every download to `downloads/{runId}/{download.suggestedFilename()}`. Two downloads in one run that share a suggested filename resolve to the **same destination path**, so the second `saveAs` overwrites the first. `_downloads` still records both entries (pointing at the same path) and the run reports success. Fix by de-duplicating the destination on collision (`report.pdf` → `report (2).pdf`) before `saveAs`.
-- **Why required:** this is silent data loss on a success-reporting path — the worst failure class in the system. A customer bulk-moving 20 documents where several share a generic name (`invoice.pdf`, `export.csv`, `report.pdf` — extremely common for per-record exports) loses files with no error anywhere.
-- **Business value:** directly undermines the core reliability pitch; a workflow that reports "20 files transferred" while having moved 14 is worse than one that fails loudly.
-- **Technical value:** small, self-contained fix in one handler with no contract or schema change.
-- **Dependencies:** none.
-- **Complexity:** S.
-- **Success criteria:** downloading N files with colliding suggested names yields N distinct files on disk; a `runtime/test/` fixture covers the collision case.
-- **Found via:** `docs/testing/01-WORKFLOWS-TO-TEST.md` break test B-3 (2026-08-15).
-
-### ~~EXEC-12 — Retry budget is never cleared after a failed run, degrading every later run in the session~~ — **Resolved 2026-08-15**
-- **Resolution:** `runPlan` now clears the running skill's retry budget at the start of every invocation, so a failed run can no longer poison the next one in the same process. The success-path clear in `server.js` is retained. Covered by `runtime/test/test_download_naming.js`; `docs/TRD.md` §10.1 updated.
-- **Category:** Runtime / Execution & Recovery
-- **Description:** `run.js`'s `retryBudget` is a module-level `Map` keyed `{slug}:{stepIndex}` that lives for the life of the MCP server process, and `clearRetryBudget` is called **only on the success path** (`server.js` ~L1287, after `run_success`). When a run fails, its per-step attempt counts persist, so re-running the same skill in the same session starts with `attempts` already at or past `RETRY_BUDGET_MAX` (3) — `checkRetryBudget` returns false immediately and self-healing is effectively disabled until Claude Desktop restarts. Fix by clearing the budget at run *start*, or on the failure path as well as the success path.
-- **Why required:** the observable customer experience is "it broke once, and now it keeps breaking, and it's getting worse" — the failure pattern most likely to end a pilot, and one that looks like flakiness rather than a specific bug, so it is very hard to diagnose from a support ticket.
-- **Business value:** recovery is the product's central differentiator; a state bug that silently switches it off after the first failure directly attacks the thing being sold.
-- **Technical value:** one- or two-line fix; the harder half is the regression test (run a skill to failure, then re-run it in the same process and assert recovery still engages).
-- **Dependencies:** none.
-- **Complexity:** S.
-- **Success criteria:** after a failed run, an immediately repeated run of the same skill in the same process shows the same recovery behaviour as a cold first run; a `runtime/test/` fixture asserts the budget is reset without a process restart.
-- **Found via:** `docs/testing/01-WORKFLOWS-TO-TEST.md` break test B-4 (2026-08-15).
-
 ---
 
-## P1 — Blocking / Foundational (4 remaining / 12 total)
+## P1 — Blocking / Foundational (4 remaining)
 
 ### SHIP-1 — Build Studio's dependency manifest is hand-maintained and can silently disagree with what CI actually published
 
@@ -736,11 +318,6 @@ the new item below this one.
 - **Also:** `SHIP-GUIDE.md:356` reads "Nothing promotes automatically the way conxa-app/conxa-runtime do" — true for the runtime self-updater, false for Build Studio. Correct it in the same pass.
 - **Partially mitigated 2026-09-20:** the Studio no longer hides the failure (`App.tsx` renders the dep error instead of dismissing the banner), so a future mismatch is at least visible. The drift itself is untouched.
 
-
-### ~~BUILD-15 — Recording-window flicker: move the mid-recording session-refresh save off the visible hot path~~ — **Resolved 2026-08-17**
-- **Resolution:** Landed as the broader "authentication is pre-flight-only" redesign (recording + execution), per direct user request once the root cause was confirmed. The flicker-causing periodic 6s `context.storage_state()` autosave (option (a) from this item's original "what's left" list) is gone — `_autosave_storage_state_sync()` now runs only twice: once when `wait_for_url` is reached, and once, `force=True`, at recording teardown. `handlers/session.py:204-208`'s `storage_state_autosave = storage_state_path` is restored (no longer force-disabled), and Playwright's `record_video_dir`/`record_video_size` is restored too (confirmed during investigation not to be the cause). Both `PONYTAIL TEMP DEBUG` blocks are gone. Same pass also closed a matching mid-*execution* contradiction found on the runtime side (`captureReAuth` no longer opens a re-auth window automatically at the moment of a mid-run failure — it now just fails immediately with a clear, app-named message; re-auth happens via the next `execute_skill`'s normal pre-flight gate), plus a few gaps found along the way: `execute_sequence` now pre-flight-checks every skill's required apps, not just the first; the browser-context cache TTL dropped from 5 minutes to 90 seconds; `GroupAuthWizard` can now scope to specific app(s) instead of always showing the whole group, wired to `RecordWorkflowDialog`'s `auth_required` error; the backend's sibling-app warning (previously generated, never displayed) is now surfaced; a "workflow's login doesn't match any app in its group" case now warns instead of silently skipping the check; and a `last_error` field-overload bug (a stale, unrelated error message could survive display as a fresh expiry reason) was fixed. Full trace and design decisions in `.claude/plans/created-workflow-testing-download-staged-cray.md` (session-local). **Not done in this pass** — the two amplifying (non-flicker-causing) cleanups this item originally also named: `_rewrite_events_jsonl` still writes a full diagnostics dump on every recorded event instead of once at session end, and the dead `_capture_a11y_async` (calls a Playwright API removed in the installed version, silently failing every time) is still there. Tracked as a new opportunistic item below.
-
-<details><summary>Original description</summary>
 
 ### BUILD-15 — Recording-window flicker: move the mid-recording session-refresh save off the visible hot path
 - **Category:** Builder
@@ -757,24 +334,6 @@ the new item below this one.
 
 </details>
 
-### ~~BUILD-17 — Workflow test dialog treats every declared input as required, ignoring the compiler's `optional` flag~~ (resolved 2026-08-29)
-- **Category:** Builder
-- **Description:** Found while fixing the "Testing os picker" input-guessing bug (2026-08-19, see `FIX.md`). `conxa-builder/electron/renderer/src/components/WorkflowTests.tsx`'s `normalizeInputSpec` (around line 95) sets `required: rec.required !== false` — it looks for a `required` field. But the compiler marks optionality the other way around, with `optional: true` (`conxa-builder/python/conxa_compile/skill_package_builder_output.py::_compute_inputs_required`, which computes `manifest.json`'s `inputs_required` list by excluding anything flagged `optional`). `input.json`'s declared inputs never carry a `required` field at all, so `normalizeInputSpec` always falls through to `true` — an input the compiler considers optional still shows up in the Studio's "Workflow inputs" dialog as required, and `missingRequiredInputLabels` will block a test run over it.
-- **Why required:** the runtime (`runtime/server.js`'s `_skillToolDefinitions`) and the Studio test dialog disagree about which inputs are mandatory, so a workflow that runs fine over MCP with an input left blank can be un-runnable from the Studio's own Test/Replay button.
-- **Business value:** confusing, blocking UX in the tool vendors use every day to verify their own recordings before publishing.
-- **Technical value:** small, contained fix once scheduled — one field name to read correctly in one function.
-- **Dependencies:** none.
-- **Suggested order:** low urgency — no known workflow in the current data set has an optional input, so it hasn't caused an observed failure yet.
-- **Complexity:** S.
-- **Success criteria:** a compiled input flagged `optional: true` shows as optional (not blocking) in the Studio's Workflow inputs dialog, matching what `manifest.json`'s `inputs_required` already says.
-
-### ~~BUILD-21 — Human Edit step form should show/edit the workflow-plan prose intent, not the machine token~~ — **Resolved 2026-08-25**
-- **Resolution:** Shipped same day as the compile-side single-source intent change. `StepConfigForm` now shows/edits the workflow-intent graph's readable sentence (`semantic_description`, same source as the Workflow plan panel) and falls back to the machine token for pre-prose compiles; saves go through a new patchable `semantic_description` key (plain non-empty string — no slug rules), accepted across every action allowlist in `editor/patch_gate.py` and persisted by `compiler/patch.py::_apply_top_level_step_fields`; the editor DTO prefers the stored sentence over `describe_step`'s recomputed generic label, so edits survive reload/re-fetch. The machine token is untouched by prose edits and shown as a read-only mono hint under the field when it differs. Verified: new gate/persistence tests in `tests/test_patch_gate.py`, full editor suites green, renderer typecheck clean.
-- **Follow-up (2026-08-29):** the original fix only covered `StepConfigForm.tsx` — `BranchBodyEditor.tsx` (the separate nested-step editor for `if_present` branch bodies, EXEC-1) still showed/edited the raw `nestedStep.intent` machine token and saved back as an `intent` patch. Fixed to mirror `StepConfigForm.tsx` exactly: defaults from `semantic_description` (fallback `intent`/`final_intent`), saves as a `semantic_description` patch, shows the machine token as a read-only mono hint when it differs. No backend change needed — traced the real write path (`cmd_patch_step` → `_apply_step_patch`, shared by top-level and path-addressed branch-body patches → `compiler/patch.py`) and confirmed `semantic_description` handling doesn't gate on `in_branch_body`. Renderer typecheck clean.
-- *(Original description below — kept for context.)*
-
-<details><summary>Original description</summary>
-
 ### BUILD-21 — Human Edit step form should show/edit the workflow-plan prose intent, not the machine token
 - **Category:** Builder
 - **Description:** Since 2026-08-25 the single workflow-intent compile call produces both a snake_case `intent_token` (machine logic) and readable prose per step (`semantic_description` — same source as the Workflow plan panel). But `StepConfigForm.tsx` still shows/edits the machine token (`step.intent || step.final_intent`) and sends it back through a patch gate that enforces `sanitize_intent_token`, so the human-friendly sentence never appears where users edit steps.
@@ -787,12 +346,6 @@ the new item below this one.
 - **Success criteria:** opening any compiled step in Human Edit shows the plan's sentence for it; saving edits persists that sentence and it survives reload + appears on re-fetch; the machine token stays untouched by prose edits.
 
 </details>
-
-### ~~BUILD-19 — `build-app-local.ps1` still reads app-layer files from the pre-split flat `runtime/` layout, so it fails on every file~~ — **Resolved 2026-08-22**
-- **Resolution:** Fixed the same day, as part of unifying all four build pipelines around a single source of truth: `runtime/app-layer-files.json` now holds the app-layer file list + per-file obfuscation profiles, consumed identically by `.github/workflows/build-runtime-app.yml` and `scripts/build-app-local.ps1`, and machine-checked by a new guard (`runtime/check_app_layer_files.js`) that CI and the local script both run before building. The local host script also gained the CI workflow's pre-build guards (`scripts/build-runtime-local.ps1`: check_pkg_stubs/check_host_manifest + optional manifest-key stamping), and all three e2e gate scripts now stage their default app layer from the same JSON. Unifying surfaced a real prod bug: the CI list was missing 9 of run.js's extracted seam modules (resolution/assertions/locators/handlers/cascade/uploads/retry_budget/step_utils/marker_span) — the next `app-v*` tag would have shipped a zip that crashes on load. Verified end-to-end locally: 40 modules build, version.json carries 40 hashes, all 335 unit tests pass.
-- *(Original description below — kept for context.)*
-
-<details><summary>Original description</summary>
 
 ### BUILD-19 (original) — `build-app-local.ps1` still reads app-layer files from the pre-split flat `runtime/` layout, so it fails on every file
 - **Category:** Builder / Runtime (dev tooling)
@@ -819,62 +372,6 @@ the new item below this one.
 - **Complexity:** S–M (drafting + review + adding links into the app and dashboard).
 - **Success criteria:** a published Terms & Conditions and Privacy Policy exist, are linked from the Build Studio first-run/installer flow and the cloud dashboard, and explicitly bar unauthorized modification, reverse-engineering, and commercial resale of the Build Studio application itself.
 
-### ~~PROD-3 — Safe-action system (Strict Mode, entity binding, dry-run, compensation flows)~~
-- **Status:** Safety core (layers 1–3) shipped 2026-08-29 — danger classification, entity binding,
-  and fail-closed recovery, plus Strict Mode's `min(host, pack)` ceiling threading. **(1) Danger
-  class:** `destructive_semantics.classify_consequence()` sets `SkillStep.consequence`
-  (`read_only`/`reversible`/`irreversible`) and `IdentityBundle.destructive` — replacing a
-  previously dead code path (`build.py` used to set `destructive` from `ev.get("destructive")`,
-  a key nothing ever wrote; confirmed always `False` in production, so EXEC-24's runtime halt had
-  never fired on a real pack). Serialized onto the execution step's top-level `destructive` flag
-  (`skill_package_builder_saved_skill.py::_copy_saved_common`), which is what `runtime/app/
-  cascade.js` actually reads. **(2) Entity binding:** new `EntityBinding` model + detector
-  (`conxa_compile/compiler/entity_binding.py`) — walks the recorder's already-captured but
-  previously-unused ancestor chain (`RecordedEvent.ancestors`) to find a repeating row/list
-  container and pick an identifying value, preferring a declared run input over the recorded
-  literal. Runtime enforcement (`runtime/app/resolution.js::entityRoots`) narrows resolution to
-  the one row whose text contains the interpolated identifier — an exact single match, or fail
-  closed (`entityNotFound`) — wired into both the primary resolve path and every recovery stage's
-  locator path, so recovery can never substitute a different row. **(3) Fail closed:** both halts
-  are excluded from `server.js`'s park-for-agent-resume predicate and get a plain terminal message
-  (`failure_response.js`) instead of a Tier B candidate digest — a destructive/entity halt is a
-  deliberate stop, never an invitation to guess. **Publish gate:** an irreversible step whose
-  detected binding was never confirmed by the vendor cannot be saved
-  (`patch_gate.py::irreversible_step_requires_confirmed_entity_binding`) or published
-  (`handlers/workflows.py::_require_confirmed_entity_bindings`). **Strict Mode:** per-skill
-  `manifest.json.max_recovery_tier`, honoured by the runtime as `min(host ceiling, pack ceiling)`
-  — never looser than the host — threaded through every per-run agent-recovery decision
-  (`server.js::_effectiveRecoveryTier`); set today via `CONXA_STRICT_MODE_MAX_TIER` at build time.
-  Tests: `runtime/test/unit/test_entity_scope.js`, `test_cascade_destructive.js`; `conxa-cloud/
-  tests/test_entity_binding.py`, `test_patch_gate.py` additions, `test_publish_entity_binding_gate.py`.
-  Docs: `docs/TRD.md` (recovery-cascade section). **Deliberately not attempted in this pass** (see
-  new follow-up items below): layer 4 (dry-run + stage-then-commit ordering warning), layer 5
-  (compensation/"cleanup" workflows), the published per-skill safety score, before/after
-  screenshots on consequential steps, and a Studio UI for confirming a binding or setting Strict
-  Mode per workflow (today both are settable only via the generic step-patch mechanism / a build
-  env var, not a dedicated editor control).
-- **Category:** Product Strategy & Business-Risk Mitigation
-- **Description:** A five-layer safety system for the "a wrong click can succeed silently, and there's no undo" risk: (1) label every step by danger class (read-only / reversible / irreversible) at recording time; (2) **entity binding** — tie the actual click target to the specific record it should act on (e.g., "the Delete button in the row containing Invoice #12345"), not just "a" Delete button, so recovery can never substitute the wrong row; (3) on irreversible steps, disable "find something close" recovery entirely — refuse to guess, optionally confirm before acting; (4) order recorded workflows so the one irreversible action is the last step, and offer a true dry-run (everything except the final click); (5) offer compensating-action "cleanup" workflows (e.g., "cancel the draft invoice") as Conxa's answer to "there's no real undo." Also productize the existing recovery-ceiling switch as a named, customer-facing "Strict Mode," and publish a measured per-skill safety score ("0 wrong actions in 12,400 runs") rather than an unmeasured claim.
-- **Why required:** this is described in the source material as the single hardest safety question in the whole business-risk review, explicitly delegated by the founders to Fable to design because of that. Without entity binding specifically, a recovery mechanism that finds "a close-enough" element on the wrong row is a real, previously-identified failure mode (this is the same failure class the research corpus's gap-analysis G5/top-50-improvements #3 already partially addresses via live uniqueness scoring — entity binding is a further, data-aware refinement on top of that).
-- **Business value:** this is what makes the "deterministic, auditable, provably safer than a human operator" pitch to finance/HR/payroll teams actually true rather than aspirational — described as unlocking those verticals specifically.
-- **Technical value:** builds on already-shipped machinery (the recovery-ceiling env var, `IdentityBundle` scoring) rather than starting from nothing; the dry-run capability is also a prerequisite for making PROD-1's first-run calibration completely side-effect-free.
-- **Dependencies:** benefits from EXEC-1 (conditional steps, since dry-run needs a way to skip the final committing action cleanly).
-- **Suggested order:** high priority, in parallel with EXEC-1 — this was ranked P0 in the original source ranking (now P1 in this file, after the 2026-08-09 addition of four higher-urgency P0 items) specifically because it's what makes selling into destructive-action workflows (finance, HR, payroll) safe at all.
-- **Complexity:** L — the individual mechanisms (danger labeling, entity binding, dry-run, compensation workflows) are each moderate, but the combination touches the compiler, the recorder, and the runtime.
-- **Success criteria:** a skill with a destructive final step cannot act on the wrong record even when recovery is invoked; a per-skill safety score is tracked and shown; a dry-run mode exists that never performs the final irreversible action.
-
-### ~~PROD-3-DRYRUN~~ — Stage-then-commit ordering + true dry-run mode — **Resolved 2026-09-12**
-- **Category:** Product Strategy & Business-Risk Mitigation
-- **Description:** PROD-3 layers 4–5, deferred from the 2026-08-29 safety-core pass. (4) The compiler warns when an irreversible step sits before the last step of a workflow ("stage-then-commit" — record so the one irreversible action is last, and earlier failures leave only harmless drafts); a true dry-run mode runs every step except the final committing action. (5) Compensation ("cleanup") workflows — a small companion recording (e.g. "cancel the draft invoice") the runtime can offer when a run dies mid-way, since true undo is impossible across systems.
-- **Resolution:** all three mechanisms shipped. **(4a) Dry-run:** `execute_skill`/`execute_sequence` gained `dry_run: boolean`; `run.js`'s step loop resolves a `destructive === true` step (proving the target is findable) but never dispatches or verifies it — recorded in a returned `dryRunSkipped` list, named in the response text. Non-destructive steps run normally; only the one committing action is withheld. **(4b) Stage-then-commit lint:** new `compiler/commit_ordering.py::lint_commit_ordering()` — warns when an irreversible step is followed by another writing step (skipping trailing markers and read-only observation steps), stored under `compile_report["commit_ordering_warnings"]`. Advisory only, matching every other compiler lint — never blocks save/publish. **(5) Compensation workflows:** `SkillMeta.compensation_skill: str` links a sibling skill slug, carried through to `manifest.json`. On a failure where `actionMayHaveTakenEffect` is set, `server.js` names the linked skill as an available next step — offered, never auto-run. Tests: `runtime/test/unit/test_dry_run.js`, `conxa-cloud/tests/test_commit_ordering_lint.py`.
-- **Not built — no dedicated editor UI:** `compensation_skill` is settable today only via the generic step-patch/raw-JSON mechanism, the same gap `PROD-3-UI` already tracks for Strict Mode and entity-binding confirmation. A vendor cannot yet link a compensation workflow from the Human Edit or Publish pages. Also not built: before/after screenshots and the published per-skill safety score (both already tracked under `PROD-3-UI`).
-- **Why required:** Answer 12 (`research-analysis/conxa-critical-analysis.md`) names both as part of the same five-layer system; dry-run is also PROD-1's prerequisite for side-effect-free first-run calibration.
-- **Business value:** same as PROD-3 — completes the "provably safer than a human operator" pitch for finance/HR/payroll.
-- **Technical value:** dry-run needs a clean way to skip the final action (EXEC-1's conditional steps, already shipped, is the mechanism); compensation flows are "just another recording," reusing existing record/compile/publish machinery.
-- **Dependencies:** PROD-3's safety core (consequence classification, entity binding) — done; EXEC-1 (conditional steps) — done.
-- **Complexity:** M — dry-run is a runtime execution-mode flag plus a compiler ordering lint; compensation flows are compiler/UI work (an explicit "this workflow has a cleanup companion" link), no new core algorithms.
-- **Success criteria:** a dry-run mode exists that never performs the final irreversible action (done); the compiler warns on an irreversible step that isn't last (done); a workflow can be linked to a compensation workflow and the runtime offers it after a mid-run failure (done — via raw meta edit; a dedicated editor control is `PROD-3-UI`'s remaining gap).
-
 ### PROD-3-UI — Studio UI for entity-binding confirmation, Strict Mode, and the safety score
 - **Category:** Product Strategy & Business-Risk Mitigation / Builder
 - **Description:** The safety-core mechanisms shipped 2026-08-29 have no dedicated editor UI yet: confirming a detected entity binding, or setting a workflow's Strict Mode ceiling, both work only through the generic step-patch mechanism / a `CONXA_STRICT_MODE_MAX_TIER` build-time env var — not a purpose-built control. Also open: publishing a measured per-skill safety score ("0 wrong actions in 12,400 runs") and before/after screenshots on every consequential step (Answer 12's evidence layer). **Update (2026-09-12, PROD-3-DRYRUN):** same gap now also applies to `SkillMeta.compensation_skill` — the backend/runtime half (linking + offering it after a failure) is done, but linking one is patch-only, no editor control. **Update (2026-09-12, EXEC-38):** and to `for_each` loop bodies — tracked separately as `EXEC-38-UI` since it's a distinct, larger control (a `BranchBodyEditor.tsx` variant) rather than a form field, but the same underlying gap.
@@ -885,31 +382,6 @@ the new item below this one.
 - **Suggested order:** alongside or shortly after PROD-3-DRYRUN — this is what makes the shipped mechanism sellable rather than just correct.
 - **Complexity:** M — an Entity Binding confirmation card in `StepConfigForm.tsx`, a Strict Mode selector in `PublishPage.tsx`, a safety-score aggregation + dashboard card, and screenshot capture on consequential steps (the runtime already has JPEG pre-step capture machinery — `maybeCapturePreStep` — to extend).
 - **Success criteria:** a vendor can confirm an entity binding and set Strict Mode from the Human Edit / Publish pages without hand-crafting a patch; a per-skill safety score is computed and shown on the dashboard; before/after screenshots are captured and viewable for a consequential step's run.
-
-### ~~EXEC-24 — Recovery attempts mutate the page, and no tier accounts for what the previous one did~~ — **Resolved 2026-08-26**
-- **Resolution:** all five parts shipped in one pass (`runtime/app/cascade.js`, `locators.js`, `handlers.js`, `run.js`, `step_utils.js` — commit `0da87cb`). `isNonIdempotent(step)` (`step_utils.js`) flags the step types where a second dispatch duplicates an effect; `withLocator`/`withLocatorPair` (P1) and the `keyboard_shortcut` handler, which dispatches outside that seam, now mark an error `mayHaveActed` when the action may have landed before throwing. `guardDecision` (`cascade.js`) checks the step's own post-condition first (P2) — every assertion holding means the action already succeeded, no re-dispatch — and falls back to a page-signature delta (`assertions.js::signatureChanged`, P3) when there's no post-condition to settle it. Once a guard blocks a dispatch, `recoverStep`'s `stopped()` check (P4) stops every later stage, not just the one that hit it. A `step.destructive === true` step gets Layer 1 and nothing more (P5) — it never reaches the a11y/fallback-selector/dialog-scope/fuzzy-text stages that pick a different element than the one recorded. `run.js` seeds the guard from what's already known about the primary attempt and surfaces a blocked recovery to the agent tier as `actionMayHaveTakenEffect` or `destructiveHalt`. Not yet done: no doc update in `docs/TRD.md`'s recovery-cascade section (§ referenced from `AGENTS.md`'s Key Invariants) — tracked as a documentation follow-up, not a functional gap.
-- **Category:** Execution & Recovery
-- **Description:** `runtime/app/cascade.js::recoverStep` runs up to seven stages against a failed step (L1 remedy+retry, a11y re-probe, transient retry, re-hover retry, every fallback selector, four dialog-scoped variants, fuzzy text) and **each one dispatches a real input event** — roughly ten clicks in the worst case for a single failed step — with no check between any two of them for whether the page still resembles what the previous stage found. The only guard, `recoverWithSelector`'s post-action re-verify, fires only when the step carries a *required* assertion and is detection *after* the action, not prevention before it. Full code-verified analysis, comparison to how Playwright/SeleniumBase, browser-use, and Claude computer-use each avoid this, and the recommended five-part architecture: [`research-analysis/05-reliability/recovery-side-effects.md`](research-analysis/05-reliability/recovery-side-effects.md). The five parts: **P1** flag whether an attempt actually dispatched (the `withLocator`/`withLocatorPair` seam makes this near-free; `keyboard_shortcut` and `try_dismiss` dispatch outside it and need their own flag); **P2** re-run the post-condition *before* re-dispatching, so a step whose verify was merely slow is never clicked twice; **P3** where a step has no assertion, use a page-signature delta (`capturePreStepSignature`) as evidence the action may already have taken effect, applied only to non-idempotent step types (click/dblclick/right_click/keyboard_shortcut/upload/drag_drop/checkbox-radio toggles); **P4** fingerprint the page before the cascade (`recovery_park.js::capturePageFingerprint`) and stop the deterministic ladder at the existing `bail()` points once it moves; **P5** wire the already-compiled `step.destructive` flag into the runtime so a consequential step gets at most one dispatched action and never reaches the fallback/dialog/fuzzy sweeps. When the guard blocks a dispatch, escalate to the Tier 3 agent against the current mutated page with a failure reason saying an earlier attempt may have taken effect — except on destructive steps, which fail closed.
-- **Why required:** three failure modes, all silent. **Double-execution** — a submit whose post-condition renders slower than its own timeout gets clicked again by the transient stage. **Compounding wrong-target** — the fuzzy stage matches on a bidirectional substring and acts on a positional `nth=` index, so a wrong hit leaves the app in a state no later step or `resume_from` expects. **Stale reasoning** — the Tier B digest is built against a page seven earlier stages already mutated, while the failure reason handed to the agent is still the original exception. This is orthogonal to selector quality: a cascade whose every selector resolves perfectly still has all three, because the problem is that each stage assumes a page the previous stage changed. Same "reports success, wrong data" class as the now-fixed EXEC-11.
-- **Business value:** the failure model's own promise — "never a silent wrong-action" ([`research-analysis/04-architecture/08-failure-model.md`](research-analysis/04-architecture/08-failure-model.md) §6) — is not currently true for any step the cascade touches. Double-submitting an invoice or clicking the wrong row's Delete during *recovery* is precisely the risk finance/HR/payroll buyers ask about, and it is the one failure a customer will never forgive.
-- **Technical value:** almost entirely assembly of parts that already ship. `capturePageFingerprint` (already used for park divergence), `capturePreStepSignature` (already used for `state_changed`), and the `withLocator` action seam all exist; `step.destructive` is already compiled into every pack (`skill_spec.py`, `compiler/build.py`) and read by nothing in the runtime. Every part is zero-token and stays inside the deterministic band; P4/P5 *reduce* paid escalations in the cases where the ladder was previously thrashing against a page it had already broken.
-- **Dependencies:** none blocking. **P5 is the runtime half of PROD-3** (above) — PROD-3 owns the product-level system (danger labelling at record time, entity binding so recovery cannot substitute the wrong row, dry-run, Strict Mode, compensation flows); design them together rather than letting P5 drift into a competing proposal. P4 reuses the same park-divergence check EXEC-13's AI Review step is specified to use.
-- **Suggested order:** P1+P2 immediately — they are a small, self-contained diff in two files, change no step semantics or pack contract, and close the double-execution class on their own. P3+P4 next. P5 alongside PROD-3.
-- **Complexity:** M overall — P1/P2/P4 are each S; P3 and P5 are M (P3 needs the step-type idempotency table and tolerance tuning; P5 changes what recovery is *allowed* to attempt).
-- **Success criteria:** a step whose action succeeds but whose post-condition renders late is never dispatched twice; a cascade that has already mutated the page stops rather than continuing to act on pre-cascade assumptions; a step flagged destructive never reaches the fallback-selector, dialog-scope, or fuzzy-text stages; and a blocked dispatch surfaces to the agent (or fails, if destructive) with the ambiguity stated rather than hidden.
-- **Found via:** direct user question during the 2026-08-25 session ("after tier 1 has already clicked on something, tier 2 starts from there"), then verified stage-by-stage against `cascade.js`, `locators.js`, and `handlers.js`.
-
-### ~~EXEC-1 — Conditional / branch steps in the skill format~~
-- **Status:** Foundation shipped 2026-07-09 — schema (`SkillStep.branch`), the three action kinds (`if_present`, `try_dismiss`, `wait_for_one_of`) registered end-to-end (`events.py` `ActionKind`, `action_policy.py`, `action_registry.py`), the runtime executor (`runtime/run.js`: `probePresent`, `runBranchBody`, `resolvableBranchStep`, the three `HANDLERS`), the build-serializer passthrough (`plugin_builder_saved_skill.py`, recursive over nested step bodies), unit tests (`runtime/test/test_branch.js`, `conxa-cloud/tests/test_plugin_builder.py::TestBranchStepSerialization`), and a CI execution-gate fixture (`runtime/test/gate-skill/` — an `if_present` dismisses a real DOM cookie-banner overlay before the gate click; verified directly against a real Chromium page, since `gate_replay.js`'s packed-exe path needs a full pkg build). **Editor authoring shipped 2026-07-10** (the Human Edit vs. Skill Package redesign — `research-analysis/Human-Edit-vs-Skill-Package.md`): `if_present`/`try_dismiss`/`wait_for_one_of` are now insertable from Human Edit's Add-action menu (`action_registry.py`'s `INSERTABLE_ACTIONS`); `if_present`'s nested body is fully authorable — add/remove/reorder via new `cmd_insert_branch_step`/`cmd_delete_branch_step`/`cmd_reorder_branch_steps` RPCs (`handlers/workflow_editor.py`) backed by `workflow_mutations.py::insert_branch_step`/`delete_branch_step`/`reorder_branch_steps`, and per-nested-step field edits via `cmd_patch_step`'s new `path` parameter (`"branch.steps[N]"`), validated by `patch_gate.py::validate_editor_patch(..., in_branch_body=True)` which specifically forbids `recovery`/`validation` patches on nested steps (best-effort bodies never enter Tier 1-4 recovery). Frontend: `BranchSubList.tsx` (read-only preview in the step list), `BranchBodyEditor.tsx` (the authoring surface, mounted in `InlineRetargetFlow.tsx` for `if_present` steps). **try_dismiss/wait_for_one_of get read-only summary badges only** (`candidates`/`options` counts) — their backend patch validation exists (`_validate_branch_patch`) but no authoring UI was built for editing candidate lists or per-option nested bodies; tracked as a follow-up below. **Still not done:** the recorder does not yet emit these step types from a live recording — that's RT-2 below, still unblocked but open. `plugin_builder_output.py`'s `CONXA_REQUIRED_RUNTIME` floor was confirmed NOT yet bumpable — the branch-executor commit (`45896e7`) is not an ancestor of any tagged `app-vX.Y.Z` release as of 2026-07-10 (`git merge-base --is-ancestor 45896e7 app-v1.3.4` fails); the code comment in `plugin_builder_output.py` now names the exact commit so a future release can act on it precisely.
-- **Category:** Execution & Recovery
-- **Description:** Add `if_present(selector)→steps`, `try_dismiss`, and `wait_for_one_of` branch primitives to the skill-spec schema and the runtime executor, so a compiled skill can handle "this element sometimes appears" states — cookie/consent banners, session-expired interstitials, optional MFA, A/B-tested variants — instead of treating every such case as a hard failure that escalates to Tier B recovery. Confirmed unbuilt via zero grep hits for these concepts in `run.js` or `skill_spec.py`.
-- **Why required:** this is the single largest confirmed-unbuilt gap identified across the entire research corpus (flagged independently in `research-analysis/02-conxa-assessment/gap-analysis.md` G6, `research-analysis/03-insights/master-insights.md` #7/R4, `research-analysis/06-execution-plan/master-recommendations.md` R6, and top-50-improvements.md #6). Per the WorkArena research this corpus cites, this class of interstitial affects an estimated 30–50% of real-world page loads — meaning a meaningful fraction of current Tier B recovery escalations are likely a missing core primitive being misdiagnosed as selector drift, not genuine site redesign.
-- **Business value:** directly reduces false escalations to paid Tier B LLM recovery (a customer-visible cost, since recovery tokens are billed to the customer's own Claude usage) and reduces skill flakiness — flakiness is a stated sales/reliability concern, not a cosmetic one.
-- **Technical value:** this is a schema-and-executor-level primitive that other items depend on — RT-2's conditional-state capture and (per the research corpus) the intent graph's `decision_points` both need this to exist as a target representation before they're worth building.
-- **Dependencies:** none upstream — this should be the first item tackled among execution/recovery work. RT-2, EXEC-5's dismiss-known-pattern library, and PROD-3's dry-run capability all depend on it.
-- **Suggested order:** first item to tackle among all execution & recovery items (EXEC-2 through EXEC-8) and ahead of RT-2.
-- **Complexity:** XL — touches `packages/conxa-core/conxa_core/models/skill_spec.py` (new step-type schema), `conxa_compile` (recorder/compiler emission of the new step types, likely requiring new recording-time signal capture — see RT-2), and `runtime/run.js` (new branch-evaluation logic in the execution loop), plus new `gate_replay.js`-style CI fixtures exercising the three primitives.
-- **Success criteria:** a recorded workflow containing a cookie-banner dismissal replays correctly whether or not the banner appears on a given run; `runtime/test/` gains passing tests for `if_present`, `try_dismiss`, and `wait_for_one_of`; the CI execution gate (see ARCH-2) includes at least one fixture exercising a conditional branch.
 
 ---
 
@@ -943,25 +415,7 @@ the new item below this one.
 - **Complexity:** L — approve/reject is the small half and reuses EXEC-13's machinery almost wholesale; judgement input needs the typed input contract and schema validation; hand-over is the genuinely new part and carries the real risk (yielding and reclaiming a live page mid-run).
 - **Success criteria:** a workflow authored with each of the three review shapes compiles, publishes, and replays on a customer machine; at each review point the run pauses and the person is prompted in the browser the runtime is driving, with the page in the state the run left it; a judgement value supplied by the person is bound as a named input and demonstrably changes a later step's behaviour; a rejected approval aborts cleanly with an audit record; a hand-over returns control to the run with the page re-validated before the next step acts; a review that is never answered times out per its configured `on_failure` policy and leaks no browser; the workflow remains testable in the Build Studio sandbox; and telemetry distinguishes a planned review from a recovery-triggered handoff.
 
-## P2 — High Value, Do Soon (33 remaining / 53 total)
-
-### ~~BUILD-35 — Compile pipeline: legacy cleanup, dead code, silent-fallback audit~~ — RESOLVED 2026-09-14
-- **Category:** Compiler
-- **Status (2026-09-14):** All 6 phases landed and verified (`pytest -q tests`: 1459 passed/1 skipped baseline → 1464 passed/1 skipped final, the +5 from tests added alongside the fixes). Phase 5 was scaled back from its original scope after a real live consumer was found mid-implementation — see that section below.
-  - **Phase 1 (dead code) — done:** deleted `compiler/dependencies.py` (`infer_step_order`, zero callers), `storage/skill_package_templates.py` (zero callers, corroborated by `docs/archive/refactors/REFACTOR-AUDIT.md`), `pipeline/normalize.py` (back-compat shim nobody imported), `policy/catalog.py` + `policy/interfaces.py` (a dead migration-history catalog, only referenced by each other and the equally-dead `policy/__init__.py` re-export), the two broken `conxa-cloud/scripts/rebuild_*.py` (imported a `conxa_compile.plugin_builder` that no longer exists — see TEST-7 update above). Emptied six dead package `__init__.py` re-export bodies (`compiler`, `confidence`, `editor`, `pipeline`, `policy`, `anchors` — nothing anywhere imports the package-level names, every caller imports the submodule directly). Removed three always-empty output fields from `compiler/build.py::_build_target`/`_build_compile_report` (`confidence_breakdown`, `selector_rationale`, plus the always-true `identity_bundle is not None` guards) — kept `selector_source`, since `editor/evidence.py` forwards it into the Copilot evidence bundle, and made its value honest (`"legacy_fallback"` vs `"deterministic"`) instead of a hardcoded constant, per `REFACTOR-AUDIT.md` H-4's exact recommendation. Found and killed a live bug along the way, not just dead code: `storage/skill_packages_build.py::_write_bundle_index` (REFACTOR-AUDIT H-6) actively overwrote a bundle's correct `README.md`/`CLAUDE.md` with stale content describing a `npm install` / `execution/executor.js` architecture that predates the current MCP runtime, every time a skill package or one of its workflows was renamed or a workflow deleted — deleted the writer and its three call sites; the real README/CLAUDE.md come from `skill_package_builder.py`'s own build step and are simply left alone now.
-  - **Important correction to the original plan:** two things that looked dead by their code comments were verified NOT dead and left alone — `_build_target`'s legacy-election fallback (`build.py`) is the real answer whenever an element's IdentityBundle has no promotable top signal (relational/xpath-only, or empty), not dead code as first assumed; and `compiler/step_anchors.py`'s `truncate_after_terminal_submit` is a real, currently off-by-default policy toggle, not recording-format legacy. Both lessons: verify every "legacy"-labeled comment against actual call sites and policy defaults before deleting — several turned out to describe live, load-bearing behavior.
-  - **Phase 2 (drop old-recording-format compat) — done:** removed the `{"role","children"}` a11y tree-dict reader (both copies, `compiler/selector_filters.py::_count_role` and `llm/selector_regeneration.py::_extract_a11y_node` — the recorder has only ever emitted `{"aria_snapshot": "<yaml>"}` since Playwright dropped `Page.accessibility`), the `kind`/`value` legacy anchor shape (`anchors/schema.py`), `_is_legacy_synthetic_start_navigation_step` and its two now-orphaned helpers (`skill_package_builder_saved_skill.py` — matched the retired `navigate_to_start_url` intent name; the current compiler's synthesized leading-navigate intent is `navigate_to_page`), the 1-frame vision-anchor fallback (`llm/anchor_vision_llm.py` — `frame_extractor.py` always writes `frames`+`full_screenshot` together, so "no frames" now correctly means "extraction never ran/failed," not "old recording"), and the top-level `required` list branch in `_compute_inputs_required` (`skill_package_builder_output.py` — nothing currently writes that shape). Retired the `dom_change` policy value: `validation_planner.py`'s `_no_evidence_wait` (renamed from `_normalize_legacy_no_evidence_wait`) now **raises** naming the retired value instead of silently mapping it, and `intent_validation_rules.py`'s duplicate translator was deleted outright since a sibling `VALID_WAIT_TYPES` guard already handles an unrecognized value at both call sites. Updated ~10 test fixtures that used these legacy shapes purely as convenient test data (not testing legacy-compat itself) to the current shapes; replaced 3 tests that explicitly asserted the removed legacy behavior with tests asserting the new (raise / no-special-case) behavior.
-  - **Phase 3 (fail loud on infra/misconfiguration) — done:** `compiler/selector_filters.py`/`llm/selector_regeneration.py` no longer swallow a missing `bs4`/`lxml` (`ImportError` now propagates — both are hard pinned dependencies); kept the narrower `except Exception` around an actual parse failure, since that legitimately fires on Playwright-only CSS extensions like `:has-text()` that soupsieve can't evaluate — verified this is real, common, and not a bug before leaving it. `compiler/named_attrs.py` same split for its `lxml` import. `packages/conxa-core/conxa_core/config.py::_load_env_files_into_process` no longer silently skips `.env` loading if `python-dotenv` is missing (a hard pyproject dependency) — this runs at import time for every process using conxa-core, so a broken install now crashes loudly at startup instead of quietly running every setting on its hardcoded default. `conxa_runtime.py::sync_skill_pack` now raises on a corrupt `pack.json` (previously staged zero skills silently) or a corrupt per-skill `manifest.json` (previously omitted just that skill, silently). `skill_package_builder.py`'s `_write_skill_packs_format` failure now aborts the build instead of logging a warning and still recording/returning success — that write is the ONLY layout publish/installer/runtime actually read. `installer_builder.py`'s `set_installer` record-write failure is now a loud warning surfaced in the returned dict (not a bare `except: pass`) rather than a raise, since by that point the `.exe` itself already built and copied successfully — failing the whole build for a metadata-record write would discard a real, usable result.
-  - **Phase 3 item explicitly left alone:** `confidence/layered.py`'s partial-policy-corruption tolerance (`_thresholds`/`_recovery_weights`) — on inspection this reads a per-*step*'s own compiled `confidence_protocol` data (Studio-side 1-click-fix scoring only, `compiler/patch.py`, not the production runtime's recovery cascade), not an operator-edited policy file. A defensible partial-parse for a low-stakes editor feature, not the same bug class as the other items above. Left as a candidate for a future pass, not fixed here.
-  - **Phases 4-6, not started — full detail was in a plan file (`there-is-too-much-stateless-zebra.md`) that no longer exists on disk once the session ended; re-derive from this note and the codebase, don't assume the old plan file is retrievable:**
-    - **Phase 4 (done) — compile-report `degraded` channel:** `compiler/build.py::_build_compile_report` now takes a `degraded: list[dict] | None` param, embeds it as `compile_report["degraded"]`, and forces `status` to at least `"review_needed"` when non-empty. `_apply_second_opinion` now threads `error_detail` through to `build_workflow_review` (it already accepted the param, just wasn't given one) and records a `second_opinion`/`llm_call_failed` entry when the call genuinely failed (empty result + a populated error_detail — distinct from a legitimately-empty "nothing to say" result); its own apply/archive step records `second_opinion_apply`/`exception` the same way. `_prefetch_vision_anchors` returns degradation entries instead of `None` on both its deadline-reached path and its exception handler, which `compile_skill_package` folds into the same report. `test_second_opinion.py`'s `test_disabled_and_failed_compiles_are_byte_identical` was rewritten (renamed `..._keep_identical_steps_but_differ_in_report`) — the compiled **steps** stay byte-identical between disabled and failed (the Key Invariant this feature is scoped by), the **compile_report** deliberately no longer does. Fixed three cache-poisoning bugs found alongside this: `llm/semantic_llm.py`, `llm/vision_llm.py`, `llm/recovery_llm.py` all unconditionally cached whatever `_call_provider(...) or _fallback(...)` produced — now gated on `out.source != "rule_fallback"`, with a new `test_llm_cache_no_fallback_poisoning.py` covering all three. `llm/vision_llm.py`'s token-overlap fallback no longer hardcodes `confidence=0.65` for a zero-overlap guess (now `0.3`, distinct from the real-overlap `0.8`). `llm/llm_cache.py`'s two silent cache-write swallows now log via `append_current_job_event` instead of `pass` (performance-only impact, not correctness, so recorded not raised). `skill_package_builder_saved_skill.py`'s unparseable `wait` duration now drops the step (`return None`, the same established "unfillable step vanishes" convention this file already uses for `keyboard_shortcut`) instead of inventing `ms=1000`. **Correction:** the `max_iterations` "should raise" item from the original scoping was wrong — `_saved_for_each_step`'s drop-on-invalid is explicitly documented, deliberate, and consistent with every other action type in that file; left untouched.
-    - **Phase 5 (done, scope reduced) — dual build-output layout:** the original plan (collapse `output/skill_package/<slug>/skills/` into `data/skill-packs/` directly, deleting the intermediate tree and its README/CLAUDE.md/index.md/LICENSE) was **abandoned mid-implementation** after discovering Build Studio's Inspector Drawer (`electron/renderer/src/components/inspector/InspectorDrawer.tsx`, "View Package" from a workflow's overview) is a real, live UI feature that browses exactly that intermediate tree and previews exactly those files (`lib/skillPackageTree.ts`'s `ROOT_FILE_ORDER` explicitly lists `README.md`/`CLAUDE.md`/`index.md`/`LICENSE`, and defaults to opening `README.md`). Deleting the tree would have broken it. User chose the scaled-back option: kept the two-layout architecture and the Inspector Drawer fully intact; only fixed the six silent `except → {}`/`pass` swallows in `skill_package_builder_output.py::_write_skill_packs_format` that lose real data when a file this *same build* just wrote (or, for `pack.json`, a prior build wrote) turns out to be unreadable moments later — `structural_fingerprint.json`, `environment.json`, `compensation_skill.json`, `inputs.json` (consolidated the two separate reads into one), and the sibling-merge source `pack.json` now all raise a `RuntimeError` naming the file, instead of silently disabling the drift gate / environment gate / compensation link / inputs-required list, or (for `pack.json`) silently dropping every sibling skill from the pack. New tests in `test_skill_pack_fingerprint.py` cover both the sidecar and the `pack.json` corruption cases. **If the original full collapse is wanted later:** it now additionally requires repointing the Inspector Drawer's backend (`fetchSkillPackFiles`/`fetchSkillPackList` in `api/workflowApi.ts` and whatever handler backs them) at `data/skill-packs/` — different filenames (`inputs.json` not `input.json`, no README/CLAUDE.md/index.md there at all) — which is real, additional frontend work, not a backend-only change.
-    - **Phase 6 (done) — conxa-core storage/LLM client:** `conxa_core/storage/{workflow_store,group_store,skill_pack_store}.py`'s list functions (`list_workflows`, `list_groups`, `list_skill_packs`) now `warnings.warn(...)` naming the corrupt record/file before excluding it, instead of a bare `except: continue` — diagnosable without blocking the rest of the list (a full raise would take down every OTHER valid workflow/group/pack in that list over one corrupt file, judged worse than the status quo for a multi-item read path). `skill_pack_store.py`'s single-record `get_skill_pack`/`_read_raw` DO raise (not warn) on corruption, since a workspace has exactly one skill pack forever (Key Invariant) — silently returning `None` there would make `get_or_create_skill_pack` fabricate a brand-new empty one, discarding the workspace's real build/installer history, which is worse than blocking that one workspace until the file is fixed. `json_store.py`'s failed secondary file write and failed test-result-invalidation now warn instead of silent `pass` (the canonical `db_set` copy already succeeded in the first case; the primary document write already succeeded in the second, so raising would be disproportionate — but a reviewer relying on stale `last_test_*` fields needed a trail). **Correction:** `llm/client.py::_normalize_openai_response`'s `{"text": content, "output": content}` reshape for non-JSON content was NOT a bug — `test_copilot_turn.py::test_diagnose_prose_text_field_is_used_as_reply_when_json_reply_is_missing` confirms it's a deliberate, tested fallback so a provider that ignores JSON-mode still produces a usable Copilot chat reply. Left untouched.
-- **Why required:** the user asked directly to find and remove legacy components, backward-compat shims, and silent fallbacks across the compile pipeline, and to make it "optimized, streamlined, and maintainable."
-- **Business value:** a missing `bs4`, a corrupt `pack.json`/skill-pack record, or a failed LLM pass now surfaces as a clear, immediate signal instead of a customer receiving a silently worse skill package (or a reviewer a silently stale one) with no indication anything went wrong.
-- **Technical value:** ~250 lines of dead code removed with zero behavior change; several genuine "should have failed loudly" bugs fixed across all 6 phases, including one (the stale-README bundle-index writer, Phase 1) that was actively shipping wrong content to users today, not merely dead weight. Recurring lesson across every phase: several items in the original scoping, based on code comments and surface reading, turned out on verification to be deliberate, tested, load-bearing behavior (the legacy-election fallback and `truncate_after_terminal_submit` toggle in Phase 1, the `for_each` drop-on-invalid convention in Phase 4, the entire original Phase 5 architecture-collapse plan, and the Copilot prose-reply reshape in Phase 6) — verify against real call sites and existing tests before trusting a "this looks dead/wrong" read.
-- **Complexity:** was M (Phase 4), L (Phase 5, reduced to M once scoped back), M (Phase 6).
-- **Success criteria (met):** `pytest -q tests` stayed green through every phase; a compile with a failed second-opinion pass reports `status: "review_needed"` with a named `degraded` entry, never `"ok"` (`test_pass_failure_degrades_without_raising`); a corrupted sidecar or `pack.json` now raises during a skill-pack build instead of silently dropping data (`test_skill_pack_fingerprint.py`); a corrupted workflow/group/skill-pack record now warns instead of silently vanishing from a list.
+## P2 — High Value, Do Soon (33 remaining)
 
 ### PROD-1 — Per-tenant reliability: first-run calibration + persistent repair memory
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1047,34 +501,6 @@ the new item below this one.
 - **Suggested order:** ongoing discipline, not a one-time task. Revisit at the next major milestone (e.g., after DOC-4 below ships, or at the next audit boundary).
 - **Complexity:** S per touch-point, ongoing.
 - **Success criteria:** `CLAUDE.md`'s "Maintaining the Docs" table continues to be consulted after significant changes (already-existing policy, now with FIX.md rotation and TODO.md maintenance rules added to it).
-
-### ~~ARCH-1~~ — `/api/tracking/{company}/events` reframed as a permanent alias — **Resolved 2026-07-09**
-- **Category:** Architecture
-- **Resolution:** Per the Skill-Pack-Centric Publishing & Versioned Installer Architecture redesign, this is no longer tracked as a bug to fix — it's now a **documented, permanent back-compat alias**. `conxa-cloud/backend/app/api/tracking_routes.py`'s `public_router` (prefix `/api/tracking`, mounted bare in `main.py`) stays mounted forever alongside `/api/v1/tracking/{company}/events` and the new versioned `/api/v1/plugins/{installer_version}/{company}/tracking/events` — all three call the same `_ingest_events_impl()`. Removing the bare path would break every already-deployed installer whose baked-in `pack.json.tracking.tracking_url` points at it; there is no compat-safe way to migrate already-installed runtimes off it (see the versioned-endpoint design's "`{installer_version}` is frozen at build time" rule — the same reasoning applies here). `CLAUDE.md`'s Key Invariant note and `docs/Backend-Schema.md` §5.6 have been updated to describe this as sanctioned, not pending.
-- **Original description (superseded):** ~~this was tracked as a genuine bug to fix, not accepted as a permanent exception~~.
-
-### ~~ARCH-2 — Re-enable the `gate_replay.js` CI execution gate~~ — **Resolved 2026-08-04**
-- **Resolution:** Gate restored in `.github/workflows/build-runtime-app.yml`, between the version.json step and Zip/Release/Publish, so a failure blocks shipping. The 2026-06-28 disablement was caused by the step's `actions/cache` restore of an extracted Chromium tree plus a hard `timeout-minutes: 20`; the install now mirrors `build-runtime-host.yml`'s plain uncached `npx playwright install chromium`, which has run on every host release since without trouble. **`MIN_HOST` was stale and is now `host-v2.0.0` (was `host-v1.1.2`)** — the gate caught this on its first run: host-v1.1.2 predates the versioned component layout and aborts with "no app layer found," and it also predates the `jsonc-parser` stub the app layer's `config_edit.js` needs. Every app layer published since 2026-07-30 has therefore been shipping a false `min_host` claim in `version.json`. Verified locally against the real host exes: host-v1.1.2 fails to load, host-v2.0.0 replays to "Done." with both HEAD source and a locally obfuscated `dist-app`. `CLAUDE.md`/`AGENTS.md`/`SHIP-GUIDE.md` updated to say the gate is active.
-- **Category:** Architecture
-- **Description:** `.github/workflows/build-runtime-app.yml` has the real-skill-replay execution gate (`runtime/test/gate_replay.js`) commented out with a note: "Execution gate (real replay against host exe) is temporarily disabled. Re-enable before shipping customer builds." This was discovered during this documentation audit — `CLAUDE.md`/`AGENTS.md` both previously (incorrectly) described this gate as actively running before every app-layer publish. `SHIP-GUIDE.md` already correctly flags it as disabled and recommends a manual pass in the meantime.
-- **Why required:** this gate exists specifically because of a prior incident (documented at length in the FIX.md archive, `docs/archive/fix-log/FIX-2026-06-29.md`) where a packaged runtime shipped with a completely dead element finder — the build succeeded, started, and connected to MCP, but every click silently failed in production. `gate_replay.js` was built to make that class of failure impossible to ship un-caught again; right now it's not running, so that protection is currently just aspirational.
-- **Business value:** prevents a repeat of exactly the kind of production incident that motivated building this gate in the first place — a silent, fleet-wide execution failure that ships successfully through every other check.
-- **Technical value:** closes the gap between "CI is green" and "the runtime can actually click things," which is the whole point of an execution gate as opposed to a unit-test suite.
-- **Dependencies:** none.
-- **Suggested order:** do before the next customer-facing `app-v*` release; treat as a release blocker in the interim, matching `SHIP-GUIDE.md`'s current guidance to run it manually.
-- **Complexity:** S–M — likely just uncommenting the step and confirming `runtime/test/gate-skill/` still passes against the current build output; could be M if the fixture needs updating for since-changed behavior.
-- **Success criteria:** `build-runtime-app.yml` runs `gate_replay.js` on every push and fails the build on a broken element finder; `CLAUDE.md`/`AGENTS.md`/`SHIP-GUIDE.md` are updated to say it's active again.
-
-### ~~ARCH-3 — Executor-agnostic skill contract (schema discipline in `skill_spec.py`)~~ (done 2026-08-10)
-- **Category:** Architecture
-- **Description:** Define and document an explicit boundary inside the `SkillPackage` schema (`packages/conxa-core/conxa_core/models/skill_spec.py`) between the **skill contract** — the executor-independent specification of the workflow (per-step `intent`, `input_binding`, `IdentityBundle` fingerprints, `ValidationBlock` assertions, `DecisionPolicy`, the intent graph, and PROD-3's future consequence classes / entity bindings) — and **browser-replay implementation detail** (`compiled_selectors` in Playwright grammar, `handler_hints` hover chains, `frame`/`shadow_path`, `snapshot_ref`/`snapshot_dom_hash`). Today the two are interleaved on `SkillStep` with no marked boundary. This is not a refactor or a second executor — it's a documentation-plus-review-discipline item: annotate which fields belong to which layer, record the split in `docs/TRD.md` and `docs/Backend-Schema.md`, and from then on gate schema evolution on it (e.g., EXEC-1's new `if_present`/`try_dismiss`/`wait_for_one_of` primitives must be defined in contract terms — a condition and a branch — with browser-specific evaluation kept on the executor side).
-- **Why required:** the strategic backing (`research-analysis/conxa-critical-analysis.md` §8, P2 — the "backend-agnostic skill contract" NEW idea) is that Conxa's durable position against both official connectors and frontier computer-use agents is owning the governance layer *above* the executor: steps, verifications, entity bindings, audit requirements — with browser replay as merely the first pluggable backend (a graduated connector per PROD-7, or a computer-use model, being later ones). That only stays possible if executor assumptions don't quietly leak into the contract while the schema is still evolving. Doing this now is near-free; unpicking Playwright assumptions from a shipped, fleet-deployed format later is not.
-- **Business value:** this is the architectural foundation of the whole "own the layer above whichever execution technology wins" strategy — it's also what makes the format itself a strategic asset in any platform-partner or acquisition conversation (see PROD-13), rather than just a replay script.
-- **Technical value:** makes PROD-7 (connector graduation — re-executing the same contract over an API backend) and any future execution backend a well-defined transform instead of an archaeology project; also gives PROD-3's entity bindings and consequence classes a clean home on the contract side from day one.
-- **Dependencies:** none upstream, but it should land **before or together with EXEC-1** (the next big schema change) so the new branch primitives are born on the right side of the boundary. Complements BUILD-1 (CIR is the diffable *artifact*; this is the semantic *contract* the artifact carries).
-- **Suggested order:** early — the entire value of the item is doing it while the schema is still cheap to shape; sequence ahead of EXEC-1's schema work.
-- **Complexity:** S–M — field annotations, a short design note in the docs, and a review rule; no runtime behavior change.
-- **Success criteria:** `skill_spec.py` and `docs/Backend-Schema.md` explicitly mark every `SkillStep`/`SkillPackage` field as contract vs. executor-specific; EXEC-1's branch primitives ship defined in contract terms; a one-page design note exists stating the pluggable-executor intent so future schema changes are reviewed against it.
 
 ### BUILD-1 — Compiler IR (CIR) + reproducible, pinned compiles
 - **Category:** Builder
@@ -1215,62 +641,6 @@ the new item below this one.
 - **Complexity:** M — event schema design, `tracker.js` emission points at the resolver/recovery seams, ingest-side validation, and doc updates; no new learning code.
 - **Success criteria:** every resolution outcome event carries winning signal engine, orthogonality class, fallback depth, stable-hash match, and compat fingerprint; a sample export can answer "which signal classes survived last month's drift events, per app" with a query rather than a code change; `docs/Backend-Schema.md` documents the new event codes.
 
-### ~~EXEC-36~~ — No environment fingerprint: a different locale/timezone/viewport/role fails like a broken selector — **Resolved 2026-09-12**
-- **Category:** Execution & Recovery
-- **Description:** `drift.js` checks whether the page's structural landmarks are still there before step 0 — good instinct, but nothing captures the *environment* at record time (locale, timezone, viewport size, currency/date format, the recording user's role/permissions) to compare against the replay environment. A workflow recorded by an admin in en-US at 1920×1080 replayed by a viewer in de-DE at 1366×768 can hit a button now hidden behind a hamburger menu, a date field expecting `TT.MM.JJJJ`, or a Delete button that doesn't exist for that role — none of which is a broken selector, but all of which fail exactly like one, burning the same recovery ladder and Tier B tokens as genuine drift.
-- **Why required:** this failure mode is indistinguishable from drift/breakage in today's telemetry, so it's misdiagnosed and mis-triaged every time it happens; a real multi-account or multi-locale customer will hit it repeatedly.
-- **Resolution:** capture, compile, and replay-comparison, plus the notification channel this item's success criterion needed and `drift_detected` never had. **Capture:** `recorder/session.py::_write_environment_sync` writes `environment.json` once at session start (locale, timezone + UTC offset, viewport, device pixel ratio, a locale-formatted date sample, platform) — best-effort, swallowed on failure. Role is deliberately NOT captured (no reliable generic way to read it from a page; left to PROD-1's first-run calibration). **Compile:** new `SkillMeta.environment` field; `build.py::_read_environment_sidecar` reads the sidecar; carried through to `manifest.json` via the same two-hop pattern as `structural_fingerprint`. **Compare:** new pure `runtime/app/env_match.js::compareEnvironment()` — deliberately narrow (primary language subtag only, UTC offset only, viewport >25% or crossing a responsive breakpoint) so a noisy warning never drowns out a real one. **Notification:** discovered `drift_detected` was telemetry-only and never reached the user — built a shared `warnings: string[]` channel in `run.js` (returned on success, attached to the thrown error via `stepFailure` on failure) that both the environment check and `drift_detected` now feed, surfaced by `server.js` in `execute_skill`'s response text on both paths. This is a NEW, narrower notification path than BUILD-28's leg (a) specifies — BUILD-28 asks for the workspace/vendor to be notified (a dashboard/cloud-side alert); what shipped here tells the END USER running the skill, in the moment, via the chat response. Genuinely useful (the person hitting the failure sees an explanation instead of a bare selector error) but does not close BUILD-28 — see the note added there. New telemetry: `env_mismatch`. Tests: `runtime/test/unit/test_env_match.js`, `conxa-cloud/tests/test_environment_fingerprint.py`.
-- **Business value:** a warning that says "this was recorded in a different language/screen size than yours" turns a baffling mid-run failure into an obvious, self-explanatory one — directly reduces support load for the cross-account risk **PROD-1** already flags as the #1 priority test.
-- **Technical value:** small, additive extension of code that already exists — capture the environment during recording, compare at replay, warn-not-block in exactly `drift.js`'s existing shape. No new detection architecture.
-- **Dependencies:** none blocking; natural pairing with **PROD-1**'s first-run calibration pass, which is the other place a permission/locale mismatch would otherwise surface as a mid-run failure instead of a pre-flight warning.
-- **Complexity:** S–M — capture is a few fields at record time; comparison and warning reuse `drift.js`'s existing advisory, never-blocking pattern.
-- **Success criteria:** a replay in a materially different locale, timezone, or viewport than the recording surfaces a specific, plain-language warning before or alongside the first failure it causes, rather than reporting an ordinary selector/drift failure. (Role comparison is out of scope — see Resolution.)
-- **Found via:** advisor review of the reliability architecture (2026-09-12).
-
-### ~~EXEC-37~~ — Waits are inferred from one observed page load, not settle detection — **Resolved 2026-09-12**
-- **Category:** Execution & Recovery
-- **Description:** `infer_wait_for_shape` watches one page load, on one network, once, and bakes in what it saw as the compiled `wait_for` shape. The durable fix isn't a longer static timeout — it's settle detection at replay time: wait until the DOM stops mutating, no network requests are in flight, and no spinner elements are visible, bounded by a deadline. `page_eval.js`'s existing deadline seam is the natural home for this.
-- **Why required:** a single-observation wait is calibrated to whatever network/server conditions happened to exist during that one recording — it silently under- or over-waits on a slow morning, a cold cache, or a server under load, and there's no way to distinguish that from genuine breakage without a settle-based fallback.
-- **Resolution:** discovered mid-implementation that `wait_for` never actually reaches the runtime — it's lowered into `validation.assertions` at compile time (`build.py::_build_assertions`) and the only replay-time wait is `run.js`'s blanket `waitForPageLoad()`. So "fall back to settle after the compiled wait" became: settle detection as a **failure-path-only** fallback, before recovery, never a new inter-step wait — a currently-passing run's timing is completely unaffected. New `runtime/app/settle.js::waitForSettle()` polls a page-shape signature (`page_scripts.js::settleSignature`: text length, interactive-element count, node count, visible busy-indicator count — `[aria-busy="true"]`/`[role="progressbar"]`/spinner classes) through the `page_eval.js` seam until two consecutive samples match with no busy indicator, or a budget expires (`CONXA_SETTLE_BUDGET_MS`, default 8000ms). Wired into `run.js` right before the recovery cascade: if the page actually had to wait, retry once. Two shapes matching what already happened — a step whose action never dispatched gets the whole action+verify retried; a step whose action may already have landed (`verifyFail`, or `mayHaveActed` — the same signal `cascade.js`'s own guard uses) only gets re-verified, never re-acted, so the retry itself can never double-submit a non-idempotent step. Kill switch: `CONXA_SETTLE_RETRY=0`. New telemetry: `settle_retry`. No MutationObserver/network-request tracking — a two-sample counter poll (`ponytail:` comment in `settle.js` names the ceiling and the upgrade path). Tests: `runtime/test/unit/test_settle.js`.
-- **Business value:** fewer false-positive failures on ordinary "the site was just slow today" runs, which otherwise read as reliability problems to a customer.
-- **Technical value:** adapts automatically to load conditions instead of requiring the compiled wait shape to be re-tuned per site/session; reuses the deadline-seam infrastructure **EXEC-34** already built out for `.evaluate()`/`.count()` calls.
-- **Dependencies:** **EXEC-34** (resolved in the same pass, same seam).
-- **Complexity:** M — settle-detection logic (DOM shape + busy-indicator polling, not full mutation/network tracking) plus wiring it as a failure-path fallback ahead of the existing compiled `wait_for`.
-- **Success criteria:** a step whose page loads slower than it did at record time still passes without a compile-time timeout bump, and settle detection never adds meaningful latency on a normally-fast page (a passing run never calls it at all).
-- **Found via:** advisor review of the reliability architecture (2026-09-12).
-
-### ~~EXEC-38~~ — No iteration primitive: workflows can branch but can't loop over a list — **Resolved 2026-09-12**
-- **Category:** Execution & Recovery
-- **Description:** The step format has `branch` (**EXEC-1**, done) but no "for each" — no way to say "do this for every invoice in this list." Nearly every real back-office task is a loop (process each pending order, update every customer matching a filter, download all of last month's statements), and today a user either records the loop body once and hopes, or records N near-identical steps. `entity_binding.py` already solves the hard half — given a container selector and identifying text, find *this* row — a loop primitive is that plus a termination condition and a per-row sub-workflow.
-- **Resolution:** shipped as `SkillStep.for_each` (`rows.container_selector`, `as`, `max_iterations` — required, `on_row_error`, `steps`). New `resolution.js::enumerateRows` (the inverse of `entityRoots`) snapshots the row list once, using each row's own trimmed text as its identifier; body steps carry `entity_binding.identifier: "{{<as>_id}}"` so the existing `entityRoots` narrowing does all per-row scoping — no new resolution logic. **The one real refactor**: `run.js`'s flat step loop was extracted into `executeOneStep(ctx, state, steps, i)` so a loop body runs through the exact same tab-resolution/GATE/VERIFY/settle-retry/recovery-cascade/dry-run-skip path every top-level step gets, not the best-effort no-recovery path the other branch primitives use — verified safe by the full 687-test runtime suite passing unchanged before and after the extraction. Compiler: `entity_binding` detection now runs for every step (not just irreversible ones, since a loop's ordinary body steps need row scoping too); `_saved_for_each_step` drops a step with no `max_iterations`. Safety, landed together per the dependency below: `handlers/workflows.py::_require_confirmed_entity_bindings` now recurses into `for_each.steps` so a destructive body step's binding can't reach a customer install unconfirmed; `CONXA_MAX_LOOP_ITERATIONS` (default 100) clamps the declared cap at runtime; `dry_run: true` (PROD-3-DRYRUN) visits every row and resolves every body step but dispatches none of the destructive ones, for free, since it's the same `executeOneStep` logic. Editor: insertable, scaffolded, `patch_gate.py`-validated, and read-only projected (`StepEditorDTO.for_each_summary`/`.for_each_steps`) — no dedicated nested-body authoring UI yet (see the new follow-up item below). Tests: `runtime/test/unit/test_for_each.js` (10 cases: snapshot-once, cap enforcement, missing-cap refusal, `on_row_error` both ways, per-row entity-bind correctness, input restoration, dry-run integration, empty-row no-op); `conxa-cloud/tests/test_for_each_compile.py`, `test_for_each_patch_gate.py`, `test_for_each_dto.py`, `test_for_each_mutations.py`, and new cases in `test_publish_entity_binding_gate.py` for the nested confirmation-gate recursion.
-- **Why required:** this is the ceiling on "complex workflows" as a category; without it, workflows over variable-length lists simply can't be authored durably.
-- **Business value:** unlocks a whole class of back-office automation (bulk order processing, batch customer updates, statement downloads) that today requires either manual re-recording per batch size or isn't automatable at all.
-- **Technical value:** builds directly on `entity_binding.py` (row identification) and the existing `branch`/`consequence` step classification (read-only / reversible / irreversible) rather than inventing new machinery.
-- **Dependencies:** **hard dependency, not a sibling: PROD-3-DRYRUN must land first or alongside.** A loop over an unbounded or large list combined with an irreversible action is exactly how automation software damages a customer's database — an iteration cap and true dry-run are non-negotiable parts of the same change, not a follow-up. (Landed in the same pass, immediately before this item.)
-- **Complexity:** L — new step-format primitive (termination condition, per-row sub-workflow, iteration cap), compiler support, runtime executor changes, and mandatory dry-run/cap enforcement shipped together.
-- **Success criteria:** a workflow can express "for each row matching X, do steps A–C," runs to completion over a variable-length list bounded by a hard iteration cap, and an irreversible action inside the loop body cannot execute without passing dry-run/confirmation first.
-- **Found via:** advisor review of the reliability architecture (2026-09-12).
-- **Update (2026-09-13, `items` row source added):** generalizing a recorded GitHub→Drive
-  download/upload recording (one hardcoded file) into a `for_each` loop exposed that the primitive
-  had no way to loop over a caller-supplied list — only a DOM row scan. Added `for_each.items:
-  "<input_name>"` as a second, mutually-exclusive row source: `resolution.js::splitListInput`
-  (enumerateRows's sibling) splits the named input's comma-separated value into the iteration
-  list; everything past enumeration (cap, `{{<as>_id}}`/`{{<as>_index}}`, `on_row_error`, dry-run,
-  recovery, telemetry) is unchanged and source-agnostic. Enforced everywhere: `_saved_for_each_step`
-  drops a step with both or neither source; `patch_gate.py::_validate_for_each_source` checks the
-  step's *effective* `for_each` (existing merged with the patch), not the raw patch alone. Same
-  pass fixed two latent defects the generalization exposed: (1) `second_opinion.py`'s
-  `parameterize_literal` could clobber an upload step already auto-bound to
-  `{{downloaded_file}}`/`{{downloaded_files_dir}}` into a hand-typed input — it now refuses
-  whenever `value` already holds any `{{placeholder}}`, not just when `input_binding` is set; (2)
-  a loop's own `{{<as>_id}}`/`{{<as>_index}}` could leak into declared inputs the same way
-  `{{downloaded_file}}` used to — `upload_binding.py::for_each_loop_variable_names` now excludes
-  both families at every auto-declare site, closing a gap two `handlers/workflow_editor.py` RPCs
-  had (they call `reconcile_inputs_with_step_values` directly with no downstream filter). See
-  `docs/TRD.md` §10.8 for the full account. Tests: `runtime/test/unit/test_for_each.js` (+8 items-
-  source cases), `conxa-cloud/tests/test_for_each_compile.py`, `test_for_each_patch_gate.py`,
-  `test_for_each_dto.py`, `test_second_opinion.py`, `test_editor_derived_sync.py`.
-
 ### EXEC-38-UI — Studio UI for authoring a for_each loop body
 - **Category:** Execution & Recovery / Builder
 - **Description:** EXEC-38 shipped the `for_each` iteration primitive fully in the compiler and runtime, with read-only visibility in Human Edit (`StepEditorDTO.for_each_summary`/`.for_each_steps`), but no dedicated authoring control — a vendor can insert a `for_each` step and see its body, but can only edit `rows.container_selector`/`items`/`as`/`max_iterations`/`on_row_error` and the nested body through the generic patch mechanism, not a purpose-built UI. This is the same "backend done, editor control pending" gap `PROD-3-UI` already tracks for Strict Mode, entity-binding confirmation, and `compensation_skill`.
@@ -1280,114 +650,6 @@ the new item below this one.
 - **Dependencies:** EXEC-38 (done).
 - **Complexity:** M — a for_each variant of `BranchBodyEditor.tsx`, matching structural-mutation RPCs (`insert_for_each_step`/`delete_for_each_step`/`reorder_for_each_step` in `workflow_mutations.py` + `handlers/workflow_editor.py`), and a row-selector/cap/on-row-error control panel.
 - **Success criteria:** a vendor can build and edit a `for_each` loop — row selector, cap, on-row-error, and its nested body — from the Human Edit page without hand-crafting a patch.
-
-### ~~EXEC-39~~ — One-click "generalize this to a loop" suggestion for single-file download→upload recordings — **Resolved 2026-09-13**
-- **Category:** Execution & Recovery / Builder
-- **Description:** A recording that downloads exactly one named file and uploads it elsewhere (the common back-office shape) always compiled to a single-file skill — turning it into a `for_each` loop over a caller-supplied list required hand-editing the compiled document, since `EXEC-38-UI`'s generic authoring UI doesn't exist yet either. Requested explicitly: detect this specific shape automatically and offer it as a one-click Accept suggestion, with the same governance model as BUILD-25's second-opinion pass and BUILD-26's Copilot proposals — propose, never auto-apply.
-- **Resolution:** shipped as a fully deterministic detector, **no LLM call anywhere in the decision** — a narrower guarantee than BUILD-26's own rule ("never invent a selector for something never observed"), since this feature never touches a selector at all. `compiler/loop_suggestion.py::detect_download_upload_loop_candidates` fires only when an upload step is bound to the exact `{{downloaded_file}}` placeholder (`upload_binding.py`'s single-download binding — the bulk/`_N` variants are excluded, that's already multi-file) **and** the matching `download_observed`'s recorded filename appears verbatim inside an earlier `navigate` step's URL (v1 is URL-based only, by design — see the ADR-style discussion of why in `docs/TRD.md` §10.8). Run at compile time (`build.py`, after the second-opinion pass settles so step_keys are final), stored under `compile_report["for_each_suggestions"]` — the same advisory-findings slot `second_opinion`/`archived_steps` already use.
-
-  **Apply** — `editor/workflow_mutations.py::apply_for_each_loop_suggestion` — is one atomic document write, not insert-then-patch: `patch_gate.py` already refuses a `steps` key in a `for_each` patch, there is no `for_each.steps[N]` path-addressed route, and an empty-bodied `for_each` silently vanishes from `execution.json` at package time — so the wrap, the body's literal→`{{<as>_id}}` templating, the upload's rebind to `{{downloaded_files_dir}}`, and the new input all land in one write. Re-resolves every `step_key` at apply time (never trusts a stale index), same staleness discipline `copilot_proposals.py::resolve_step_index` established. New RPCs `cmd_accept_for_each_suggestion`/`cmd_reject_for_each_suggestion` (`handlers/copilot.py`, co-located with the Copilot proposals for shared governance/log format even though no LLM is involved) — accept composes into one undo entry (cleaner than `_accept_overlay_branch_proposal`'s multi-RPC composition, since nothing here needs pre-existing insert/patch RPCs); reject logs into the SAME `edits.jsonl` every other proposal decision uses (`source="for_each_suggestion"`, distinct from `"copilot"` since no model produced this finding).
-
-  **A real subtlety found and fixed during implementation:** `download_observed`'s fallback `step_key` (`compiler/step_key.py`) hashes on action+url alone — identical across every `download_observed` in a workflow, disambiguated only by occurrence ordinal. Moving one occurrence out of the top-level step list (into this wrap's nested body) shifts the ordinal of every sibling `download_observed` still at top level, silently invalidating any OTHER pending suggestion's step_key. Fixed by clearing the entire `for_each_suggestions` list on any apply (not just the applied entry) — matching `_invalidate_compile_report`'s own philosophy of wiping derived data that can no longer be trusted rather than risking a misattributed step; a recompile regenerates whatever is still genuinely there.
-
-  **Dismiss persistence (asked for explicitly) needed read-time filtering, not just compile-time:** a "Dismiss" click only logs a decision (`edit_log.py`) — it never edits the persisted `compile_report` — so a plain Human Edit page reload with no recompile in between would otherwise show the same dismissed suggestion again. `editor/workflow_dto.py::_compile_health` now filters `for_each_suggestions` against `edit_log.read_edits(skill_id)` on every read (compile, reload, or post-accept refresh alike), via `loop_suggestion.py::filter_rejected` — one enforcement point instead of a compile-time-only one that would have missed the reload case.
-
-  **Human Edit surface:** a new always-visible `ForEachSuggestionBanner.tsx`, mounted beside `CompileHealthBanner` — visible the moment the page loads, no need to open the Copilot chat panel (unlike `ProposalCard.tsx`'s chat-triggered proposals, which this deliberately does not reuse the single-slot `pendingProposal` store for).
-- **Why required:** without it, "customer might want N files, not the one I recorded" — one of the most common back-office patterns — required a person to notice the pattern and hand-edit the compiled document; nobody would discover this was even possible.
-- **Business value:** the download→upload "grab document(s) from A, put them in B" shape is one of the best enterprise demos and the most requested generalization; making it one click instead of a support ticket is a real adoption unlock.
-- **Technical value:** built entirely on existing machinery — `upload_binding.py`'s single-download binding, `compiler/step_key.py`'s staleness discipline, the BUILD-25/26 advisory-findings + accept/reject/edit-log pattern, and EXEC-38's `for_each` primitive itself. The one genuinely new piece is the step-range-into-nested-body splice (`apply_for_each_loop_suggestion`), which no existing structural mutation did (confirmed by exhaustive search) — everything else composes.
-- **Known, accepted limitation:** narrow by design for v1 — only fires when the varying literal is a URL segment. Does not fire on a file picked by a plain click with no URL change (a future items-source variant, using the click step's own `entity_binding.identifier` instead of a URL literal, is the natural next step — tracked informally, not yet its own ticket). **Verified directly against the real `Github to Drive Files Handoff` recording** (2026-09-13, same day): once the second-opinion clobber fix above is in place, the upload step correctly stays bound to `{{downloaded_file}}`, and the suggestion *does* fire on that exact recording — recompiling it (no re-recording needed) surfaces it in Human Edit. See BUILD-33 for a second, more serious defect this same recompile surfaced (the click that starts the download itself was being deleted) and its fix.
-- **Dependencies:** EXEC-38 (done, the `for_each` primitive this generalizes into), BUILD-25/26 (done, the advisory-findings + proposal/accept/reject/edit-log pattern this reuses).
-- **Complexity:** M — one new detector module, one new structural mutation (the genuinely new piece), two new RPCs following an established pattern, one new renderer component.
-- **Success criteria:** a recording that downloads and uploads one named file, picked by navigating to a URL containing its name, shows a one-click "generalize this to a loop" suggestion in Human Edit the moment it's opened; accepting it produces a working `for_each` skill over a caller-supplied file list; dismissing it never shows that exact suggestion again for that skill.
-- **Found via:** direct user request, 2026-09-13 (same session that hand-generalized the `Github to Drive Files Handoff` skill this pattern is drawn from).
-
-### ~~BUILD-33~~ — Second opinion could delete the very click that starts a download or opens a file picker — **Resolved 2026-09-13**
-- **Category:** Builder / Compiler
-- **Description:** The user re-recorded `Github to Drive Files Handoff`, recompiled, and accepted EXEC-39's new loop suggestion — the loop was authored correctly, but the workflow downloaded nothing at replay. Root cause: BUILD-25's `flag_noise` finding had archived the click that starts the file's download (`[data-testid="download-raw-button"]`), because that click's `post_condition_effect` is `"none"` — the page itself doesn't visibly change when a download starts, which is exactly the signal `flag_noise` reads as "did nothing." The loop's body was left as `navigate → download_observed` with nothing to trigger the download `download_observed` waits for — every iteration timed out waiting, and the final bulk upload failed with "no files in it," an error nowhere near the real cause. The **same class** had already bitten the earlier hand-generalized recording, which lost the click that opens Drive's file-upload picker to the identical rule — different victim, same blindness. A second, smaller defect in the same recompile: a hardcoded click on the one recorded filename survived *outside* the new loop, redundant once the loop navigates straight to each file's URL, and pinned to a single file with a fragile selector.
-- **Resolution:** `compiler/build.py`'s per-step review payload now computes `causes` (`"file_download"` / `"file_chooser"`) by looking past pure navigation markers to the next real step — purely structural, no LLM, no new signal. The `workflow_review` prompt (`packages/conxa-core/conxa_core/llm/client.py`) and the finding validator (`llm/workflow_semantics.py::_validate_findings`) both now refuse a `flag_noise` finding on a step with `causes` set. The real fix is structural, not advisory: `compiler/second_opinion.py::archive_flagged_steps` independently recomputes the same lookahead from the actual step list and refuses to archive a step that triggers an observed download or file-chooser upload, regardless of what the model said or whether the context field was ever populated — this is the pass's one destructive kind, so the invariant belongs where it can't be bypassed. `compiler/loop_suggestion.py` now also detects a redundant hardcoded click immediately before the loop's per-item navigate (same tab, its own recorded fingerprint text containing the filename verbatim — never a selector) and folds it into the suggestion's wrap range as `redundant_click_key`; `apply_for_each_loop_suggestion` removes that step on Accept rather than wrapping it, archiving it into `compile_report["archived_steps"]` (category `superseded_by_loop_navigate`) so it stays reversible.
-- **Verified directly against the real broken document** (not just synthetic tests): reconstructed the pre-archive step list from the shipped skill's own `compile_report["archived_steps"]` entry and re-ran the fixed `archive_flagged_steps` — the download-trigger click survives. Reconstructed the pre-accept step list the same way and re-ran the fixed `loop_suggestion.py` — it correctly folds the redundant `Android.gitignore` click into the suggestion for removal.
-- **Why required:** a compiler pass silently deleting the one step that makes a download or upload actually happen is a correctness bug in the pass's own gate, not a one-off bad LLM call — the "no visible page change" signal is the *expected*, not anomalous, shape for exactly these two step kinds, so every future download→upload recording was at risk of hitting this, not just this one.
-- **Business value:** this is the reference download→upload demo (EXEC-39 was built around it) silently producing an empty run — the single worst first impression this feature could give a prospect watching it "work."
-- **Technical value:** closes a real gap in BUILD-25's own safety story ("Human Review is the gate" assumed a wrong call is merely misleading, not one that deletes load-bearing behavior); the structural guard in `archive_flagged_steps` means this class of bug cannot recur even if the prompt or the validator is later weakened.
-- **Dependencies:** BUILD-25 (the pass this fixes), EXEC-39 (the feature whose real-world use surfaced this).
-- **Complexity:** M — one new per-step field, one prompt clause, two independent validation gates (advisory + structural), one detector extension, one mutation extension.
-- **Success criteria:** recompiling `Github to Drive Files Handoff` and accepting the loop suggestion produces a workflow that actually downloads and uploads every named file; a click immediately followed by `download_observed` or an upload step is never archived by `flag_noise`, no matter what the model proposes.
-- **Found via:** direct user report after using the shipped EXEC-39 feature end-to-end, 2026-09-13 (same day).
-- **Noted, not fixed here:** the same recording's Drive "Data" folder steps compiled to `[data-tooltip="More info (Alt + →)"]` as a primary selector — a per-row button present on every row, not a folder-specific one. The resolver's uniqueness/margin gate should already reject that ambiguity and fall through to the exact-text fallback, so the run likely still succeeds, but the primary selector itself is wrong. Unrelated to this fix; tracked here so it isn't lost.
-
-### ~~BUILD-34~~ — Loop suggestion never fired on a filename containing a URL-reserved character — **Resolved 2026-09-13**
-- **Category:** Builder / Compiler
-- **Description:** After BUILD-33 shipped, the user re-recorded `Github to Drive Files Handoff` a second time against `C++.gitignore` and recompiled — no download-trigger click was lost this time (BUILD-33's fix held), but the "generalize this to a loop" Accept button never appeared at all. Root cause: `loop_suggestion.py`'s detector matched the recorded filename against the navigate step's URL with a raw substring check — `filename in url`. A browser percent-encodes URL-reserved characters in a path segment, so the actual recorded URL was `.../C%2B%2B.gitignore`, not `.../C++.gitignore` — the literal `"C++.gitignore"` is simply never a substring of the encoded URL string. The two earlier recordings (`Android.gitignore`, `Actionscript.gitignore`) happened not to contain any character requiring encoding, so this was invisible until a filename with a `+` in it was actually recorded.
-- **Resolution:** structural fix, not a one-off patch — every place in this feature that compares a recorded literal against a step's `url` field now goes through two new shared helpers in `compiler/loop_suggestion.py`: `url_contains_literal(url, literal)` and `replace_url_literal(url, literal, replacement)`, both decoding the URL's percent-encoding before matching (`urllib.parse.unquote`) rather than trying to re-encode the filename — encoding is ambiguous (a space can become `%20` or `+` depending on the site) but decoding is not. This mattered in three places, and fixing only the detector would have left a second, latent bug: the detector's own navigate-URL match (`detect_download_upload_loop_candidates`), the defensive re-check in `apply_for_each_loop_suggestion` (an intervening edit may have changed the URL — must not falsely refuse), and the actual templating step that writes `.../{{file_id}}` into the loop body's navigate — a raw `url.replace(literal, ...)` there would have silently no-op'd, detecting the suggestion correctly but then shipping a loop still hardcoded to one file. `replace_url_literal` returns the DECODED URL with the placeholder substituted; `page.goto()` (`runtime/app/handlers.js`) accepts unencoded reserved characters and the browser re-encodes them on navigation, so nothing is lost at replay time.
-- **Verified directly against the real broken document**, not just synthetic tests: re-ran the fixed detector against the actual compiled `C++.gitignore` skill — the suggestion now fires with `template_literal: "C++.gitignore"` — then ran the fixed `apply_for_each_loop_suggestion` against that same document end to end: the loop body wraps correctly, its navigate URL templates to `.../{{file_id}}`, the upload rebinds to the bulk folder, and the redundant hardcoded click is archived, exactly as designed.
-- **Why required:** any recorded filename containing a space, `+`, `&`, non-ASCII character, or other URL-reserved character would silently never trigger this feature, with no error and no signal to the user that anything had gone wrong — the button simply wouldn't be there. Both real recordings so far have hit a real bug on first use; this was the second.
-- **Business value:** the feature's entire value proposition is "notice the pattern automatically" — a detector that only works for filenames with no special characters is not a reliable feature, it's a coin flip against whatever the user happens to record next.
-- **Technical value:** the two new helpers are also the correct fix for `_redundant_click_index`'s fingerprint-vs-filename check going forward if that ever needs URL-based matching, and remove a class of bug (raw substring matching against a possibly-encoded URL) that could easily have been reintroduced by a future call site copying the old pattern.
-- **Dependencies:** EXEC-39 (the feature), BUILD-33 (the same-day fix this builds on).
-- **Complexity:** S — two small shared helpers, three call-site swaps, no schema or mutation-shape change.
-- **Success criteria:** a recording whose downloaded filename contains a URL-reserved character (`+`, space, `&`, non-ASCII) shows the loop suggestion exactly as reliably as one that doesn't, and Accept produces a loop body whose navigate URL is correctly templated regardless.
-- **Found via:** direct user report after a second real-world use of the shipped EXEC-39 feature, 2026-09-13 (same day as BUILD-33).
-
-### ~~EXEC-40~~ — A `for_each` download loop could complete "successfully" having downloaded nothing — **Resolved 2026-09-13**
-- **Category:** Execution & Recovery / Runtime
-- **Description:** After BUILD-33/34 shipped, the user recompiled `Github to Drive Handoff`, accepted the loop suggestion (this time correctly structured — verified), and ran it with real inputs (`files: "Zig.gitignore,Coq.gitignore"`). No files downloaded. Investigation traced this to a real, general validation gap, not another compiler bug: `runtime/app/handlers.js`'s `download_observed` handler — a passive marker that only *waits* for a Playwright download event some earlier click must have triggered — had three separate paths that returned successfully having downloaded nothing at all: the wait timing out with the queue still empty, the entry-vs-timeout race resolving nothing, and an entry resolving with no `.path` (server.js's download listener resolves `null` when the save itself fails). None of these threw. Nothing anywhere downstream checked "did every requested item actually produce a file" — a `for_each` loop over this step could complete every iteration "successfully" while silently downloading some, one, or zero of the files a customer asked for, and the final bulk upload only failed if the shared downloads folder ended up *completely* empty; a partial miss (1 of 2 files) uploaded happily and reported success with a file quietly missing. There was even an existing unit test (`test_download_race.js`) that asserted this silent behavior as *correct*.
-- **Resolution:** `download_observed` now throws a clear error (`"Expected a file download at this step, but ..."`) on all three no-download paths, with `{ badInput: true }` — the identical short-circuit `for_each`'s own `max_iterations` check already uses in the same file, for the identical reason: no amount of re-finding a selector can produce a download that never fired (there is no selector here to re-find — `download_observed` compiles with `recovery.max_attempts = 0`, same as every other marker action in `action_policy.py`'s `NO_RECOVERY_ACTION_TYPES`), so this routes straight to `stepFailure`, skipping the Tier 1-4 recovery cascade entirely. This one change, with zero new loop-specific code, makes `runForEachStep`'s existing `on_row_error: "stop"` (the default this loop-suggestion feature uses) halt the whole run immediately on the first missing download, naming the exact step that failed — instead of completing and shipping a partial or empty result. Separately, `on_row_error: "continue"` already counted `processed`/`failed` but only ever emitted them as tracker-only telemetry (`for_each_done`) that never reached the run's own result; `runForEachStep` now also pushes a `state.warnings` entry when the loop finishes with zero items to process or with `failed > 0` under `continue` — verified this reaches the runtime's own final "Done." message (`server.js`'s `_allWarnings` → the `"Warning:\n..."` block already appended to every result).
-- **Why required:** a workflow reporting success while having silently done less than it promised is worse than a workflow that fails loudly — the customer (or the agent running it on their behalf) has no way to know anything went wrong, and by the time a missing file is noticed downstream it's disconnected from its actual cause.
-- **Business value:** "the automation ran and said Done" must mean the automation actually did what it was asked — a silent partial failure in exactly the demo shape this session already built (EXEC-39) would be the worst possible thing for a prospect to discover.
-- **Technical value:** closes a real gap in the runtime's own stated philosophy (PROD-3-DRYRUN's "fail closed," `for_each`'s own "refuse rather than guess a default") that this specific marker action had never actually been held to, since nothing had ever made it fail before.
-- **Dependencies:** EXEC-38 (`for_each`, whose `on_row_error`/warning plumbing this reuses), EXEC-39/BUILD-33/BUILD-34 (the feature and same-day fixes whose real-world use surfaced this).
-- **Complexity:** S — one handler rewritten to throw instead of silently returning, one small addition to an existing loop function, one stale test rewritten plus new coverage.
-- **Success criteria:** a `download_observed` step that never receives a real download fails the run immediately and legibly; a `for_each` loop that skips rows under `on_row_error: continue`, or finds zero items to process, says so in the run's own warnings, not only in telemetry.
-- **Found via:** direct user report after a third real-world use of the shipped EXEC-39 feature, 2026-09-13 (same day as BUILD-33/34) — the recorded test run itself also crashed separately on a browser/window-lifecycle error unrelated to this fix (noted, not addressed here).
-
-### ~~EXEC-44~~ — `apply_for_each_loop_suggestion` only generalizes `url`; `entity_binding`, non-`url` fields, and the archived click are left half-fixed — **Resolved 2026-09-18**
-- **Category:** Builder / Execution & Recovery
-- **Description:** Found 2026-09-18 while tracing why a copilot diagnosis on a real accepted loop suggestion went wrong (see BUILD-31 below, same investigation). `editor/workflow_mutations.py::apply_for_each_loop_suggestion` templates only the wrapped step's `url` field (literal filename → `{{<as>_id}}`) — any other field carrying the one recorded filename (a click, an assertion, a `value`) is deep-copied verbatim into every loop iteration, still pinned to that one file. Worse, `run.js` assumes every loop-body step's `entity_binding.identifier` is already a template like `{{<as>_id}}` ("author-set") and never checks; the apply path never rewrites it, so a recorded step's literal `entity_binding.identifier` rides into the body unchanged. `entityRoots` (`resolution.js`) requires exactly one `hasText` match per iteration and fails closed otherwise — iteration 1 (matching the original recording) can pass, every other iteration cannot. Separately, the mutation appends the new `files` input without `optional: True` and without going through `_validate_skill_inputs`/`reconcile_inputs_with_step_values`, so a malformed or unreviewed input can land silently. And the redundant-click archive this same mutation writes (`superseded_by_loop_navigate`, `compile_report["archived_steps"]`) is discarded by the very next compile (`compiler/build.py` rebuilds `archived_steps` from scratch) — so the "stays reversible" claim in `docs/TRD.md` (Iframe/BUILD-26 area, EXEC-39's write-up) is not backed by code once a recompile happens.
-- **Why required:** the loop-generalization feature (EXEC-39) is the flagship one-click automation-of-automation move; a suggestion that looks correctly applied but only actually works for iteration 1 is a worse outcome than not offering the suggestion at all.
-- **Dependencies:** EXEC-39/EXEC-40 (the feature this is a follow-up on).
-- **Resolution:** `apply_for_each_loop_suggestion` now also rewrites a wrapped body step's `entity_binding.identifier` (case-insensitive substring match, either direction, matching `compiler/entity_binding.py::upgrade_entity_binding_identifiers`'s existing convention) to `{{<as>_id}}` with `source: "input"` when it mentions the recorded filename — the one field with a *proven* per-iteration runtime consequence via `entityRoots`. Deliberately not generalized to `value`/assertion text (substring-replacing arbitrary text risks corrupting unrelated content). The appended `files` input now runs through `_validate_skill_inputs` before being written. The redundant-click archive now writes to a new document-level field, `doc["editor_archived_steps"]`, instead of `compile_report["archived_steps"]` — the compile pipeline rebuilds the latter from scratch every recompile and would otherwise discard it; `editor/evidence.py`'s bundle now concatenates both fields (same entry shape) so the copilot still sees the full archive regardless of provenance. `docs/TRD.md`'s EXEC-39 section corrected to state the actual mechanism.
-- **Success criteria:** an accepted loop suggestion whose body steps reference the recorded filename anywhere other than `url` still resolves correctly on iteration 2+; the declared `files` input goes through the same validation every other input does; the archived redundant click either survives a recompile or the docs stop claiming it does.
-- **Tests:** 4 new cases in `conxa-cloud/tests/test_apply_for_each_loop_suggestion.py` (entity_binding templated when it matches, left alone when it doesn't, invalid input name raises, archive survives a simulated recompile); 1 existing test updated to read the new field. Full suite: 1568 passed.
-- **Found via:** direct trace of a user's real accepted-suggestion workflow, 2026-09-18 (same session as BUILD-31).
-
-### ~~BUILD-31~~ — Human Edit copilot evidence bundle: positional `failed_step_key` resolution, and `downloaded_files_dir` bound unconditionally before any step runs — **Resolved 2026-09-18**
-- **Category:** Builder / Runtime
-- **Description:** Two related gaps found 2026-09-18 while investigating a copilot misdiagnosis (fixed the same day — see `FIX.md` 2026-09-18 and `docs/TRD.md`'s evidence-bundle field list for what shipped: `last_test`/`runtime_evidence_absent`). Two narrower issues surfaced during that trace were left unfixed, filed here:
-  1. **`editor/evidence.py`'s `failed_at` → `failed_step_key` resolution is purely positional** (`keys[failed_at]`, where `keys` is the CURRENT step list's `step_key`s, but `failed_at` is an INDEX into the step list as it existed when the run failed). The module's own docstring claims everything is "keyed on step_key … never step_index" specifically to survive an insert/delete/reorder between a failure and the copilot being asked about it — but an insert or delete *before* the failing index breaks exactly that promise: instead of the mismatch being detected and `failed_step_key` nulled, it silently resolves to the WRONG step's key, and every downstream consumer (the LLM prompt, `handlers/copilot.py::cmd_copilot_verify`'s `still_failing`/`progressed` verdict) trusts it.
-  2. **`runtime/app/server.js` sets `inputs.downloaded_files_dir` unconditionally**, before any step runs, to a path that is only `mkdirSync`'d inside the download listener — so it resolves to a non-empty string even when zero files were ever downloaded and the directory doesn't exist. This defeats the friendly guard in `handlers.js`'s `upload` handler (`"the recorded download for this step didn't produce a file"` can never fire for this placeholder, since the value is never empty) and lets `uploads.js::resolveUploadPaths` hand a nonexistent directory straight to `setInputFiles` (its `statSync` catch falls through to returning `[target]` rather than throwing). This is asymmetric with the per-file `downloaded_file`/`downloaded_file_N` placeholders, which ARE bound by the download handler itself and throw `badInput` when nothing arrived.
-- **Why required:** (1) means a reviewer or the copilot can be pointed at the wrong step after any edit, with no indication anything is wrong. (2) means the same silent-partial-failure class EXEC-40 already closed for `download_observed` is still open one hop downstream, at the upload side.
-- **Dependencies:** none for (1). (2) overlaps EXEC-40's fix (same failure family: a placeholder that resolves non-empty/non-null without the thing it names having actually happened).
-- **Resolution:** (1) `failure_response.js::_writeStudioEvidence` now also writes `failed_stable_hash` (the failing step's own `identity_bundle.stable_hash`, when `steps` and that field are in scope) into `evidence.json`. `editor/evidence.py`'s new `_resolve_failed_step_key` cross-checks the resolved key's own base hash against it — a mismatch nulls `failed_step_key` and explains why via `runtime_evidence_absent`; no recorded hash (older evidence, `steps` was `null`, or a marker step) trusts the position exactly as before. Residual gap, stated not chased: a pure reorder of two steps sharing the same `stable_hash` can still be missed — full elimination needs `step_key` itself persisted into `execution.json`. The identical positional exposure in `observed_overlays`' resolution is flagged, not fixed (overlays carry no `stable_hash`). (2) `handlers.js`'s `upload` handler now checks, when the resolved value equals `inputs.downloaded_files_dir`, whether that directory exists and contains at least one file before calling `resolveUploadPaths` — throwing the same clear message with `badInput: true` when it doesn't, mirroring `download_observed`'s existing precedent. `server.js`'s eager assignment is left as-is; the check has to happen at use time since the same placeholder may be read by several upload steps at different points in a run.
-- **Success criteria:** a step insert/delete between a failure and a Human Edit session either resolves `failed_step_key` correctly or nulls it with `runtime_evidence_absent` set, never silently mislabels a step; an `upload` step bound to `{{downloaded_files_dir}}` fails with a clear message when zero files actually downloaded, the same way it already does for the single-file placeholders.
-- **Tests:** 2 new cases in `conxa-cloud/tests/test_evidence.py` (mismatch nulls the key and explains why; matching hash still resolves); 2 new cases in `runtime/test/unit/test_upload.js` (nonexistent dir, existing-but-empty dir, both `badInput`). Full suites: 1568 Python tests passed, 734 runtime tests passed.
-- **Found via:** direct trace of a user's misdiagnosed copilot session, 2026-09-18.
-
-### ~~EXEC-41~~ — Conxa Execute in-app browser panel — **Resolved 2026-09-17**
-- **Category:** Execution & Recovery / Runtime / Conxa Execute
-- **Description:** Conxa Execute used to run a skill by having the runtime launch its own visible Chromium window, separate from and on top of the Execute app window. **Stage 1:** the runtime now borrows a browser view Execute itself owns instead of launching one, so the run renders in a panel inside the Execute window (chat left, browser right, slides in on execution, fully interactive natively — no input-forwarding layer). The seam is one branch in `runtime/app/browser.js::_buildExecContext`, gated on `CONXA_HOST_BROWSER_CDP`/a `runId` being present and `headless` being false — every other MCP client (Claude Desktop, the scheduler, the Build Studio sandbox) never sets that env var and hits the unchanged `chromium.launch()` path. New module `runtime/app/host_browser.js` is the runtime-side half (`chromium.connectOverCDP`, seeds `storageState` manually since Electron's CDP target has no `Target.createBrowserContext`/`Target.createTarget` — confirmed by a Stage-0 spike, not assumed); `conxa-execute/app/electron/browser_panel.js` (per-run `WebContentsView`s, one non-persistent partition per run) + `browser_control.js` (loopback HTTP control channel, same shape as `runtime/app/handover.js`'s) are the Execute-side half. `runtime/app/browser.js::teardownExecBrowser` replaced four duplicated `if (watch) { context.close(); browser.close(); }` blocks in `server.js` plus one in `recovery_park.js::discardPark` — a host-owned browser is only ever disconnected, never closed, or Execute's whole browser process would die with it. Any failure connecting to Execute's panel falls back to `chromium.launch()`; a run is never lost over the panel being unavailable. Concurrency: one panel, one tab strip entry per active run (up to `CONXA_MAX_CONCURRENT_RUNS`).
-  **Stage 2:** `browser.js::_openInteractiveAuthWindow` (interactive site login) gets the identical host branch — a login window is just another headed context, so it opens in the panel, non-blocking, exactly as the existing `beginInteractiveAuth` design already worked. Hand-over/AI-review pauses needed *no new code at all*: `handover.js`'s existing in-page "Done — resume workflow" banner (`context.exposeBinding` + `context.addInitScript`, injected straight into the live page's own DOM) turned out to already work unmodified against a host-owned context — verified by a dedicated spike (`context.exposeBinding()`, `context.addInitScript()`, a real injected-button click firing the binding, and the script re-applying after navigation, all 5/5 against real Electron over CDP) before assuming it and writing nothing further. The one real bug the plan flagged going in — a resumed park's teardown reporting the *wrong* run id to Execute — is fixed: `server.js` now carries a separate `_hostRunId` (the browser view's actual registered identity with Execute) alongside `_runId` (the caller-facing resume identity `resume_from`/hand-over's file-drop/HTTP paths need, which must stay per-call). They're identical for every fresh run and diverge only across a park/resume cycle, where `_hostRunId` is restored from `_park.runId`. `run.js::runPlan` gained a matching `hostRunId` opt, kept separate from its existing `runId` opt for the same reason — conflating them would have pointed `tab_open`'s Execute-panel lookup at the right id while silently breaking hand-over's own resume-file naming, which still needs the per-call `runId`.
-- **Why required:** direct user request — "the browser should look inbuilt, not a separate window," matching the Claude-in-Chrome cowork panel shape.
-- **Complexity:** L (Stage 1). M (Stage 2, came in lighter than scoped — the hand-over piece needed zero new runtime/UI code once verified).
-- **Success criteria — verified:** full unit suite green (729 tests, `runtime/`) after every stage; `test/unit/test_host_browser.js` (4 tests, Stage 1's `_buildExecContext` gating/fallback) and `test/unit/test_login_host_branch.js` (3 tests, Stage 2's parallel `_openInteractiveAuthWindow` gating/fallback, added this stage) both green; two from-scratch integration tests driving the real `browser_panel.js`/`browser_control.js` against the real runtime code over actual CDP + the actual control channel — Stage 1's (9 checks: connect, acquire, drivable page, `storageState` cookie seeding, `newTab`, `release`/cleanup, a second full cycle, fallback-trigger contract) and Stage 2's (6 checks: non-blocking open, a tab appearing in the panel, driving the login page to a fake site's success URL, session persisted, Execute tearing the view back down on completion) — both all green; the hand-over-banner spike (5 checks) above; and the CI execution gate (`test/e2e/gate_replay.js`) passing against the local host exe with the app layer at HEAD, rerun clean after every stage. **Caught by that same verification, not by inspection (Stage 1):** `host_browser.js` was missing from `runtime/app-layer-files.json` (the single source of truth both build pipelines and `check_app_layer_files.js` read from) — the gate failed with a real `Cannot find module './host_browser'` from the packed app layer on the first run. Fixed before Stage 1 was marked done; `check_app_layer_files.js` now passes (64 modules, coverage + require-closure verified) and the gate passes.
-
-### EXEC-45 — Login-wait `context.on("page")` listens on Execute's shared context, so it can see other runs' pages
-- **Category:** Execution & Recovery / Conxa Execute
-- **Description:** `browser.js::_waitForInteractiveAuth` attaches `loginCtx.on("page", attachPage)`. Under Execute the context is the app's single shared Electron context (`browser.contexts()[0]`), so the listener also fires for pages belonging to other concurrent runs and other logins in the same run. Today it only records URLs, so it is harmless; it becomes a real cross-run leak if that handler ever gains side effects (e.g. capturing a session from the wrong page).
-- **Why required:** latent isolation gap surfaced while making login tabs individually closable (2026-09-20). Not fixed there because Electron's CDP target has no `Target.createBrowserContext` — per-run isolation needs a different seam (filter by the run's own marker URL / tab id, or a per-run session partition observed from Execute's side).
-- **Complexity:** S–M.
-
-### ~~EXEC-42~~ — Conxa Execute sign-in has no real Clerk application wired up in production — **Superseded 2026-09-17**
-- **Category:** Execution & Recovery / Conxa Execute / Auth
-- **Description:** `conxa-execute/app/electron/auth_service.js`'s Clerk PKCE login reads `CONXA_EXECUTE_CLERK_DOMAIN`/`CONXA_EXECUTE_CLERK_CLIENT_ID` from `process.env`, both unset everywhere in the repo (no build config, no CI, no `.env`). In dev this is masked by an `app.isPackaged` bypass that fabricates a fake signed-in identity; in a real packaged install (the first one shipped 2026-09-17, see EXEC-41/the installer FIX.md entries) it hits `throw new Error("auth_not_configured")` instead. Separately, `App.tsx`'s `login()` only acted on success and silently dropped a failed result, so the "Sign in with CONXA" button did nothing visible at all when clicked in production — fixed today (`App.tsx`/`SettingsModal.tsx` now surface a real error message), but the underlying app is still not configured, so clicking it now shows "Sign-in isn't set up yet" instead of actually signing anyone in. `execute_client.js`'s `CONXA_EXECUTE_API_BASE_URL` has the identical unconfigured-in-production gap for the same reason.
-- **Why required:** Top-up/Subscription chat modes (anything other than BYOK) are unusable in production without this — a customer literally cannot sign in.
-- **Business value:** blocks any real customer from using Execute's managed-chat modes; BYOK is the only mode that currently works post-install.
-- **Dependencies:** needs an actual Clerk application created for Execute (deliberately separate from conxa-cloud's per the code comment) — an account/dashboard step outside this repo — plus a decision on how to bake its public domain/client ID into a distributed `.exe` (packaged apps don't inherit the builder's shell env at runtime; needs something like `electron-builder`'s `extraMetadata` into `package.json`, or an equivalent baked config file).
-- **Suggested order:** whenever the Clerk app is created; not started as of this writing.
-- **Complexity:** S once credentials exist (wiring + a build-time injection point); the credential creation itself is a manual dashboard step, not engineering time.
-- **Success criteria:** clicking "Sign in with CONXA" in a production install opens a real Clerk sign-in page and returns a real session; `CONXA_EXECUTE_API_BASE_URL` likely needs the same treatment for Top-up/Subscription to work end to end.
-- **Update (2026-09-17, Clerk app created, domain/client ID wired in):** a Secondary Clerk production instance was created at `clerk.apis.conxa.in` (Secondary, not Primary, deliberately — Primary would have claimed `clerk.conxa.in`/`@conxa.in`, already used by the existing Build Studio/cloud-dashboard Clerk instance) with a PKCE OAuth Application (client ID `pCbQVP1K15tVmQKP`, no client secret needed — the code never uses one). `electron-builder.yml` now bakes both values in via `extraMetadata` (`conxaExecuteClerkDomain`, `conxaExecuteClerkClientId`), and `main.js` promotes them into `process.env` at startup if not already set, so `auth_service.js` needs no changes. **Still open:** the OAuth Application's registered redirect URIs must exactly match what the code actually sends — `http://127.0.0.1:<port>/cb` for `port` in 52841–52850 (an earlier verbal instruction wrongly said `http://localhost:52841/callback`; needs confirming the Clerk dashboard has the corrected URIs, not the wrong one), and an end-to-end test build hasn't been run yet to confirm login actually completes. `CONXA_EXECUTE_API_BASE_URL` is still unconfigured — Top-up/Subscription chat itself won't work yet even once sign-in does.
-- **Superseded (2026-09-17, later same day — the whole standalone-backend/separate-Clerk-app premise was reversed):** the founder decided Conxa Execute should have no backend of its own at all (see `TODO.md` PROD-19's matching update, `docs/TRD.md` §3.6). The `clerk.apis.conxa.in` secondary instance and its `pCbQVP1K15tVmQKP` OAuth client created earlier today are abandoned — decommission them in the Clerk dashboard. Execute now needs a new OAuth client under the **existing** `clerk.conxa.in` instance instead (same Clerk app as Build Studio, separate `client_id`, same redirect-URI range `127.0.0.1:52841-52850/cb`, scope `user:org:read` added) — this is a manual dashboard step still outside this environment's reach; `main.js`/`electron-builder.yml`'s `extraMetadata` promotion mechanism is unchanged and just needs the new domain/client-id values once that client exists. `execute_client.js` now defaults to conxa-cloud's own origin (`https://apis.conxa.in`) — `CONXA_EXECUTE_API_BASE_URL` is kept only as an unset-by-default local-dev override, no longer something that needs configuring for production.
 
 ### EXEC-43 — Finish the Conxa Execute → conxa-cloud merge: new Clerk client + decommission old infra
 - **Category:** Execution & Recovery / Conxa Execute / Auth
@@ -1447,14 +709,6 @@ the new item below this one.
 - **Dependencies:** none, but should follow the same `PoolEntry`/`call_entry_directly` pattern Azure established rather than inventing a parallel path.
 - **Complexity:** L each (Bedrock and Vertex), mostly in the provider-specific request signing/translation.
 
-### ~~CLOUD-6 — Settings UI: BYOK panel, machine device list, billing add-on control, trial banner~~ — **Resolved 2026-08-22**
-- **Category:** Cloud / Frontend
-- **Description:** Four backend capabilities from the 2026-08-08 pricing restructure have no frontend surface yet, all independently usable via API today: (1) Enterprise BYOK config (`PUT/GET/DELETE /api/v1/workspace/llm-key`) — see `docs/UI-UX-Brief.md` §3.8; (2) ~~the machine device list + revoke (`GET/POST /entitlements/machines[/revoke]`)~~ — shipped 2026-08-22 as the "Build Studio Devices" card on `SettingsPage.tsx`, part of the Machine Registry feature (also added a separate Company Agent "Fleet" page — see App-Flow/Backend-Schema/TRD updates); (3) the compile-credit add-on purchase/cancel flow (`POST /subscriptions/create` with `tier: "credits_addon_25"`) — see `docs/UI-UX-Brief.md` §3.6; (4) a Free-trial countdown banner (backend exposes `trial_ends_at`/`trial_expired` on `GET /entitlements/current`, nothing consumes them in the UI).
-- **Resolution 2026-08-22:** all four shipped. BYOK panel on `SettingsPage.tsx` (owner/admin-gated); add-on purchase reuses the Cashfree checkout flow and a new `POST /api/v1/subscriptions/addon/cancel` endpoint handles self-serve cancellation (webhook still decrements packs); global trial banner in `AppChrome.tsx` via new `TrialBanner` component consuming `trial_ends_at`/`trial_expired`. See `docs/UI-UX-Brief.md` §3.6/§3.8 and `docs/Backend-Schema.md` §5.4.
-- **Why required:** customers can't self-serve any of these four things through the dashboard today, even though the backend fully supports them.
-- **Dependencies:** none — each is independently shippable.
-- **Complexity:** M total (S each) — mostly straightforward CRUD panels following existing dashboard patterns (`BillingPage.tsx`, `SettingsPage.tsx`).
-
 ### CLOUD-8 — Update pricing page copy for Starter's external distribution
 - **Category:** Cloud / Frontend
 - **Description:** `PLAN_LIMITS["starter"].distribution` flipped from `"internal"` to `"external"` on 2026-08-09 (see resolved CLOUD-3) — Starter can now ship to unlimited outside customer machines, throttled only by its existing 200 compile-credit ceiling. `conxa-cloud/frontend/src/components/marketing/sections/PricingTable.tsx` still badges only Pro as "Distribution channel" (`TIER_SUB`/highlight logic, lines ~10-42) and Starter's sub-copy ("One product team") doesn't mention it at all — the pricing page now undersells what Starter actually includes.
@@ -1469,42 +723,7 @@ the new item below this one.
 - **Dependencies:** needs a real decision about what, if anything, should move server-side (see CLOUD-21 for related queue/job-infrastructure thinking already in this backlog).
 - **Complexity:** L — mostly architectural decision-making, not the priority-queue mechanics themselves.
 
-### ~~CLOUD-9 — No seat-limit enforcement on team invites~~ — **Resolved 2026-08-22**
-- **Category:** Cloud / Billing
-- **Description:** `PLAN_LIMITS[plan]["seats"]` (1/3/10 for free/starter/pro) is never enforced. `app/services/entitlements.py`'s only seat-related code is a read-only usage meter shown on the dashboard (`membership_count_for` feeding the `"seats"` field around line 606) — there is no `ensure_seat_allowed`-style gate anywhere, unlike the equivalent `ensure_machine_slot` gate for build machines. Confirmed there is no backend route for team invites at all (`grep` for membership/invite across `app/api/` returns nothing) — invites go directly from the dashboard's Clerk UI component to Clerk's own API, so the backend never even observes an invite happening, let alone blocks one. The only way to actually gate this is a Clerk webhook (`organizationMembership.created`) that checks the new count against plan limits and revokes via Clerk's API if over — a genuinely new piece of infrastructure (webhook route + signature verification + revoke call), not a one-line check.
-- **Why required:** discovered 2026-08-09 while investigating what a Pro→Starter downgrade leaves unenforced. Unlike machines (`CLOUD-3`, resolved — new-machine registration is blocked at the current plan's cap, existing machines grandfathered) and every LLM/compile/distribution entitlement (all re-derived live from current billing on every check), seats have no enforcement at any point — a workspace can already invite unlimited members on any plan today, downgrade or not. A brief Pro upgrade isn't needed to exploit this; it's open on Free from day one.
-- **Business value:** seats are part of the priced ladder (docs/PRD.md §11); an unenforced cap means the dashboard's own seat meter is decorative, not a real limit.
-- **Dependencies:** none blocking, but needs a decision on enforcement policy at invite time (block over cap) and, separately, whether/how to handle a workspace already over its new cap after a downgrade (soft lock — block new invites, grandfather existing members — matches the policy just chosen for machines, so no additional product decision needed there).
-- **Complexity:** M — Clerk webhook endpoint, signature verification, revoke-on-over-limit call; no compiler/runtime involvement.
-- **Update (2026-08-22, resolved — different mechanism than proposed above):** shipped without a Clerk webhook. The invite itself still succeeds in Clerk (that part genuinely can't be intercepted without the webhook infrastructure described above), but the over-cap member can never actually use the product: `app/api/deps.py::current_principal` now checks `saas.is_known_member` before persisting a new (user, workspace) membership row, and for a not-yet-known pair calls the new `entitlements.ensure_seats_available`, which compares the workspace's live Clerk member count against the plan's seat limit and raises `seat_limit_exceeded` (402) if already at/over cap — every request that new member makes fails until a seat opens up or the plan is upgraded. Existing members are unaffected by a later downgrade (soft-lock, same shape as the machine/workflow gates). This closes the practical gap (unlimited free team access) with no new infrastructure; the webhook remains the only way to prevent the invite from succeeding in Clerk at all in the first place, so re-open this item if that stronger guarantee is ever needed.
-
-### ~~CLOUD-11 — Confirm the real vision-provider rate-limit shape (RPM vs TPM vs TPD) and size the pool accordingly~~ — **Resolved 2026-08-23**
-- **Category:** Cloud / LLM Router
-- **Description:** 2026-08-15 fixed three router bugs that were amplifying every vision-model 429 into "every compile step for the next minute silently falls back to keyword anchors": `LLMRouter` cooled a key for a flat 60s regardless of the provider's own `Retry-After`, gave up instantly instead of waiting a few seconds for a cooled key to clear, and (separately) every `if error_detail:` truthiness check in `app/llm/router.py` silently dropped the *first* append into a fresh list — meaning the provider's actual failure reason essentially never reached the compile report's `vision_anchor_fallback` warning, only a bare `"proxy HTTP 502"`. All four are fixed (`Retry-After` support, bounded wait-for-cooled-key, `error_detail is not None` checks, `services/llm_proxy_client.py` unpacking the 502's dict `detail` shape) and `compile_skill_package` now emits one aggregate `vision_anchor_fallback_summary` event instead of only per-step warnings — see `docs/TRD.md` §13.2 and §7.2.
-- **Why required:** the fixes make the real failure reason visible for the first time; what's still unknown is whether the vision pool is actually rate-limited on requests-per-minute (which the wait/backoff now handles) or tokens-per-minute/day (which no amount of backoff fixes — needs more keys, a bigger pool, or a smaller image). Now that `error_detail`/the summary event surface the provider's real string, the next vision-heavy compile against production traffic will show which one it is.
-- **Dependencies:** none blocking — this is "watch the now-visible signal and act on it," not new engineering. If it turns out to be TPM/TPD: add more `*_API_KEYS` for Groq/Google AI Studio/NVIDIA NIM (each key is a separate pool entry per `enabled_llm_providers()`), or lower `_VISION_MAX_DIMENSION` in `anchor_vision_llm.py` below the 1024px this fix set it to.
-- **Complexity:** S — config/keys change once the shape is confirmed; no further code change expected unless the answer is surprising.
-- **Update (2026-08-23, resolved — answer was neither):** a mega-workflow compile (41 events) produced a burst of `/text` 502s ending in one fatal `/vision` 502, with `data/cache/semantic_llm_cache.json` showing ~80% `rule_fallback` — the LLM had silently stopped answering almost entirely. The signal this item asked for pointed at the wrong layer: it was never a provider rate-limit shape question. Root cause was `llm_text_timeout_ms` defaulting to 2000ms — calibrated for a direct provider call, not the Studio→cloud→provider double hop — so ordinary 70B-model latency tripped the timeout on every attempt; 3 timeouts inside one request drained the whole 3-key pool (all failure classes shared one flat 60s cooldown); and `PoolEntry` had a single `cooled_until` shared by both modalities, so the text-timeout storm also benched the vision-capable keys, which is why the run's *one* vision call died last. Full fix in `docs/TRD.md` §13.2 (rewritten): `llm_text_timeout_ms` raised to 20000ms (10000ms floor), per-modality cooldowns, failure-class-specific cooldowns (429/timeout-backoff/5xx/deterministic-4xx-no-cooldown/401-403-quarantine-not-remove), a whole-request wall-clock budget (`llm_router_total_budget_secs`, 75s, under Render's proxy timeout), a pool-selection lock, the Studio proxy client retrying 502/503/504 with backoff before raising a distinguishable `ProxyUnavailable`, vision anchors batched 4-at-a-time (`prefetch_vision_anchors_batch`), a per-workspace concurrency cap so one tenant can't drain the pool for others, and a compile-credit refund path (`POST /usage/compile/refund`) for infra-class aborts. 8 new/updated test files, 903 tests passing.
-- **Update (2026-08-23, follow-up):** a live compile against the same workflow, after the fix above, surfaced three more problems. (1) A regression from the vision-batching prefetch itself: it resolved every candidate step's intent serially *before* batching, and `intent_llm`'s cache only makes that free while the proxy is healthy — under the still-degraded pool this produced a silent 8-minute stall before "Compiling step 1" even logged (~12s/call × 41 events). Fixed with a circuit breaker (`compiler/build.py::_prefetch_vision_anchors`): bail out of prefetching entirely on the first `CloudUnreachable`/`ProxyUnavailable` rather than grinding through every remaining event, plus a 60s wall-clock deadline as a second line of defense, plus a `_compile_log` line so a healthy-pool prefetch (tens of seconds, legitimately) isn't silent either. (2) `vision_anchor_fallback_on_exhaustion` turned out to be Build-Studio-local-only with no cloud-side control at all — its own code comment wrongly called it a "Render env var," which is what led to setting it on the cloud backend and having it do nothing. Turned into a per-workspace cloud entitlement (`capabilities.vision_fallback_on_exhaustion`, `GET /api/v1/entitlements/current`, same override mechanism as `white_label`/`byok`) fetched once per compile (`backend.py::_apply_vision_fallback_entitlement`) and applied locally; the local env var remains as a fallback for dev / when that fetch fails. (3) A `VisionAnchorGenerationError` re-raised bare from `handlers/compile.py` fell through to the JSON-RPC dispatcher's generic `internal_error` arm, showing "Something went wrong inside the app" in the Studio UI even though the specific, correct message (`errorMessages.ts`, code `vision_anchors_failed`) already existed and the exception's own `api_detail()` already knew to ask for it — now wrapped in `_CommandError(exc.api_detail()["code"], str(exc))`, matching the neighboring `cloud_unreachable` pattern. 913 tests passing.
-- **Update (2026-08-23, correction):** `vision_fallback_on_exhaustion`'s plan defaults were briefly `True` on Enterprise/development, `False` elsewhere — matching the pattern of every other capability in `PLAN_LIMITS`. Corrected on the same day: it's deliberately **not** plan-gated at all. This is an ops reliability lever, not a paid feature — Conxa can enable it for any workspace on any plan, Free included, purely via `entitlement_overrides`. Every plan now defaults to `False`.
-
 ---
-
-### ~~CLOUD-19 — `start.sh` sets no `--timeout-keep-alive`; a known Render edge-502 source, distinct from CLOUD-11's application 502s~~ — **Resolved 2026-08-23**
-- **Resolution:** `start.sh` now runs uvicorn with `--timeout-keep-alive 75`, comfortably above Render's proxy connection-reuse window, so uvicorn no longer closes idle keep-alive connections out from under Render's proxy mid-reuse. The `render.yaml` free-plan cold-start look mentioned below was not part of this change (no `render.yaml` action taken); idle spin-down 502s remain possible on the free plan for a different reason.
-- **Category:** Cloud / Deployment
-- **Description:** `conxa-cloud/backend/start.sh` runs `uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"` with no `--timeout-keep-alive` flag, so uvicorn defaults to closing idle keep-alive connections after 5s. Render's own proxy pools and reuses upstream connections on a longer idle horizon; when uvicorn closes a connection Render's proxy is about to reuse, the proxy forwards a request into a half-closed socket and returns a 502 to the client with no app-side log entry at all (unlike CLOUD-11's fix, which only addressed 502s the app itself returned).
-- **Why required:** found during the CLOUD-11 investigation (2026-08-23) — noted as a real, separate failure mode but out of scope for that fix since the mega-workflow's actual 502s were all application-side (uvicorn's access log showed them). This one is silent at the app layer, which makes it harder to attribute when it happens.
-- **Dependencies:** none. Also worth pairing with a look at `render.yaml`'s `plan: free` (0.1 CPU, 512MB, spins down after 15 min idle) — a cold-start burst after idle produces the same client-visible symptom (502 with no app log) for a different reason.
-- **Complexity:** S — add `--timeout-keep-alive 75` (comfortably above Render's proxy reuse window) to `start.sh`'s uvicorn invocation.
-
-### ~~CLOUD-20 — LLM metering bills the raw base64 image as "tokens"~~ — **Resolved 2026-08-23**
-- **Resolution:** `llm_metering.estimate_request_tokens` now strips base64 blobs (`image_base64`/`base64` keys and `data:...;base64,` URL strings — same detection pattern as `router.py`'s `_redact_value`) before the ~4-chars/token estimate, and instead counts each stripped image at a fixed 1,000-token estimate (rough per-image input cost for a 1024px image across mainstream providers). A 200KB blob that previously billed as ~50k tokens now bills as ~1k + the surrounding text. The caller's payload is not mutated. Covered by `tests/test_llm_proxy_and_publish.py::test_estimate_request_tokens_excludes_base64_blobs` and `::test_estimate_request_tokens_plain_text_unchanged`.
-- **Category:** Cloud / LLM Metering
-- **Description:** `llm_metering.estimate_request_tokens` (`app/services/llm_metering.py`) calls `json.dumps(payload)` on the *entire* request payload, including `image_base64` for vision calls, then estimates tokens at ~4 chars/token. A single 1024px JPEG anchor image base64-encodes to roughly 80-200KB, which this counts as ~20,000-50,000 "tokens" — nowhere close to what a vision model's real per-image token cost is, and it compounds: a 41-step compile's worth of vision calls alone can approach the 5M monthly quota (`llm_proxy_monthly_token_quota`) on padding.
-- **Why required:** found during the CLOUD-11 investigation (2026-08-23) — real, but a metering/billing-accuracy bug, not a cause of the 502s that investigation was about, so left out of that fix's scope.
-- **Dependencies:** none blocking. Fix is to exclude/replace `image_base64` (and any other base64 blob) before estimating — `router.py`'s own `_redact_value` already has a pattern for spotting these keys (`_redacted_blob`) that could be reused to strip them before the token estimate instead of just before logging.
-- **Complexity:** S.
 
 ---
 
@@ -1843,354 +1062,6 @@ the new item below this one.
   ran it; and the median number of manual edits per compiled workflow is measurable and demonstrably
   lower than the pre-pass baseline.
 
-### ~~BUILD-26~~ — Human Review Copilot: a conversational repair agent inside Human Edit, driving the editor commands that already exist — **Resolved 2026-09-10**
-- **Category:** Builder
-- **Resolution:** all six stages shipped. (a)-(d): evidence bundle, read-only diagnosis, gated
-  proposals over `patch_step`, the accept/reject decision log. (e) the verified retest loop —
-  `cmd_copilot_verify` (`handlers/copilot.py`), a count-then-confirm guard over PROD-3's own
-  `consequence` classification, rebuild+retest composed from existing RPCs, a
-  fixed/still_failing/progressed verdict via a new `edit_log.py::append_verification`. (f) overlay
-  identity capture and branch-insertion proposals — `runtime/app/overlay_capture.js` captures
-  what `cascade.js`'s dismiss-overlay remedy observed (on any intercepted run, including a passing
-  one), `editor/overlay_identity.py::bundle_from_descriptor` deterministically synthesizes an
-  `IdentityBundle` from it (reusing the compiler's own durability table, never an LLM), and a
-  second proposal kind (`insert_overlay_branch`, `copilot_proposals.py::gate_overlay_proposals`)
-  lets the copilot propose a try_dismiss/if_present branch from an overlay it actually saw — the
-  model picks the overlay and primitive, never a selector. See `docs/TRD.md` §7.2a for the full
-  mechanism and `FIX.md` (2026-09-10) for the plain-language summary.
-- **Status (2026-09-10, historical):** stages (a)-(d) done — evidence bundle, read-only diagnosis, gated
-  proposals over `patch_step`, the accept/reject decision log. (e) verified retest and (f) overlay
-  identity capture stay open (see the reasons below, still current).
-  - **~~(c) UI polish~~ done (2026-09-10):** renamed the panel "Conxa Copilot" throughout its
-    display strings (code identifiers unchanged); replies now stream token-by-token instead of
-    appearing as one block (a new `copilot_reply` streaming task, kept separate from
-    `copilot_diagnose`'s JSON-mode proposals call — see `docs/TRD.md` §7.2a for the two-call
-    design and the SSE plumbing threaded through `conxa_core.llm.client` → the cloud LLM
-    proxy/router → `LLMProxyClient` → `handlers/copilot.py`'s `copilot_delta` events); a real
-    "thinking" indicator shows from send until the first token, driven by the `sending` state
-    (there is no earlier "call started" backend event on this path — `LLMProxyClient`'s
-    `on_api_call` sink only fires on completion, not dispatch); and a reviewer can now edit a
-    prior question and resend it, which truncates the transcript from that point instead of
-    appending a correction on top of an unrelated tangent.
-  - **Root-cause note on a reported "no failure evidence" bug (2026-09-10):** verified this was
-    not a code defect — `failure_response.js::_writeStudioEvidence` (the (a1) fix noted below) is
-    correct and fully covered by its unit tests. The actual cause was a stale local build: the
-    Studio test sandbox's `conxa-app` layer is a separately-built, disk-resident bundle
-    (`scripts\build-app-local.ps1`) that does not auto-rebuild from source on every "Run Test"
-    click, so a test run against an unrebuilt sandbox executes code older than this fix. No
-    action item here beyond the existing developer-setup docs; flagged in case it recurs.
-  - **Corrections found while building (a):** the spec's own claim that the evidence "is already
-    written to disk and simply has no reader" was wrong in three places, now fixed as part of (a)
-    rather than left as a surprise for whoever built it next. `cmd_get_run`/`cmd_list_runs`
-    (`handlers/runs.py`) read `data/runs/*.jsonl` — nothing ever wrote it; **deleted**, along with
-    the renderer's dead `fetchRuns`/`fetchRun`. The rich failure payload (screenshot, live
-    inventory, overlay probe) never ran in the Studio — `failure_response.js`'s ceiling-2 branch
-    returned four lines of text and discarded everything computed below it; now it writes
-    `runs/{run_id}/_evidence/{evidence.json,failure.jpg}` before returning, reusing the same
-    helpers the armed-agent branch already had. And `write_skill`'s `invalidate_workflow_test_by_skill`
-    clears `last_test_error` on every edit, so evidence had to be snapshotted per run on disk, not
-    read live off the `Workflow` record — `Workflow.last_test_run_id` is the new stable pointer.
-  - **(a) Evidence bundle** — `conxa_compile/editor/evidence.py::build_evidence_bundle`. Merges
-    the runtime evidence file above with the compiled skill document, `compile_report` (degrading
-    explicitly to "confidence unavailable" when `_invalidate_compile_report` has staled it — never
-    a misleading 0%), the recorded event's `post_condition`/`state_change.dom_diff` (via
-    `editor/retarget.py::find_source_event`, keyed on `snapshot_ref`), step prose
-    (`editor/describe.py`), and prior edits on the step (`edit_log.read_edits`). Keyed on
-    `step_key` throughout.
-  - **(b) Read-only copilot** — `copilot_diagnose`, a new LLM task registered in
-    `conxa_core/llm/client.py` (prompt + vision-task set, mirrored in the two other copies of that
-    set in `conxa_compile/llm/client.py` and the cloud router) and called from
-    `conxa_compile/llm/copilot.py::copilot_turn`. No multi-turn support exists on this call path —
-    the Studio flattens the whole conversation into one payload per turn; the backend stays
-    stateless. `usage_class="human_edit"` end-to-end, same metering bucket the re-target wizard
-    already uses. Renders as a floating launcher + chat card (bottom-right/left, persisted),
-    `components/copilot/`, deliberately not a Tools-rail tab — that rail is a shared modal and
-    would hide the step list mid-conversation.
-  - **(c) Proposals over `patch_step`** — `conxa_compile/editor/copilot_proposals.py::gate_proposals`
-    pre-validates every raw `{step_key, field, patch, why}` object through the SAME
-    `patch_gate.py::validate_editor_patch` a manual edit clears, restricted to
-    `value`/`input_binding`/`intent`/`semantic_description`/`validation.assertions` — never a
-    selector-bearing field. A proposal stores `step_key`, never a baked `step_index`;
-    `resolve_step_index` re-resolves it at accept time and refuses cleanly if an insert/delete/
-    reorder happened in between (the BUILD-22/23 lesson `edit_log.py` already learned once).
-    Accept delegates to `cmd_patch_step` itself — one RPC, one undo entry, no new mutation logic.
-  - **(d) Decision log** — `edit_log.py::append_edit` gained `source`/`proposal_id` (default
-    `"human"`/`None`, every BUILD-25 caller unaffected); a new `append_decision` logs a rejection
-    (which changes no document, so the diff-based hook writes nothing on its own) into the SAME
-    `edits.jsonl`. `eval_suggestions.py` gained a copilot accept-rate readout alongside BUILD-25's
-    override rate.
-- **Description:** a chat panel in the Human Review page (`HumanEditPage.tsx`) that a reviewer talks to
-  in plain language about the workflow currently open, and that answers by **proposing editor changes
-  as an accept/reject diff** — never by mutating the skill directly.
-
-  **Three motivating requests, all real reviewer behaviour today:**
-  1. **"This workflow failed at step 18 — fix it."** The copilot reads the failed test run's evidence,
-     diagnoses why the step could not resolve or verify, proposes a target or value change, and — once
-     accepted — re-runs the test skill to prove the fix.
-  2. **"After step 2 a popup sometimes appears; add a condition to handle it."** The copilot picks the
-     right branch primitive (`if_present` / `try_dismiss` / `wait_for_one_of`), fills it from an
-     identity bundle something actually observed, and proposes the insertion.
-  3. **"The assertion on step 12 is weak — give me a better one."** The copilot reads what actually
-     changed after that step across the runs on disk and proposes a stronger post-condition.
-
-  **The finding that makes this small: the copilot's hands already exist.** Every mutation these three
-  cases need is already an RPC command in `conxa-builder/python/handlers/workflow_editor.py`, already
-  validated by `conxa_compile/editor/patch_gate.py`, and already reversible through the editor's undo
-  stack:
-
-  | Copilot capability | Already-existing command |
-  |---|---|
-  | Change a step's target or value | `cmd_patch_step`, `cmd_retarget_preview` / `cmd_retarget_apply` |
-  | Add / delete / reorder steps | `cmd_insert_step`, `cmd_delete_step`, `cmd_reorder_steps` |
-  | Add a conditional block and its body | `cmd_insert_branch_step`, `cmd_delete_branch_step`, `cmd_reorder_branch_steps` |
-  | Parameterize a hardcoded value | `cmd_replace_literals`, `cmd_update_workflow_inputs` |
-  | Check the edit did not break the workflow | `cmd_validate_workflow`, `patch_gate.py` |
-  | Take an edit back | `cmd_undo_workflow` / `cmd_redo_workflow` |
-  | Close out the review | `cmd_sign_off_workflow` |
-
-  The branch primitives are complete end-to-end as well (**EXEC-1**, authoring shipped 2026-07-10):
-  `if_present` / `try_dismiss` / `wait_for_one_of` are in `skill_spec.py`, executable in
-  `runtime/app/run.js`, and insertable from Human Edit's Add-action menu with `BranchBodyEditor.tsx`
-  for the nested body. Case 2 is therefore **wiring an existing structure**, not designing a new one.
-
-  **So this is not "build an editor for an agent" — it is a thin agent over an editor that is already
-  complete.** Three pieces are missing, and only three:
-
-  1. **The evidence bundle** — one assembler that, given a skill and a run id, returns everything the
-     copilot may look at: the run's step log (`cmd_get_run`), the relevant slice of the runtime's
-     append-only recovery log (`runtime/app/recovery_log.js`, which already records every cascade
-     stage, what it tried and why each failed), the failure-moment HTML and screenshot, the recorded
-     `IdentityBundle` for the failing step, the compile report, and the recorded
-     `post_condition.classified_effect` / `state_change.dom_diff` for the assertion case. **Nearly all
-     of this is already written to disk and simply has no reader.**
-  2. **The proposal object** — `{command, args, why, evidence_ref}` addressed against the command
-     table above, rendered in the UI as a before/after diff with accept and reject.
-  3. **The chat surface** in the Human Review page, plus the conversation loop.
-
-- **The single shape all three cases share** — build one loop, not three features:
-  `Evidence (look) → Proposal (a diff) → Human accepts → Verify (re-run the test)`. The cases differ
-  only in which evidence goes in and which editor command comes out.
-
-- **Diagnosis is multimodal, and that is the one real capability lever here.** Case 1's diagnosis call
-  should go to a vision-capable model with the actual failure-moment screenshot attached, not a
-  text-only model fed a pre-summarized description of the image. An overlay covering the target, a
-  toast that had not cleared, a modal that moved the button are all things the DOM diff and recovery
-  log describe as "element not found" and a screenshot shows in one glance. The pattern is already
-  proven at compile time by `anchor_vision_llm.py` and `region_selector_vision.py`.
-  - **This is a call-site choice, not a new pipeline.** It changes what gets attached to the evidence
-    bundle's diagnosis call and reuses the same LLM proxy and cost model as every other call.
-  - **The cost shape differs from the compile-time vision calls, so do not copy BUILD-25's routing
-    bias.** Compile-time vision anchors run once per step across every compile; a copilot diagnosis
-    runs once per "fix it" request — rarer, and higher-value per call because it is blocking a
-    reviewer rather than batching. Paying for the stronger vision model here is easy to justify even
-    where BUILD-25's high-volume `suggest_optional` / `flag_noise` kinds should go cheap.
-  - **It falls back cleanly.** With no vision-capable provider in the pool, the copilot degrades to a
-    text-only description of the screenshot's presence plus the DOM diff and recovery log — the same
-    graceful-empty-on-failure shape `workflow_intent.py` establishes. Diagnosis quality drops; nothing
-    breaks.
-
-- **The line to hold — the copilot proposes, the reviewer disposes.** Same rule as BUILD-25, for three
-  reasons, none of them about model quality:
-  1. **The accept/reject IS the training data.** Each decision is a labelled pair (*what the system
-     produced* → *what the human wanted*). If the copilot self-applies, the diff still exists in undo
-     history but the **human judgment** — the label — is gone. **BUILD-26 and BUILD-25 must write into
-     the same log, in the same format, or the dataset is split in two.**
-  2. **The audit trail is a sold property.** "A person reviewed and signed off on what runs against
-     your production system" survives a security review; "an agent edited it and re-tested itself"
-     does not. `cmd_sign_off_workflow` exists to record exactly that.
-  3. **Undo is not a substitute for approval.** Undo means noticing after the fact; approval means it
-     never went in.
-
-  This constrains *how changes land*, not capability: the copilot may still read the whole recording,
-  run tests, reason across the entire workflow, and chain ten edits into one proposal.
-
-- **Two hard constraints found while scoping, both easy to get wrong:**
-  - **The retest loop is neither free nor always safe.** Case 1 ends in "re-run the test skill", and
-    if step 18 is a Submit then five diagnose-fix-retest cycles are five real submissions against a
-    real system. The runtime already knows which step types are dangerous to repeat (`isNonIdempotent`
-    in `runtime/app/step_utils.js`, used by EXEC-24's action guard) and that knowledge must gate the
-    copilot's auto-retest too — via a replay-to-step-N-then-stop mode, or an explicit "this run will
-    perform N non-reversible actions — proceed?" confirmation. Overlaps **PROD-3-DRYRUN**, the general
-    form of the same problem.
-  - **The copilot may never invent a selector for something never observed.** Case 2's popup needs an
-    `IdentityBundle`, and bundles come from the recorder. Three legitimate sources: the popup was
-    recorded (so this is a *conversion* of an existing step into a conditional — the easy case), the
-    popup was seen during a test run, or the reviewer records it once. **Consequence: test runs should
-    capture the identity bundle of unexpected overlays, dialogs and interstitials even on a successful
-    run**, so "add a condition for that popup" becomes "here is the one I saw on run #3 — wire it up?"
-    rather than a guess. Without this the copilot will confidently write a selector for a popup it has
-    never seen, which is precisely what the *"LLM does not write selector strings"* invariant exists to
-    prevent. **EXEC-30** (resolved 2026-09-03) already reasons about unknown popups at replay and is
-    the natural place to emit this capture.
-
-- **Relationship to the "LLM does not write selectors" invariant:** this is not the primary compile
-  path. It is a **user-initiated editor action**, the same sanctioned category as the two existing
-  exceptions in `CLAUDE.md` — the 1-click fix re-compile (`compiler/patch.py` →
-  `llm/selector_regeneration.py`) and the draw-a-region re-target wizard (`editor/retarget.py` →
-  `llm/region_selector_vision.py`). The boundary stays exactly where it is: *compiling a recording is
-  deterministic, always; a human asking the copilot to fix something may use an LLM, and its output is
-  a proposal a human accepts.* Same program, two doors — one reproducible, one smart.
-
-- **Why required:** Human Review is the largest remaining per-workflow labour cost in the product
-  (**BUILD-25**), and it is entirely manual pointing-and-clicking against a failure the reviewer must
-  diagnose unaided from a step number and an error string. A reviewer today cannot ask the system
-  *why* step 18 failed — the recovery log that knows the answer sits on disk in JSONL and is read by
-  nothing. This item turns Human Review from a form into a conversation.
-- **Business value:** time-to-first-working-skill is the whole onboarding funnel, and the demo moment
-  — "it failed, I typed *fix it*, it explained why, proposed a change, I accepted, it re-ran and
-  passed" — is the most legible proof that Conxa compiles intent rather than replaying clicks. It also
-  lowers the skill floor for who can own a workflow inside a vendor.
-- **Technical value:** produces the labelled correction stream that **BUILD-25**, **BUILD-18** (learned
-  classifier fed by human-correction telemetry) and **PROD-19** step 2 all separately need, as a
-  by-product of normal reviewer work rather than as an instrumentation project. It also forces the
-  evidence bundle into existence, which **PROD-11** (skill health dashboard / skill CI) and **EXEC-9**
-  (dataset-grade telemetry) both want anyway.
-- **Dependencies:** none blocking — the editor command surface, `patch_gate`, undo/redo, the branch
-  primitives, the recovery log and the Test Skill run all already exist. Shares the LLM proxy and cost
-  model with existing compile calls. Related: **BUILD-25** (compile-time twin; must share the
-  accept/reject log format), **EXEC-13** (`ai_review`, the runtime-side reasoning checkpoint — a
-  distinct feature, do not merge them), **PROD-3-DRYRUN** (the safe-retest problem in general form),
-  **EXEC-30** (where unexpected-popup capture should hang), **BUILD-18** / **EXEC-9** (downstream
-  consumers of the correction data), **EXEC-21** (human review points — different feature, similar
-  name; that one is about *recording* where a person is needed at runtime).
-
-- **Risk / the line to hold:** a proposal must never apply itself, and a rejected proposal must be
-  logged as loudly as an accepted one. A copilot that quietly drops rejections keeps the flattering
-  half of the dataset and trains on it.
-- **Suggested order:**
-  - ~~**(a) The evidence bundle.**~~ **Done 2026-09-10.** `conxa_compile/editor/evidence.py`. Also
-    fixed on the way: a real `data/runs/*.jsonl` writer never existed (the reader in
-    `handlers/runs.py` was deleted along with it) and the Studio's failure branch discarded its
-    own screenshot/inventory/overlay-probe work instead of writing it anywhere — see the Status
-    note above.
-  - ~~**(b) A read-only copilot.**~~ **Done 2026-09-10.** `copilot_diagnose` task
-    (`conxa_core/llm/client.py`), `conxa_compile/llm/copilot.py::copilot_turn`, floating
-    launcher + panel in `components/copilot/`. Vision-routed from the start, screenshot attached
-    when the runtime evidence has one.
-  - ~~**(c) Proposals for the safe commands first**~~ **Done 2026-09-10**, though the initial cut
-    covers `value`/`input_binding`/`intent`/`semantic_description`/`validation.assertions` rather
-    than assertions alone — `conxa_compile/editor/copilot_proposals.py::gate_proposals` pre-runs
-    the exact same `patch_gate.py` a manual edit clears, so a wider allow-list costs nothing extra
-    in safety. Still never a selector field.
-  - ~~**(d) The accept/reject log**~~, **Done 2026-09-10**, in the format `edit_log.py` already
-    used — `source`/`proposal_id` on `append_edit`, a new `append_decision` for rejections.
-  - ~~**(e) The verified retest loop**~~, **Done 2026-09-10** — `cmd_copilot_verify`
-    (`handlers/copilot.py`): a count-then-confirm guard reading PROD-3's own `consequence`
-    classification (not a re-typed copy of the runtime's `isNonIdempotent` table), then rebuild +
-    retest composed from the existing `cmd_build_skill_package`/`cmd_test_workflow` RPCs, a
-    fixed/still_failing/progressed verdict written by a new `edit_log.py::append_verification`
-    into the same `edits.jsonl`. A cancelled retest writes no verdict. See `docs/TRD.md` §7.2a.
-  - ~~**(f) Unexpected-overlay identity capture during test runs**~~, **Done 2026-09-10** —
-    `runtime/app/overlay_capture.js` (new) captures what `cascade.js`'s dismiss-overlay remedy
-    observed into `overlays.jsonl`, on ANY run that hit an interception, including one that
-    recovered and passed (unlike the failure-only `evidence.json`). New
-    `editor/overlay_identity.py::bundle_from_descriptor` synthesizes a deterministic
-    `IdentityBundle` from a captured control (reusing the compiler's own durability table, never
-    an LLM). A second proposal kind, `insert_overlay_branch`
-    (`copilot_proposals.py::gate_overlay_proposals`), lets the copilot propose a
-    try_dismiss/if_present branch built from an observed overlay — the model picks the overlay
-    and primitive, never a selector; try_dismiss routes through
-    `second_opinion.py::build_try_dismiss_from_hint` (its third caller). See `docs/TRD.md` §7.2a.
-
-  Steps (a) and (b) are worth shipping on their own merits even if the rest is never built.
-- **Complexity:** L overall, staged as above. No step is larger than M, because no step writes new
-  mutation logic — every one of them composes commands that already ship.
-- **Success criteria:** a reviewer can type "step 18 failed, fix it" against a real failed test run and
-  receive a diagnosis citing specific evidence (which cascade stages ran, what the page looked like)
-  rather than a restatement of the error; every proposal renders as a before/after diff with accept
-  and reject, and the compiled skill is byte-identical if every proposal is rejected; an accepted fix
-  triggers a retest that visibly passes, with any non-reversible action in that retest explicitly
-  confirmed first; a conditional wrapper can be added around an observed popup without a human typing
-  a selector; and every accept and reject is written to the same correction log BUILD-25 uses, with
-  the before/after pair.
-
-- **Future scope — capabilities to add once the loop above exists.** All of these ride the same
-  `Evidence → Proposal → Accept → Verify` loop and the same command table; none needs new mutation
-  logic. Two of them (**BUILD-27**, **BUILD-28**) were split out as standalone items because they are
-  worth building even if this copilot never ships.
-
-  **(i) Nearly free — the data already exists and nothing reads it:**
-  - **Explain this workflow.** `editor/describe.py` already produces deterministic step descriptions
-    and `llm/workflow_intent.py` already produces a goal statement plus per-step prose intent on every
-    compile. Nothing narrates them. "This logs into X, finds the invoice matching `{{invoice_id}}`,
-    downloads it, uploads it to Y; 3 inputs, 2 tabs" is the fastest way for a reviewer who did not
-    record the workflow to trust it.
-  - **Step provenance — "why is this step here?"** Trace a step back to its recorded event, its
-    screenshot, its intent token, and which compiler pass produced its target. Reviewers currently
-    delete steps they do not understand; provenance turns a guess into a decision.
-  - **Open the review already triaged.** Instead of a flat list of 22 steps, read the compile report
-    and `cmd_validate_workflow` warnings and lead with "3 things need you: step 7's target is
-    low-confidence, step 12 has no assertion, step 18's value looks like a real customer name that
-    should be a variable." This converts Human Review from scanning into triage, which is where the
-    labour cost actually sits — **this is the copilot's default opening turn, not a later feature.**
-  - **Cross-workflow consistency.** `cmd_list_workflows` plus `cmd_get_compiled_skill` give the copilot
-    every workflow in the workspace: "your other four workflows call this `customer_email`; this one
-    compiled it as `email_2`." That is BUILD-25's workflow-global naming problem solved at review time
-    with no compiler change.
-
-  **(ii) Proposals over commands that already ship:**
-  - **Whole-workflow batch edits.** "Make every date field use one `{{report_date}}` input" — one
-    proposal, N `cmd_patch_step` plus `cmd_update_workflow_inputs` calls, one accept. Done by hand
-    today, per field.
-  - **Assertion coverage audit.** "9 of 22 steps have no post-condition; these 5 matter most, and here
-    is what each should assert." `compiler/validation_planner.py` already knows how to build them —
-    nothing surfaces the gaps.
-  - **Pre-publish safety review.** Read `compiler/destructive_semantics.py` and
-    `compiler/entity_binding.py` out loud before publish: "step 14 deletes a record and is not
-    entity-bound, so on a different day it may delete a different row." The review that most needs
-    doing and that nobody currently does. Feeds **PROD-3-UI** / Strict Mode directly.
-  - **Input design.** "This exposes 11 inputs, but 6 held the same value across all 3 test runs —
-    those should be constants, not something the caller must supply." The difference between a skill
-    an agent invokes correctly and one it fumbles.
-
-  **(iii) Needs new plumbing, worth it:**
-  - **"Show me" mode — the escape hatch.** When the copilot lacks an identity bundle (the popup case),
-    it triggers a short scoped capture via `cmd_start_recording` instead of guessing: "I have never
-    seen that popup — record it once and I will wire it up." This is what keeps the
-    never-invent-a-selector rule from becoming a dead end, and it should ship alongside step (f).
-  - **Learn from fleet failures, at authoring time.** Telemetry already flows back
-    (`runtime/tracker.js` → `app/api/tracking_routes.py`) including recovery types: "step 9 needed
-    recovery on 40% of customer runs last week." Fixing that in the Studio before the next publish is
-    the durability flywheel with a human in the loop — fix once for everyone instead of reacting per
-    run. Overlaps **EXEC-2** (fleet durability flywheel) and **PROD-11**.
-  - **Semantic re-record diff.** After a re-record: "versus the version your customers have — 3 steps
-    unchanged, step 4's button moved into a modal, 2 new steps, and the `account_id` input is gone." A
-    JSON diff is useless here; a meaning diff is what makes publishing feel safe. Pairs with **UPD-1**
-    and the publish flow.
-  - **Per-app memory — the structural one.** If the copilot learns "on this vendor's app, Save only
-    becomes clickable after the toast clears", that must persist across every workflow for that app
-    rather than being re-derived each conversation. **PROD-1** already tracks persistent repair memory
-    for the runtime side; the authoring side should read and write the same store. Without this, every
-    session starts from zero and the feature reads as a clever chatbot rather than something that
-    knows the customer's systems.
-
-  **(iv) Deliberately out of scope — decided, not merely unscheduled:**
-  - **Authoring a workflow from a text description alone.** Tempting and wrong, for the same reason as
-    the popup selector: with no identity bundle for anything, the copilot can only produce selectors
-    from imagination. It demos beautifully and fails in production. Revisit only when there is a
-    recorded corpus for the target app to build from.
-  - **Editing an already-published package in place.** Every copilot change lands as a new version
-    through the normal publish path. The moment it can patch what customers are running, the version
-    history stops describing reality.
-
-  **Stage g — full workflow context, structural hands, session memory — Done 2026-09-16.** Closes
-  several of the "nearly free" and "proposals over existing commands" items above at once: a
-  generated capability manifest (`editor/capability_manifest.py`, cross-checked against
-  `patch_gate.py` by a real test rather than hand-synced prose) replaces the old always-full
-  evidence dump with a compact per-turn digest plus an on-demand `need[]` retrieval loop
-  (`editor/copilot_retrieval.py`) for step detail, screenshots, failure evidence, edit history, and
-  cross-workflow names — "Explain this workflow" / "Cross-workflow consistency" from (i) are now one
-  `list_workflows` need away rather than requiring a separate feature. A third proposal kind,
-  typed structural ops (`insert_step`/`delete_step`/`move_step`/`update_inputs`/`replace_literals`
-  in `gate_structural_proposals`), gives the copilot hands beyond the original five fields —
-  covering "Whole-workflow batch edits" and "Input design" from (ii) — while keeping the
-  never-invent-a-selector rule intact via an `identity_from_step_key` clone requirement for any
-  selector-bearing insert. Accept is now a single all-or-nothing batch with one undo entry. Session
-  resume (`copilot_sessions.py::load_last_session`) makes the write-only archive readable again.
-  Still open from the future-scope list above: "Show me" mode, fleet-failure learning, semantic
-  re-record diff, and per-app memory (iii) — none of these needed the plumbing stage g added, they
-  each need their own new capture/store.
-
 ### BUILD-27 — Nothing reviews the text that decides whether an agent calls the right skill at all
 - **Category:** Builder
 - **Description:** Skills reach the customer as MCP tools exposed by `runtime/app/server.js`
@@ -2256,45 +1127,6 @@ the new item below this one.
   scope (a) above, which is about notifying the *workspace/vendor* — still open. Scopes (b) and
   (c) are also still open.
 
-### ~~BUILD-33~~ — A reasoning-only LLM stream is indistinguishable from a dead provider — **Resolved 2026-09-16**
-- **Category:** Builder
-- **Description:** found while fixing the Copilot's silent turns (2026-09-16). When a routed
-  reasoning model spends its whole completion budget on hidden chain-of-thought and writes no
-  content, the stream carries plenty of tokens but zero `delta.content`. `_sse_choice_text`
-  (`conxa_core/llm/client.py`) only reads `content`/`text`, so the router sees "stream produced no
-  content" and retries the identical call up to three times; the proxy then reports
-  `llm_all_providers_failed`. Every layer's diagnosis — from the router log to the toast — says
-  "the provider is broken" when the provider answered fine and was paid for it. Raising
-  `copilot_reply`'s `max_tokens` to 2048 makes it rare, not impossible, and any future task on the
-  streaming path inherits the same blind spot.
-- **Correction to the original write-up:** the streaming branch never actually cooled the entry —
-  it resets `consecutive_transient_failures` and returns `None` before any `except` handler runs.
-  The real costs were the wasted retries and the misleading label, not a benched key. Also, a retry
-  isn't always identical: `attempt > 0` switches to `entry.fallback_text_model` when one is
-  configured (Starter/Pro tiers), so only the Free pool's retries were genuinely the same call
-  three times.
-- **Resolution:** (a) `_iter_sse_text_deltas` (`conxa_core/llm/client.py`) takes an optional
-  `observed` out-param tracking `reasoning_chars` (`delta.reasoning`/`delta.reasoning_content`) and
-  the stream's `finish_reason`. `LLMRouter._call_provider`'s streaming branch (`app/llm/router.py`)
-  now raises `_DeterministicRejection` — the same short-circuit the 400/413/422 path already uses —
-  when the stream ends empty with reasoning chars seen or `finish_reason == "length"`; `_route`
-  already stops on that exception without cooling the entry or trying another provider.
-  `_meter_and_stream` (`llm_proxy_routes.py`) reports this as `llm_reasoning_only_no_content`
-  instead of `llm_all_providers_failed`. (b) `_NO_REASONING_TASKS` (today just `copilot_reply`) sets
-  OpenRouter's `reasoning: {"enabled": false}` body field, gated on the target entry's endpoint
-  (`openrouter.ai`) rather than `entry.provider` — a free-text name a deployment can spell however
-  it likes — so other OpenAI-compatible endpoints that would reject the key are unaffected;
-  `copilot_diagnose` is deliberately excluded since its structured-JSON, larger-`max_tokens` shape
-  already tolerates a reasoning prefix. (c) all six `[copilot debug]` `print`s in
-  `conxa_compile/llm/copilot.py` removed, along with the now-unused `import sys`.
-- **Why required:** the failure was silent, cost real money per occurrence, and pointed every
-  investigation at the wrong component.
-- **Complexity:** S–M, as scoped.
-- **Success criteria:** a reasoning-only response is logged as `reasoning_only_no_content`, costs
-  one attempt instead of three, and does not cool the entry that produced it — verified in
-  `conxa-cloud/tests/test_llm_reasoning_only_stream.py` and the new `test_llm_client_sse_deltas.py`
-  cases.
-
 ### BUILD-32 — Compile asks the reviewer a few clarifying questions instead of silently guessing
 - **Category:** Builder
 - **Description:** the compiler's second opinion (**BUILD-25**) already decides, on its own, things
@@ -2322,7 +1154,7 @@ the new item below this one.
 - **Success criteria:** a recorded file upload is never shipped as a hardcoded local path without the
   reviewer having seen a question about it; a workflow with no uncertain decisions shows no questions.
 
-## P2 Discovered Items (2 remaining / 2 total) (2026-09-02 mega-workflow dev-mode investigation)
+## P2 Discovered Items (2 remaining) (2026-09-02 mega-workflow dev-mode investigation)
 
 ### COMPILE-1 — `collapse_date_picker_runs` leaves an orphaned raw day-click when the same date field is date-picked twice in one recording
 - **Category:** Compiler Correctness
@@ -2346,7 +1178,7 @@ the new item below this one.
 - **Complexity:** M — needs a fresh recording of a react-datepicker (or similar) field with intervening month/year `<select>` use to confirm whether `_lastFocusedEditableForDate` is being cleared/overwritten by the select interactions, or never set for this widget shape at all.
 - **Success criteria:** recompiling a react-datepicker Date of Birth field recorded via the month/year `<select>` path yields `handler_hints.date_picker.strategy: "typed_first"` with `open` naming the real anchored input.
 
-## P3 — Valuable, Sequence Around Other Work (21 remaining / 23 total; +4 more in "P3 Discovered Items" below)
+## P3 — Valuable, Sequence Around Other Work (16 remaining; +4 more in "P3 Discovered Items" below)
 
 ### PROD-2 — Recordability pre-check (green/yellow/red compile-time score)
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -2361,6 +1193,8 @@ the new item below this one.
 
 ### PROD-4 — Session keeper + vendor-controlled long-lived sessions
 - **Category:** Product Strategy & Business-Risk Mitigation
+- **2026-09-21 (unattended half done):** a scheduled run with an expired login no longer opens a visible sign-in window on a runner nobody is sitting at — pre-flight (`noPrompt`) closes the session and fails with a message naming the app(s), which the scheduler stores as the schedule's `last_run.message` (visible through `list_schedules`; the tray/CLI state file carries status only). The vendor-controlled-session half is now written up as vendor guidance in `docs/Runner-Machine.md` §4a; it stays **open** on its success criterion — at least one design-partner vendor actually configuring a longer-lived session for their own automation traffic — which no code can satisfy.
+- **2026-09-21:** the up-front half is now also complete for interactive use — pre-flight probes and sign-in happen inside one browser session, the wait for the human no longer depends on the MCP request timeout (the run detaches and starts by itself), and a run never starts on an invalid session. The unattended case and the vendor-controlled half are covered by the entry above.
 - **Session-keeper half resolved 2026-08-02:** the pre-flight dead-login check this item asked for already existed (`browser.js::_validateSession`, called before step 0) but was undermined by two bugs — the interactive login window discarded any existing session instead of reusing it, and the "did the user finish signing in?" check flagged a real OAuth login (e.g. through Google) as "still on the login page" because it matched substrings like `auth`/`oauth`/`signin` anywhere in the URL, including on the identity provider's own domain. Fixed: the capture check is now scoped to the target site's own hostname, the login window seeds from whatever session is already on disk, and the whole interactive-login path (first-run and mid-run) is now non-blocking — it returns immediately with "a login window is open, sign in and re-run" instead of holding the MCP call open past the client's response budget. See `docs/Auth-and-Updater.md` §1.3.
 - **Description:** Detect a dead login *before* a skill's first step runs (not mid-run), and prompt for re-login up front rather than failing partway through. Separately, since Conxa's customers own the software being automated, let a vendor configure longer-lived, device-locked sessions specifically for their own automation traffic — no MFA circumvention, just the app owner setting a sensible policy for their own runtime.
 - **Why required:** expired logins and MFA are named as the biggest practical interruption to scheduled/overnight runs; the source doc frames this as "an accepted design, not a gap to engineer around" for attended use, but a real gap for unattended runs specifically.
@@ -2370,18 +1204,6 @@ the new item below this one.
 - **Suggested order:** moderate priority — meaningfully improves the unattended/overnight-run story without being a blocker to any current sale.
 - **Complexity:** M.
 - **Success criteria:** a dead session is caught and surfaced before a scheduled run begins, not mid-run; at least one design-partner vendor has configured a longer-lived session for their own automation traffic.
-
-### ~~PROD-5 — Standalone launcher/scheduler + parallel execution + runner-machine profile~~ — **Resolved 2026-08-26**
-- **Category:** Product Strategy & Business-Risk Mitigation
-- **Resolved 2026-08-26:** shipped as the standalone runner. `schedule daemon` fires skills with no chat app open, driven by a thin MCP-client daemon that spawns the same host exe a chat host would (`runtime/app/scheduler_daemon.js`); parallel execution rides the existing RT-3 machinery (5 concurrent runs per engine), and the same-app rule now holds ACROSS processes via heartbeat-stamped file locks layered into `host_lock.js` (`file_lock.js`) — closing a pre-existing gap where a chat app's engine and any second engine could double-hit one platform. Schedules live only on the customer machine (`scheduler_store.js`, inputs AES-GCM encrypted at rest); agents manage them through new `create_schedule` / `list_schedules` / `delete_schedule` MCP tools, humans through `conxa-runtime.exe schedule …` / `runner …` subcommands (host-exe dispatch added, `cli_schedule.js` registered in host-manifest.json — needs a host-vX.Y.Z release to reach customers). Windows tray ships PowerShell-native (zero deps); missed-run policy is catch-up-within-grace (default 60 min), never burst-fire. Runner profile documented in `docs/Runner-Machine.md`; architecture in `docs/TRD.md` §4.6. Success criteria met: a workflow runs on schedule with no chat application open (verified end-to-end against a real spawned engine), and the runner-machine doc gives the sizing math toward thousands of runs/day on customer hardware.
-- **Description:** A small Conxa tray app / CLI tool with a built-in scheduler, so Conxa can run skills entirely on its own — every chat app (Claude, ChatGPT, Cursor) becomes an optional front door rather than a dependency. Combine with running several isolated browser sessions per machine (3–5 in parallel) and a documented "runner machine" profile (always-on VMs, never sleep, stay logged in) so a customer can reach thousands of runs/day on their own hardware — this is explicitly the same model established automation vendors (e.g., UiPath) use, so enterprises already trust it. Add one scheduling rule: never run two skills against the *same* target application at once (to avoid them tripping over each other), while freely running different apps in parallel.
-- **Why required:** addresses two risks at once — "everything depends on Claude Desktop being open" and "execution is slow and one-at-a-time per computer." Both are described as largely solvable with straightforward engineering, not research.
-- **Business value:** unlocks the "thousands of runs a day" and "runs while you sleep, no chat window open" pitches that current single-session, chat-app-dependent execution can't support — while keeping the "cloud never touches customer data" property intact, since runner machines belong to the customer.
-- **Technical value:** removes a real architectural dependency (needing a chat app running) and turns Conxa into something that can be pointed at by *any* MCP-capable agent as one optional entry point among several (see MCP-2/MCP-3, which build on the same "Conxa doesn't need Claude specifically" thesis). The multi-host-registration half is also a hard prerequisite for any platform-partner conversation (PROD-13) — a partnership with a platform giant would run through *their* agent surface, not Claude Desktop, so "any MCP host" must be demo-true by then, not principle-true. **Installer-side registration into 24 MCP-speaking hosts is now built (MCP-4, resolved 2026-07-20)** — what remained here was specifically the standalone launcher/scheduler (running with no chat app open at all) and parallel execution, not host registration.
-- **Dependencies:** the same-app-serial/different-app-parallel scheduling rule should land alongside this, not after. (It did: cross-process file locks landed together with the daemon.)
-- **Suggested order:** moderate priority — valuable expansion, not gating any current sale.
-- **Complexity:** L — a new standalone process, a scheduler, parallel session management, and the conflict-avoidance rule are each real engineering, though none individually large.
-- **Success criteria:** a workflow runs on a schedule with no chat application open at all; a documented runner-machine setup demonstrably reaches several hundred to thousands of runs/day without customer data leaving their own machines.
 
 ### PROD-9 — Trust & GTM: open-source safety-critical runtime code + security whitepaper + IT admin console
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -2589,11 +1411,6 @@ the new item below this one.
 - **Complexity:** S.
 - **Success criteria:** either the two files are deleted (if `conxa-cloud/tests/`'s versions are confirmed to be strict supersets), or they're moved into `testpaths` and reconciled with the versions that do run.
 
-### ~~TEST-6 — Remove dead `refreshSession()` from `runtime/auth_manager.js`~~ — **Resolved 2026-08-17**
-- **Resolution:** Removed as part of BUILD-15's authentication-is-pre-flight-only redesign — `refreshSession` would have directly violated that model (a blocking mid-run re-login) had anything ever called it. Deleted the function, its attempt-counter state, and its now-dead `AUTH_FAILURE_URL_RE` copy from `auth_manager.js`; removed its two dedicated tests from `runtime/test/test_auth_recovery.js` (the file's other, unrelated tests — `isAuthFailure`, `_reachedProtectedUrl`, session-encryption fallback — are untouched and still pass). `run.js`'s and `browser.js`'s own (semantically different, deliberately-not-merged) auth regexes now cross-reference each other in comments so a future reader doesn't mistake them for accidental duplication.
-
-<details><summary>Original description</summary>
-
 ### TEST-6 — Remove dead `refreshSession()` from `runtime/auth_manager.js`
 - **Category:** Testing & Cleanup
 - **Description:** `auth_manager.js::refreshSession()` (a blocking, in-process target-site re-login) has no callers left in `server.js` — it was superseded by the non-blocking interactive-login flow added 2026-08-02 (`browser.js::beginInteractiveAuth`/`captureReAuth`, see `docs/Auth-and-Updater.md` §1.3). The only remaining caller is `runtime/test/test_auth_recovery.js`, which exercises it directly.
@@ -2621,7 +1438,7 @@ the new item below this one.
 
 ---
 
-## P4 — Low Urgency, Opportunistic (28 remaining / 36 total)
+## P4 — Low Urgency, Opportunistic (28 remaining)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -2722,40 +1539,6 @@ the new item below this one.
 - **Complexity:** M/L — wiring `blob_read_write_token` to a real object-storage backend is more contained than standing up a full durable queue from scratch.
 - **Success criteria:** installer/skill-pack blobs above a defined size threshold are served from object storage/CDN rather than Postgres; a real job queue exists if/when something in the platform needs asynchronous processing.
 
-### ~~CLOUD-22~~ — Execute seat grant admin UI + Execute claim UI — **Resolved 2026-09-16**
-- **Category:** Cloud
-- **Description:** The backend for Conxa Execute seat grants (a workspace admin handing Conxa Execute
-  access to people independent of Build Studio membership, billed against the workspace's shared AI
-  Usage Credits pool — `docs/TRD.md` §13.4c, `docs/Implementation-Plan.md` 1.15) is fully built and
-  curl-testable: `GET/POST /entitlements/execute-grants`, `POST /entitlements/execute-grants/revoke`,
-  a Phase-1 Cloud Dashboard claim fallback, and conxa-execute's own `POST /v1/execute-grants/claim`
-  relay. No UI exists yet for either side: the Cloud Dashboard has no screen to list/create/revoke
-  grants (would live on `BillingPage.tsx` or a new settings tab), and Conxa Execute has no claim
-  screen or "Paid by `<workspace>`" indicator for a pool-bound user.
-- **Why required:** without this, the feature is only usable via direct API calls — not something a
-  real customer admin can self-serve.
-- **Business value:** unlocks the Pro-tier "distribute Execute access to your team/customers" pitch
-  for actual customers, not just internal testing.
-- **Technical value:** none beyond the feature itself — pure UI work on top of an already-stable API.
-- **Dependencies:** none blocking; the backend (1.15) is done and independently testable.
-- **Suggested order:** next natural follow-up to 1.15, whenever Execute-seat-grants is prioritized for
-  a real customer rollout.
-- **Complexity:** M — two small UI surfaces (an admin table + a claim page), no new backend logic.
-- **Success criteria:** an admin can create/revoke Execute seat grants from the Cloud Dashboard without
-  curl; an invited person can claim their seat and see it reflected in Conxa Execute's own UI.
-- **What shipped (2026-09-16):** a Conxa Execute Seats panel on the Cloud Dashboard's Team page
-  (invite-by-email form, status table, copy-link, revoke); a new public `/claim/[grantId]` landing
-  page; a "Have an invite code?" redeem field in Conxa Execute's Settings that shows "Paid by
-  &lt;workspace&gt;" once claimed. Also fixed two correctness gaps found during the build: the invite
-  link previously routed through the Cloud Dashboard's Clerk app, which can never bind the identity
-  Conxa Execute's own Clerk app checks — claiming now happens inside Conxa Execute itself; and a
-  claimed grant wasn't switching Conxa Execute's locally saved chat mode, so a pool-bound user whose
-  local mode was still BYOK would never reach the metered pool proxy. Small backend addition: the
-  internal Execute bridge now returns the workspace's display name and real remaining-credits count
-  (`app/services/saas.py::workspace_name_for`, `app/services/entitlements.py::execute_pool_status`),
-  purely additive — `ensure_execute_pool_available` remains the sole enforcement path. See
-  `docs/UI-UX-Brief.md` §3.7 for the screen details.
-
 ### MCP-2 — Skill discovery manifests + Cloud discovery endpoint
 - **Category:** MCP
 - **Description:** Per `research-analysis/07-go-to-market/agentic-discovery-strategy.md`'s roadmap: add `skill.json` manifest generation to every published skill pack (`plugin_builder.py`), a `GET /api/v1/discover/skills` Cloud endpoint plus a per-skill `GET /api/v1/discover/skills/:id`, with the manifest response including the full `execution` block (endpoint + `runtime_bootstrap`), and a Cloud dashboard surface showing the "ARD Discovery URL" per published skill pack. Confirmed unbuilt — the only `skill.json` references in the current codebase are in an `OBSOLETE_WORKFLOW_FILENAMES` list (an old, unrelated schema artifact), not this manifest.
@@ -2766,15 +1549,6 @@ the new item below this one.
 - **Suggested order:** speculative/early-market-positioning — lower urgency than the reliability-phase items, but cheap enough to fit in alongside MCP-1.
 - **Complexity:** M.
 - **Success criteria:** every published skill pack has a `skill.json` manifest; `GET /api/v1/discover/skills` returns discoverable metadata for a company's published skills.
-
-### ~~MCP-4~~ — Installer-side multi-agent MCP registration (24 hosts, atomic + ownership-checked) — **Resolved 2026-07-20**
-- **Category:** MCP
-- **Original gap:** the installer registered the Conxa MCP server into exactly two surfaces — Claude Desktop and Claude Code — by generating throwaway PowerShell inside the NSIS template. That script reserialized the whole config file (losing comments/key order), wrote non-atomically (a crash mid-write could leave `claude_desktop_config.json` truncated, i.e. Claude Desktop won't start), force-overwrote without checking whether an existing entry was even ours, and — a live bug found while researching a comparable tool (`research-analysis/codebase-memory-mcp-auto-config-analysis.md`) — its uninstaller hardcoded the literal key `'conxa'` while the installer wrote a channel-derived `${MCP_SERVER}` (`conxa-dev` on the dev channel), so uninstalling a dev build left a dangling entry pointing at a deleted exe.
-- **What shipped:** MCP registration moved out of NSIS entirely into `conxa-runtime.exe register-mcp` / `unregister-mcp` (host-exe-layer subcommands, dispatched in `bootstrap.js` before the app layer loads — see `docs/TRD.md` §4.2a). NSIS now only invokes the subcommand. Covers 24 hosts total: 20 JSON-configured (`runtime/mcp_hosts.js` — Claude Desktop, Claude Code, Cursor, VS Code w/ per-profile configs, Windsurf, Gemini CLI, Cline, Zed, Copilot CLI, Factory, KiloCode, Antigravity, OpenCode, OpenClaw, Crush, OpenHands, Augment, Kiro, Junie, Qwen), 2 TOML (`mcp_hosts_toml.js` — Codex, Mistral Vibe, marker-block edited, no parser dependency), 2 YAML (`mcp_hosts_yaml.js` — Goose, Hermes, via the `yaml` package's Document API). Every write is atomic (temp file + `fsync` + `rename`), ownership-checked (an existing entry is only touched if its `command` resolves inside our own install root — a foreign entry is left alone, never overwritten), and comment/formatting-preserving (`jsonc-parser` for JSON, so this applies to every host, not just the hand-edited ones). The dev/prod key-drift bug is now structurally impossible: `register-mcp` and `unregister-mcp` derive the entry key from the same `env.js` resolution every time, instead of one hardcoded string and one template variable that could fall out of sync. Also added: `--plan`/`--dry-run` (prints the exact receipt, mutates nothing), a per-host status file NSIS reads for its completion message (so a partial failure — 14 hosts registered, 1 didn't — is visible instead of silently showing "Setup complete!"), and `durable_context.js` (post-sync, writes a per-company `SKILL.md`/`AGENTS.md`/etc. into each registered host so the agent actually reaches for the tools, not just that they're technically registered).
-- **Verified:** 84 unit/integration tests (`runtime/test/test_config_edit*.js`, `test_mcp_hosts*.js`, `test_mcp_register*.js`, `test_durable_context.js`), plus manual end-to-end runs against both source (`node bootstrap.js register-mcp`) and the actual compiled `pkg` exe, including the exact dev-uninstall regression scenario (register dev + prod, uninstall dev only, confirm prod survives untouched).
-- **Still open:** the NSIS installer itself could not be compiled/run in the environment this was built in (no `makensis` available) — the subcommand call was verified by direct invocation, not by an actual installer run; do that before shipping. Host paths are Windows-only and marked in-code as needing re-verification against each vendor's current docs before shipping (they drift). macOS host paths are not implemented (`mcp_hosts*.js` are structured so a `detectMac`/`configPathsMac` pair can be added later without touching the orchestration layer). CLI-on-PATH detection (the way cbm's reference implementation catches a tool with no marker directory yet) was deliberately not replicated — filesystem evidence only.
-- **Two real bugs found on a second pass over the CI/build scripts, both fixed same day:** (1) `sync.js` now requires `durable_context.js`, which itself requires `config_edit.js`/`mcp_hosts.js` — all three are host-exe-bundled (for `register-mcp`) but were **not** in `build-runtime-app.yml`'s or `scripts/build-app-local.ps1`'s hardcoded app-layer file lists, so a real release build would have shipped a `sync.js` that silently failed to find `durable_context.js` on every sync (caught by its own try/catch, degrading to a logged warning — the discoverability feature would have been dead in production, not a crash). Fixed by adding all three to both file lists. (2) That same fix required switching `config_edit.js`/`config_edit_yaml.js` from a bare `require("jsonc-parser"/"yaml")` to the established `(global.__hostRequire || require)(...)` bridge pattern (matching `browser.js`/`server.js`/`manifest_manager.js`), since those files are now reachable from the disk-loaded app layer, not just the host exe's pkg snapshot — which in turn required adding `jsonc-parser`/`yaml` to `_pkg_stubs.js` so pkg's static analyzer still bundles them into the host exe now that the literal `require(...)` call it could see is gone. Also added a CI step (`build-runtime-host.yml`) that runs the 84-test suite for this feature — none of the runtime's tests ran in CI before this.
-- **Cross-reference:** this is the "multi-host-registration half" PROD-5 and MCP-2's business cases point at as a hard prerequisite for any platform-partner conversation — that half is now built for MCP-speaking hosts; PROD-5's standalone-launcher half and MCP-3's non-MCP HTTP surface remain separate, unbuilt work.
 
 ### MCP-3 — `[UNVERIFIED]` Local HTTP server for multi-agent runtime access
 - **Category:** MCP
@@ -2902,22 +1676,6 @@ the new item below this one.
 - **Success criteria:** hand-editing a step's target selector in `StepEditorPanel` (outside the wizard) shows a visible warning when the current `validation` block no longer matches what `infer_wait_for_shape`/`_build_assertions` would produce for the new target, with a one-click way to regenerate it.
 - ~~**Discovered 2026-07-09 (post-condition validation work):** `conxa_compile/editor/patch_gate.py::validate_editor_patch` — including its destructive-wait_for invariant and the new "consequential action must retain a required assertion" invariant added alongside `docs/Implementation-Plan.md` 1.10 — is not actually called from `cmd_patch_step` (or anywhere else); it's covered by unit tests (`conxa-cloud/tests/test_patch_gate.py`) but not wired into the live patch path, so a manual `StepEditorPanel` edit today can silently violate either invariant. Wiring `validate_editor_patch` into `cmd_patch_step` would close this gap and is a natural companion to the stale-validation badge above.~~ **Resolved 2026-07-09:** `cmd_patch_step` (`conxa-builder/python/handlers/workflow_editor.py`) now calls `validate_editor_patch` before merging/persisting any patch, raising a rejecting `_CommandError` on violation. This closes the invariant-violation gap specifically; the broader "stale but not invariant-violating" badge-and-regenerate UX described above is still open.
 
-### ~~BUILD-4~~ — Wire the "Current identity" summary into Pick Element; show pruned signals in Review Selectors — **Resolved 2026-07-10 (partially by design)**
-- **Category:** Builder
-- **Resolution:** #1 is done, but landed in a different location than originally scoped. As part of the 2026-07-10 Human Edit vs. Skill Package redesign (`research-analysis/Human-Edit-vs-Skill-Package.md`, `BUILD-5` below), `<StepIdentitySummary step={step} />` is now mounted inside `StepConfigForm.tsx`'s new "Reliability" collapsible section — shown for every non-marker step whenever the form renders without `hideSelectorTools` (i.e., outside the retarget wizard's Phase 2), rather than specifically inside `RetargetPhasePick.tsx`'s Phase 1. This gives broader coverage (every step, not just the wizard's Phase 1) but does not literally satisfy "wire into Phase 1" — if that specific wizard-embedded placement is still wanted, it remains open as a smaller follow-up. **#2 (pruned-signals affordance in Phase 2) is still open** — not addressed by this pass.
-- **Original description (for context):** ~~Two related follow-ups from the 2026-07-10 identity-transparency work...~~ (see git history for the original item text).
-
-### ~~BUILD-5~~ — Human Edit coverage gaps vs. the Skill Package (branch steps invisible, intent graph/recovery/fingerprint hidden) — **Resolved 2026-07-10**
-- **Category:** Builder
-- **Resolution:** Implemented the full redesign proposed in `research-analysis/Human-Edit-vs-Skill-Package.md` §5 — read-only visibility for every field the audit flagged as hidden, plus branch-step authoring (closing EXEC-1's remaining editor gap, see the updated EXEC-1 entry above).
-  - **Backend (read-only DTO additions, `conxa_compile/editor/dto.py` + `workflow_dto.py`):** `StepEditorDTO.recovery_view`, `.fingerprint` (incl. diagnostics-only `stable_hash`/`compat_fingerprint`), `.handler_hints_view`, `.safety`, `.branch_summary`, `.branch_steps` (path-addressed, `if_present` only); `WorkflowResponse.intent_graph`, `.compile_health` (incl. `llm_router_stats`).
-  - **Backend (branch authoring, closes EXEC-1's editor gap):** see the EXEC-1 entry above for the full RPC/patch-gate list.
-  - **Frontend — Tier 1 (Review):** `CompileHealthBanner.tsx` (workflow-level status/min-confidence/below-threshold links, mounted under the page header), `WorkflowPlanPanel.tsx` (new "Workflow plan" tool pane showing the intent graph), safety badges + `BranchSummaryBadge` on `WorkflowStepItem.tsx`, `BranchSubList.tsx` (indented collapsible preview in the workflow list, selecting a nested row sets a new `editorStore.focusedBranchIndex`), conditional kinds added to the Add-action menu.
-  - **Frontend — Tier 2 (Reliability):** `RecoveryBehaviorCard.tsx`, `ElementFingerprintCard.tsx`, both mounted (with `StepIdentitySummary`) behind a new per-step "Reliability" collapsible in `StepConfigForm.tsx`. `BranchBodyEditor.tsx` (add/remove/reorder + per-nested-step inline editing for `if_present` bodies) mounted in `InlineRetargetFlow.tsx`.
-  - **Frontend — Tier 3 (Diagnostics):** new `DiagnosticsPanel.tsx` tool pane — compile report, router stats, policy version, required runtime, and the selected step's integrity hashes.
-  - **Scope trims made during implementation (see follow-ups below):** `try_dismiss`/`wait_for_one_of` got read-only summary badges only, no authoring UI for their candidate/option lists; `validation.success_conditions` was left as-is per explicit user direction (deferred, not part of this pass).
-- **Original description (for context):** ~~A 2026-07-10 audit compared every SkillPackage field against what Human Edit exposes...~~ (see git history for the original item text, or `research-analysis/Human-Edit-vs-Skill-Package.md` for the full audit).
-
 ### BUILD-6 — Authoring UI for try_dismiss candidates and wait_for_one_of options
 - **Category:** Builder
 - **Description:** BUILD-5 shipped full authoring for `if_present`'s nested body (`BranchBodyEditor.tsx`) but deliberately left `try_dismiss`'s `branch.candidates` (an ordered list of selector strings) and `wait_for_one_of`'s `branch.options` (a list of `{selector, steps}` alternatives) with read-only summary badges only. The backend patch-gate validation for both already exists (`conxa_compile/editor/patch_gate.py::_validate_branch_patch`) — a normal `patch_step` call with a `branch: {candidates: [...]}` or `branch: {options: [{selector: ...}]}` payload is already accepted and quality-gated; there is just no UI to compose that payload. Per-option nested `steps` bodies for `wait_for_one_of` are explicitly out of scope even for this follow-up (see `_validate_branch_patch`'s rejection of a `steps` key inside any option) — that would need its own path-addressing scheme (`branch.options[i].steps[j]`) beyond what `cmd_patch_step`'s current `path` parameter supports.
@@ -2940,11 +1698,6 @@ the new item below this one.
 - **Complexity:** S (add an editor) or M (migrate and delete, since it touches `compiler/patch.py` and the runtime's `verifyAssertions()` contract).
 - **Success criteria:** `success_conditions` is either editable through a real UI or removed from the schema — no third state.
 
-### ~~BUILD-8 — Host-exe deps picker has the same stale-local-build bug the app-layer picker had~~ — **Resolved 2026-07-30**
-- **Category:** Builder
-- **Description:** Fixed for both places that pick a host exe. `_bootstrap_runtime_dir()` (`conxa_runtime.py`, used by `resolve_runtime_dir()` for the Test Skill/sandbox path) sorted lexicographically, so `"host-v1.2.3"` outranked a local build. Separately — and this is what actually shipped the bug to a real installer — `installer_builder.py::_find_studio_cache_runtime_dir()` (used by `build_installer()`/"Build Installer") sorts by a *numeric*-tuple key (`_runtime_version_sort_key()`), which still picked `"host-v1.2.3"` → `(1,2,3)` over the local build's `"host-v0.0.0-local.<ts>"` → `(0,0,0,<ts>)`, because the first tuple element (`0` vs `1`) decides before the timestamp is ever compared. The installer shipped a host exe built before commit `caf2352` added `jsonc-parser` to `_pkg_stubs.js`, so the packaged exe's own `__hostRequire` bundle lacked it — surfacing at runtime as `Cannot find module 'jsonc-parser'` when `config_edit.js` (loaded from the disk app layer) fell through to a bare `require()` the host exe's snapshot couldn't satisfy (see `FIX.md` 2026-07-30). Both functions now prefer the newest `-local.`-named directory (a marker `build-runtime-local.ps1` already emits) before falling back to their prior version-comparison logic.
-- **Success criteria:** a locally rebuilt host exe (via `build-runtime-local.ps1`) is always what both `_bootstrap_runtime_dir()` and `_find_studio_cache_runtime_dir()` return when a local build and a downloaded release are both present in the deps cache. Covered by `test_conxa_runtime.py::TestBootstrapRuntimeDir` and `test_installer_builder.py::test_find_studio_cache_runtime_dir_local_build_beats_higher_numbered_release`.
-
 ### BUILD-9 — Dev deps manifest can pin an app layer older than the runtime code requires
 - **Category:** Builder
 - **Description:** Discovered while diagnosing the BUILD-8-adjacent stale-app-layer bug (2026-07-30, see `FIX.md`): the dev deps manifest pinned `app-v1.3.4`, built 2026-07-04, which was missing five files (`http_client.js`, `page_scripts.js`, `durable_context.js`, `config_edit.js`, `mcp_hosts.js`) that the current `server.js`/`sync.js` require to even start. A fresh dev machine that bootstraps deps without ever running `build-app-local.ps1` would download this pinned version and hit the same runtime failure the http/https fix was meant to close.
@@ -2955,14 +1708,6 @@ the new item below this one.
 - **Suggested order:** opportunistic; do before the next round of onboarding a new developer to Build Studio.
 - **Complexity:** S (bump the pin) to M (add the staleness-check guard).
 - **Success criteria:** either the pinned dev app-layer version is kept current, or a build-time check catches a staged app layer missing files the current runtime source requires, before it reaches an installer.
-
-### ~~BUILD-10 — Accessibility snapshot capture has been silently dead since a Playwright upgrade~~ — **Resolved 2026-09-01**
-- **Category:** Builder
-- **Description:** Discovered 2026-08-01 while diagnosing the Human Edit re-target wizard destroying good selectors (see `FIX.md`). `conxa_compile/recorder/session.py::_capture_a11y_async` calls `page.accessibility.snapshot()`, an API Playwright removed several majors ago (`hasattr(Page, "accessibility")` is `False` on the installed 1.58.0); it's also invoked from a worker thread against Playwright's thread-affine sync API. The call always raises, and a bare `except Exception` swallows it — no `.a11y.json` blob has ever been written by this recorder. Consequence: `selector_filters.py::_count_role` never runs, so `uniqueness_gate` returns `True` (via its `a11y_tree is None` branch) for every `role=` identity signal in every skill this Studio has ever compiled, regardless of whether the role/name is actually unique on the page. Nothing currently downstream depends on that verdict being correct enough to break (the runtime resolver ignores `unique_at_compile` entirely, and the same investigation's F3 fix stopped the compiler punishing signals it can't verify), which is why this shipped unnoticed rather than as a visible failure.
-- **Why required:** the compile-time uniqueness verdict shown in the Human Edit "Selector candidates" panel (`UNIQUE MATCH` badge) is a real claim to the user; for every `role` signal it is currently unconditionally true rather than checked.
-- **Business value:** low on its own (nothing observably breaks today) but removes a latent trust gap in a user-facing confidence signal, and is a prerequisite for any future feature that does start trusting `unique_at_compile` for `role` signals.
-- **Resolution:** Found again, independently, while root-causing a demoqa.com Date of Birth picker replay failure ("Element not found (resolve miss)" on react-datepicker's nameless year `<select>`) — this dead evidence layer is exactly what let `identity_bundle.py::_accessible_name`'s ungated `inner_text` candidate ship the element's concatenated `<option>` list as its fabricated "name", since `resolves_to_nothing` could never verify anything without a real snapshot. Fixed as scoped: `_capture_a11y_async` now calls `page.locator("body").aria_snapshot()` inline (still on the pump-loop's own thread with a 2s join timeout, same as before — not moved to the calling Playwright-sync thread, since the existing thread+timeout structure already isolates a slow/hung call without the reentrancy risk the original scoping note flagged); a capture failure is now recorded once per session in `binding_errors` instead of swallowed. Stored as `{"aria_snapshot": "<yaml>"}` (not `aria_yaml` — matches the API name) in the existing `.a11y.json` blob, so `read_a11y_snapshot`'s signature is unchanged. `selector_filters.py::_count_role` and `llm/selector_regeneration.py::_extract_a11y_node` (the 1-click fix API's own a11y lookup, also named in this item's original scope) both now read the YAML shape via a shared line regex, falling back to the legacy tree-dict walk for snapshots captured before this change. The actual root cause of the replay failure was `_accessible_name` itself, not this item — see `identity_bundle.py`'s `_NAME_FROM_CONTENT_ROLES` gate (`inner_text` is no longer a name candidate for `combobox`/`listbox`/`textbox`/`searchbox`/`spinbutton`/bare `<select>`, and is capped at 80 chars rather than truncated) — but restoring real a11y evidence is what makes the `resolves_to_nothing` guard this item names actually able to catch the *next* one. `runtime/app/resolver.js` and `runtime/app/cascade.js` got the identical name-from-content gate so compile-time and recovery-time naming stay in agreement (an existing invariant this file already documents for the `label_text` gate). Tests: `conxa-cloud/tests/test_nameless_element_identity.py` (dual-shape `_count_role`/`_extract_a11y_node` coverage + the fabricated-name regression), `runtime/test/unit/test_recovery.js` + `test_resolver.js` (the runtime-side gate).
-- **Success criteria:** a recorded session produces a non-empty `.a11y.json` blob per snapshot (confirmed no prior session ever had one — `~/.conxa-build-studio-dev/.../blobs/` held only `.html.gz` files; verifying a fresh recording now produces one needs a live re-record, not yet done this session); `_count_role` returns real counts against it — covered by unit tests against both snapshot shapes; a `role=` selector matching 2+ elements on the recorded page is correctly stamped `unique_at_compile: False` at compile time.
 
 ---
 
@@ -2976,16 +1721,6 @@ the new item below this one.
 - **Suggested order:** opportunistic — only worth doing if compile time for long recordings becomes a complaint.
 - **Complexity:** S.
 - **Success criteria:** frame extraction for an N-event session uses N ffmpeg processes instead of 5N, and the 5 frames produced for a sample event are pixel-verified to match the current per-offset `-ss` output within tolerance.
-
-### ~~BUILD-12 — In-Studio file picker during recording (richer alternative to the OS dialog fix)~~ — **Resolved 2026-08-17**
-- **Category:** Builder
-- **Description:** Fixed 2026-08-06 (see `FIX.md`): the recorder's `page.on("filechooser", ...)` listener was silently intercepting the file dialog with no `set_files()` call, so choosing a file during recording did nothing. The shipped fix removed the listener so Chromium's native OS picker opened instead — but three follow-on attempts to make that native picker default to the session's download folder (steering `selectfile.last_directory` via a dedicated persistent Chromium profile) never worked reliably, since no automated tool can inspect or test the native OS dialog. **2026-08-17:** built the richer alternative described below instead. The recorder now attaches a real `filechooser` listener (`_on_file_chooser` in `recorder/session.py`) that suppresses the native picker and calls `on_file_picker_request(request_id, default_dir, multiple)`, wired in `handlers/session.py` to emit a `file_picker_request` event over the existing JSON-RPC event stream (`id: null`, not a reply to any in-flight command). `RecordWorkflowDialog.tsx` shows Electron's own `dialog.showOpenDialog` (extended in `main.js`'s `dialog:pick-file` handler to accept `{filters, defaultPath, multiple}` and to raise+focus the Studio window first) pre-pointed at `default_dir`, and posts the result back via a new `cmd_resolve_file_picker` handler. `RecordingSession.resolve_file_pick()` queues the answer on a `SimpleQueue`; the pump loop (the only thread allowed to touch Playwright's sync API) drains it each tick and calls `chooser.set_files(...)`, which still dispatches the input's `change` event via CDP, so `bridge.js`'s `upload_intent` capture is unaffected. The persistent-profile/Preferences-seeding machinery this replaces has been removed from `session.py` entirely.
-- **Why required:** the OS-dialog default-folder fix never actually landed for the user across three attempts — this is the real fix, not upside on top of a working one.
-- **Business value:** the actual UX gap ("Choose File" opening in the wrong folder) is now closed, verified by automated tests instead of only by the user clicking through.
-- **Technical value:** the previously-missing backend↔frontend request/response channel now exists (`on_file_picker_request` callback → fire-and-forget event → renderer `onEvent` listener → `cmd_resolve_file_picker` reply), built on the existing `_emit_event(None, ...)` broadcast pattern rather than new IPC plumbing, plus a `SimpleQueue`-based cross-thread handoff matching the pump loop's existing `_pending_payloads` pattern.
-- **Dependencies:** none remaining.
-- **Complexity:** was L, delivered.
-- **Success criteria:** `pytest -q tests/test_recorder_session.py` covers `_on_file_chooser`'s default-dir selection (downloads dir, zip-extract dir including unwrapped wrapping folders, home fallback) and `resolve_file_pick`'s cross-thread queuing; the recording picker shows all file types (not the installer-logo Images filter); manual verification is recording a download→upload workflow and confirming the Studio's own dialog opens pre-pointed at the download folder with the downloaded files visible.
 
 ### BUILD-13 — A cancelled file-picker click, recorded with no following upload, can still hang a run
 - **Category:** Builder
@@ -3009,13 +1744,6 @@ the new item below this one.
 - **Complexity:** S.
 - **Success criteria:** `GET /api/v1/workflows/generations` returns the generations payload, not a 404; a regression test asserts the route resolves correctly regardless of router registration order.
 
-### ~~CLOUD-13 — Publish always bumps every skill's version, even unchanged ones~~ — RESOLVED 2026-08-19
-- **Category:** Cloud
-- **Description:** Found 2026-08-19 while building the release system. `publish_routes.py`'s per-skill `component_versions` write always stamps the pack-wide `skill_pack_version` onto every skill in `body.skills`, because publish is always whole-pack (`backend.py` rglobs the entire `skill-packs/{company}/` tree). So "per-skill independent versioning" — the mechanism `_build_delta` implements and `docs/Backend-Schema.md` §5.9 documents ("republishing one skill never triggers a redownload of the others") — doesn't hold with the current publish path: republishing bumps every skill's reported version, so every skill's delta reads `action: "update"` and the runtime redownloads and reactivates the whole pack on every publish, not just the skill(s) that actually changed.
-- **Resolution (2026-08-19):** superseded by the broader per-skill publishing architecture fix (same day, see `FIX.md` "Publishing one automation no longer waits on — or gets blocked by — every other automation"). `PublishBody` now carries one `skill_slug` per publish call (no more `body.skills` list to loop over); `backend.py::_collect_skill_pack_files(company_slug, skill_slug)` walks only that one skill's own directory; `component_versions` is written once, for that one skill. The originally-proposed narrower fix (diff-gate the version bump while keeping whole-pack publish) is now moot — there is no whole-pack publish path left to gate.
-- **Why required:** wasted bandwidth and redundant skill reactivation on every publish, scaling with pack size — a 20-skill company redownloads 20 skills' files to ship a 1-skill fix.
-- **Success criteria (met):** republishing one skill results in `_build_delta` reporting `action: "update"` for exactly that skill and `action: "no_change"` for every other skill — verified by `conxa-cloud/tests/test_release_channel.py::test_rolling_back_one_skill_never_touches_a_siblings_files_or_version` and `test_publishing_one_skill_never_touches_a_siblings_version_or_stable_pointer`.
-
 ### CLOUD-14 — No backfill for release history published before per-skill versioning (2026-08-19)
 - **Category:** Cloud
 - **Description:** The 2026-08-19 per-skill publishing fix re-keys `skillpack_versions__{slug}`, `skillpack_channels`, and `skillpack_release_events__{slug}` from `{slug}` to `{slug}__{skill_slug}` / `"{slug}:{skill_slug}"`. This was a clean re-key with no migration script, on the reasoning that these three namespaces are purely internal Release Center bookkeeping — no installed runtime reads them (runtimes only see `component_versions`, `pack.json`, and the delta endpoint, all left untouched and already per-skill). Any company that published under the old company-wide model before this date simply has no version history under the new per-skill keys — their Release Center for that company will show "no releases published yet" for every skill until they publish again, even though their runtimes are still correctly running whatever was last live.
@@ -3026,13 +1754,6 @@ the new item below this one.
 - **Suggested order:** opportunistic — only worth doing once real pre-2026-08-19 publishes exist that someone actually needs history for.
 - **Complexity:** S — one script, no schema change, no runtime involvement.
 - **Success criteria:** a company that published under the old company-wide model before 2026-08-19 sees its historical versions/rollback targets in the Release Center for each of its skills, without needing to republish first.
-
-### ~~CLOUD-15 — Build Studio publish deploys instantly; no review/approval gate before customer machines receive a change~~ — RESOLVED 2026-08-19
-- **Category:** Cloud
-- **Description:** Publishing a skill from Build Studio moved the stable channel in the same request — every registered runtime started receiving the new version at its next sync with no review step, no matter how the release-system work above framed "Publish" as the primary release action. There was no way to upload a candidate release and have anyone (including the publisher) look at it before it went live.
-- **Resolution (2026-08-19):** split publish and deploy into two separate, differently-authorized actions. Build Studio's publish only ever uploads an immutable snapshot and leaves a version row `status="ready"`; a new Cloud-only, `require_admin`-gated `POST .../releases/{version}/release` endpoint is the sole thing that moves the mutable mirror, `component_versions`, and the stable channel. Build Studio's Publish page no longer renders release history, deployment status, rollback, or an audit log at all — those, plus the new Release/Deploy action, moved to Conxa Cloud under Skill Packages → Group → Workflow. See `docs/App-Flow.md` §8/§8.1/§8.1a, `docs/TRD.md` §5.5a, `docs/Backend-Schema.md` §5.1/§5.1d.
-- **Why required:** an enterprise customer's compliance/change-management expectations don't tolerate "the builder's laptop is the deploy button" — a distinct review-and-approve step, with its own audit trail, is table stakes.
-- **Success criteria (met):** publishing a version never changes what a runtime receives; only an explicit Release/Deploy call does. Verified by `conxa-cloud/tests/test_release_channel.py::test_publish_alone_leaves_the_version_ready_and_never_moves_stable` and `test_runtime_desired_version_follows_release_not_publish`.
 
 ### CLOUD-16 — Untested cloud-backend routers
 - **Category:** Cloud
@@ -3046,7 +1767,7 @@ the new item below this one.
 
 ---
 
-## P3 Discovered Items (4 remaining / 4 total) (2026-08-12 Plugin→Workflow/SkillPack refactor)
+## P3 Discovered Items (4 remaining) (2026-08-12 Plugin→Workflow/SkillPack refactor)
 
 ### TEST-7 — Dev-script renaming cleanup: test_plugin.py, rebuild_plugin.py, plugin_test/ directory
 - **Category:** Testing & Cleanup

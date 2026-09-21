@@ -374,7 +374,7 @@ Keep appending to `FIX.md` after every prompt as usual. When `FIX.md` crosses a 
 
 ### TODO.md
 
-`TODO.md` at the repo root is the single prioritized backlog spanning documentation, architecture, and every subsystem. When you complete an item from it, mark it done in place (don't delete it — strike it through with a resolution date, matching the pattern used in `docs/Sales-Blockers.md`/`docs/Security.md`). When you discover new, still-open work during a task, add it to `TODO.md` rather than leaving it undocumented.
+`TODO.md` at the repo root is the single prioritized backlog spanning documentation, architecture, and every subsystem. When you complete an item from it, **move it to [`Done.md`](Done.md)** — cut the whole entry out of `TODO.md` (leave nothing struck-through behind) and file it in `Done.md` under its area section (the ID prefix: BUILD, EXEC, CLOUD, RT, …) in ID order, keeping its ID and title and adding a `**Resolved:** YYYY-MM-DD` line plus one line on what fixed it; then add its number to the summary table at the top of `Done.md` and bump that area's count. Update any `TODO.md` cross-references to it ("depends on X") to point at `Done.md`. When you discover new, still-open work during a task, add it to `TODO.md` rather than leaving it undocumented.
 
 ### PRD update policy
 
