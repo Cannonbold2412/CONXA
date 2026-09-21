@@ -197,13 +197,24 @@ def build_skill_package(
         _log("Written LICENSE")
 
     # ── 5. Write skill-packs/{company}/ format (for installer runtime) ────────
-    from conxa_core.storage.group_store import apps_for_workflow, get_group as _get_group
+    from conxa_core.storage.group_store import apps_for_workflow, get_group as _get_group, unclaimed_hosts
 
     group_models = {}
     for group_id in {gid for gid in skill_group_ids.values() if gid}:
         group = _get_group(group_id)
         if group is not None:
             group_models[group_id] = group
+
+    # The runtime resolves a skill's sign-in from pack.json's `groups` block and has no fallback for
+    # a skill whose group is missing from it (AUTH-2 removed the legacy single-session path). A group
+    # deleted after its workflows were assigned would otherwise ship a pack that fails only on the
+    # customer's machine — fail here, where the vendor can reassign the workflow and rebuild.
+    orphaned = [wf.name for wf in workflows if wf.slug in skill_slugs and wf.group_id not in group_models]
+    if orphaned:
+        raise RuntimeError(
+            f"These workflows are not in an existing group: {', '.join(repr(n) for n in orphaned)}. "
+            "Move each one into a group (its group was probably deleted), then build again."
+        )
 
     groups_payload = [
         {
@@ -224,6 +235,9 @@ def build_skill_package(
     # with the recording gate (handlers/session.py) via apps_for_workflow so the two
     # can't compute a different answer for the same workflow.
     skill_required_apps: dict[str, list[str]] = {}
+    # Hosts the recording visited that no group app covers (AUTH-1) — same inputs as required_apps,
+    # so the manifest warning and Build Studio's group-page chip can't disagree.
+    skill_unclaimed_hosts: dict[str, list[str]] = {}
     for wf in workflows:
         if wf.slug not in skill_slugs:
             continue
@@ -234,6 +248,7 @@ def build_skill_package(
         skill_required_apps[wf.slug] = [
             a.id for a in apps_for_workflow(group.apps, wf.target_url, wf.protected_url, *visited_hosts)
         ]
+        skill_unclaimed_hosts[wf.slug] = unclaimed_hosts(group.apps, wf.target_url, wf.protected_url, *visited_hosts)
 
     # skill-packs/ is the ONLY layout publish, the installer, and the runtime read — a failed
     # write here means the build produced nothing usable and must not be reported as a
@@ -248,6 +263,7 @@ def build_skill_package(
         skill_target_urls=skill_target_urls,
         skill_group_ids=skill_group_ids,
         skill_required_apps=skill_required_apps,
+        skill_unclaimed_hosts=skill_unclaimed_hosts,
         groups=groups_payload,
         version=version,
     )

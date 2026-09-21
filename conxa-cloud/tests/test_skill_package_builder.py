@@ -1288,7 +1288,7 @@ class TestSavedSkillJsonBuild:
         workflow = SimpleNamespace(
             id="wf1",
             workspace_id=workspace_id,
-            group_id="",
+            group_id="grp_any",
             slug="delete_database",
             name="Delete Database",
             session_id="workflow-session",
@@ -1322,6 +1322,8 @@ class TestSavedSkillJsonBuild:
         monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: saved_skill if skill_id == "skill_saved" else None)
         monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
         monkeypatch.setattr(skill_package_builder, "set_build", lambda *args, **kwargs: None)
+        # Every built workflow must belong to an existing group (see build_skill_package).
+        monkeypatch.setattr("conxa_core.storage.group_store.get_group", lambda _gid: SimpleNamespace(id="grp_any", name="Any", apps=[]))
 
         build_skill_package(workspace_id, company_name="Render")
 
@@ -1468,6 +1470,56 @@ class TestSavedSkillJsonBuild:
         build_skill_package(workspace_id, company_name="Acme")
         manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
         assert set(manifest["required_apps"]) == {"app_render", "app_billing"}
+
+    def _single_workflow_build(self, tmp_path, monkeypatch, *, visited_hosts, group):
+        from types import SimpleNamespace
+        import conxa_compile.skill_package_builder as skill_package_builder
+        from conxa_core.config import settings
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        wf = SimpleNamespace(
+            id="wf_render", workspace_id="wrk_test", group_id="grp_sales",
+            slug="sync_contact_to_crm", name="Sync contact to CRM", session_id="s2",
+            skill_id="skill_render", edited_at=1,
+            target_url="https://dashboard.render.com", protected_url="https://dashboard.render.com/",
+        )
+        skill = {
+            "meta": {"id": "skill_render", "title": "sync_contact_to_crm", "visited_hosts": visited_hosts},
+            "inputs": [],
+            "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://dashboard.render.com"}}]}],
+        }
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _w, display_name=None: SimpleNamespace(display_name="Acme"))
+        monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _w: [wf])
+        monkeypatch.setattr(skill_package_builder, "read_skill", lambda _s: skill)
+        monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _b: tmp_path)
+        monkeypatch.setattr(skill_package_builder, "set_build", lambda *a, **k: None)
+        monkeypatch.setattr("conxa_core.storage.group_store.get_group", lambda _g: group)
+        build_skill_package("wrk_test", company_name="Acme")
+        return json.loads((tmp_path / "skill-packs" / "wrk_test" / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
+
+    def test_unclaimed_visited_hosts_land_in_the_manifest_and_are_omitted_when_none(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        render_app = SimpleNamespace(
+            id="app_render", name="Render",
+            login_url="https://dashboard.render.com/login", success_url="https://dashboard.render.com",
+        )
+        group = SimpleNamespace(id="grp_sales", name="Sales", apps=[render_app])
+
+        manifest = self._single_workflow_build(
+            tmp_path, monkeypatch, visited_hosts=["dashboard.render.com", "drive.google.com"], group=group,
+        )
+        assert manifest["required_apps"] == ["app_render"]
+        assert manifest["unclaimed_hosts"] == ["drive.google.com"]
+
+        manifest = self._single_workflow_build(tmp_path, monkeypatch, visited_hosts=["dashboard.render.com"], group=group)
+        assert "unclaimed_hosts" not in manifest  # omitted, not written empty
+
+    def test_a_workflow_whose_group_no_longer_exists_fails_the_build(self, tmp_path, monkeypatch):
+        """The runtime has no single-session fallback (AUTH-2): a pack whose group is missing would
+        fail only on the customer's machine, so the build refuses it where the vendor can fix it."""
+        with pytest.raises(RuntimeError, match="not in an existing group.*Sync contact to CRM"):
+            self._single_workflow_build(tmp_path, monkeypatch, visited_hosts=[], group=None)
 
 
 # ─────────────────────────────────────────────────

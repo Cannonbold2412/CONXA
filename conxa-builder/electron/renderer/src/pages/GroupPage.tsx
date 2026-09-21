@@ -203,6 +203,7 @@ function WorkflowRow({
   const packBuilt = !!skillPackBuild
   const stale = wf.edited_at != null && skillPackBuild != null && wf.edited_at > skillPackBuild.last_built_at
   const usedApps = appsUsedBy(wf, apps)
+  const unclaimed = wf.unclaimed_hosts ?? []
   const stage = wf.stage ?? 'ready_to_compile'
 
   // The last rail node only turns green once this workflow's skill actually has
@@ -254,7 +255,7 @@ function WorkflowRow({
               <p className="truncate text-sm font-medium text-white">{wf.name}</p>
               <WorkflowStageBadge stage={wf.stage} />
             </div>
-            {usedApps.length > 0 && (
+            {(usedApps.length > 0 || unclaimed.length > 0) && (
               <div className="mt-1 flex flex-wrap items-center gap-1">
                 {usedApps.map((a) => (
                   <span
@@ -262,6 +263,15 @@ function WorkflowRow({
                     className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-zinc-400"
                   >
                     {a.name}
+                  </span>
+                ))}
+                {unclaimed.map((h) => (
+                  <span
+                    key={h}
+                    title={`This workflow visits ${h}, which has no sign-in set up in this group. If it needs you signed in there, add it as an app.`}
+                    className="rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] font-medium text-amber-300"
+                  >
+                    {h} · no sign-in
                   </span>
                 ))}
               </div>

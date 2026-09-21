@@ -113,10 +113,9 @@ def _runtime_result_text(result: dict[str, Any]) -> str:
 
 def _stage_runtime_auth(workflow: Any, company: str, data_dir: Path) -> None:
     """Copy every authenticated app in the workflow's group into the test
-    sandbox, one file per app (``{company}__{app_id}_raw_state.json``), plus a
-    ``{company}_groups.json`` descriptor the runtime resolves the group from
-    (mirrors what pack.json's ``groups`` block carries in production — see
-    runtime/browser.js).
+    sandbox, one file per app (``{company}__{app_id}_raw_state.json``). The
+    runtime resolves the group itself from the built pack.json's ``groups``
+    block (staged by sync_skill_pack) — see runtime/app/browser.js.
     """
     from conxa_core.storage.group_store import get_group
 
@@ -128,27 +127,14 @@ def _stage_runtime_auth(workflow: Any, company: str, data_dir: Path) -> None:
         return
 
     import shutil
-    from datetime import datetime, timezone
 
     sessions_dir = data_dir / "cache" / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    apps_descriptor = []
     for app in group.apps:
-        apps_descriptor.append({"id": app.id, "name": app.name, "success_url": app.success_url, "login_url": app.login_url})
         state_path = Path(str(app.storage_state_path or ""))
         if state_path.is_file():
             shutil.copy2(state_path, sessions_dir / f"{company}__{app.id}_raw_state.json")
-
-    groups_path = sessions_dir / f"{company}_groups.json"
-    groups_path.write_text(
-        json.dumps(
-            {"group_id": group.id, "name": group.name, "apps": apps_descriptor, "updated_at": datetime.now(timezone.utc).isoformat()},
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
 
 
 def _skill_response(

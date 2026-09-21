@@ -129,3 +129,32 @@ def test_apps_for_workflow_ignores_urls_disguised_as_hosts(tmp_groups_dir):
     # A malformed/URL-shaped "hostname" (has a path) must not match anything by accident.
     matched = group_store.apps_for_workflow(group.apps, "sf.com/login")
     assert matched == []
+
+
+def test_unclaimed_hosts_warns_only_for_hosts_no_app_covers(tmp_groups_dir):
+    group = group_store.create_group("Sales")
+    group = group_store.add_app(group.id, "Render", "https://dashboard.render.com/login", "https://dashboard.render.com")
+
+    hosts = group_store.unclaimed_hosts(
+        group.apps,
+        "https://dashboard.render.com", "https://dashboard.render.com/",
+        "dashboard.render.com",   # the app's own host
+        "accounts.render.com",    # same site as the app -> its own sign-in hop, not a new one
+        "drive.google.com",       # nothing covers this
+        "drive.google.com",       # duplicates collapse
+        "",                       # blanks are ignored
+    )
+    assert hosts == ["drive.google.com"]
+
+
+def test_unclaimed_hosts_treats_ip_addresses_as_their_own_site(tmp_groups_dir):
+    group = group_store.create_group("Sales")
+    group = group_store.add_app(group.id, "Local", "http://127.0.0.1:8000/login", "http://127.0.0.1:8000/home")
+    # last-two-labels would call 10.0.0.1 and 127.0.0.1 the same site ("0.1") — IPs must match exactly.
+    assert group_store.unclaimed_hosts(group.apps, "10.0.0.1") == ["10.0.0.1"]
+    assert group_store.unclaimed_hosts(group.apps, "127.0.0.1") == []
+
+
+def test_unclaimed_hosts_with_no_apps_lists_every_visited_host(tmp_groups_dir):
+    group = group_store.create_group("Sales")
+    assert group_store.unclaimed_hosts(group.apps, "https://a.example.com", "b.example.org") == ["a.example.com", "b.example.org"]

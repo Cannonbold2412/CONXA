@@ -768,6 +768,9 @@ class WorkflowsMixin:
                 "company": company,
                 "inputs": inputs,
                 "watch": not bool(payload.get("headless")),
+                # A missing sign-in must fail this test now, not detach and start a run later that
+                # nothing is waiting on (AUTH-4) — Studio's own group-auth gate has already run.
+                "wait_for_auth": False,
             }
             result = call_runtime_tool(
                 runtime_dir, "execute_skill", run_args,

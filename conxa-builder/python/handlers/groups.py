@@ -209,10 +209,12 @@ class GroupsMixin:
             # required_apps, so the card's platform chips can never disagree with
             # runtime auth gating. visited_hosts is captured at stop_recording, so
             # chips appear before the first compile.
-            from conxa_core.storage.group_store import apps_for_workflow
+            from conxa_core.storage.group_store import apps_for_workflow, unclaimed_hosts
 
             touched = apps_for_workflow(group.apps, wf.target_url, wf.protected_url, *wf.visited_hosts)
             data["used_apps"] = [{"id": a.id, "name": a.name} for a in touched]
+            # AUTH-1: hosts it visited that no app covers — the runtime warns about the same list.
+            data["unclaimed_hosts"] = unclaimed_hosts(group.apps, wf.target_url, wf.protected_url, *wf.visited_hosts)
             workflows.append(data)
         return {"group": group.model_dump(mode="json"), "auth": group_auth_status(group), "workflows": workflows}
 

@@ -86,6 +86,35 @@ def apps_for_workflow(apps: list[GroupApp], *urls: str) -> list[GroupApp]:
     ]
 
 
+def _site(host: str) -> str:
+    """Registrable-ish domain of a hostname: its last two labels ("mail.google.com" -> "google.com").
+    An IP address or single-label host is its own site.
+
+    ponytail: last-two-labels, so a multi-part suffix ("a.co.uk" vs "b.co.uk") reads as the same
+    site — a missed warning, never a false one. Swap in the public-suffix list if that ever bites.
+    """
+    labels = host.split(".")
+    if len(labels) < 2 or all(part.isdigit() for part in labels):
+        return host
+    return ".".join(labels[-2:])
+
+
+def unclaimed_hosts(apps: list[GroupApp], *urls: str) -> list[str]:
+    """Hosts a workflow visited that none of the group's apps covers — the ones it will hit a
+    login wall on with no pre-flight sign-in. `urls` takes the same mix of full URLs and bare
+    hostnames as apps_for_workflow, and this is computed from the same inputs at build time, so
+    Build Studio and the runtime warn about the identical list.
+
+    A host on the same site as any app (sub/parent domain, e.g. accounts.google.com next to a
+    mail.google.com app) is treated as covered: it is that app's own sign-in hop, not a new one.
+    """
+    claimed = {
+        _site(h) for a in apps for h in (_url_hostname(a.login_url), _url_hostname(a.success_url)) if h
+    }
+    visited = {_url_hostname(u) for u in urls} - {""}
+    return sorted(h for h in visited if _site(h) not in claimed)
+
+
 def _read_raw(group_id: str) -> dict[str, Any] | None:
     data = db_get("groups", group_id)
     if data is not None:

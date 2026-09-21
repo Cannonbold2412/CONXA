@@ -57,6 +57,7 @@ def _write_skill_packs_format(
     version: str,
     skill_group_ids: dict[str, str] | None = None,
     skill_required_apps: dict[str, list[str]] | None = None,
+    skill_unclaimed_hosts: dict[str, list[str]] | None = None,
     groups: list[dict[str, Any]] | None = None,
     conxa_api_url: str = "",
     required_runtime: str = "",
@@ -238,6 +239,12 @@ def _write_skill_packs_format(
             "compensation_skill": compensation_skill,
             "checksum":         checksums,
         }
+        # AUTH-1: hosts the recording visited that no group app covers — the runtime warns (never
+        # blocks) about them before step 0. Omitted when empty so the common manifest is unchanged
+        # and a runtime that predates the field simply never reads it.
+        _unclaimed = (skill_unclaimed_hosts or {}).get(slug)
+        if _unclaimed:
+            manifest["unclaimed_hosts"] = _unclaimed
         # PROD-3 "Strict Mode": a per-skill recovery-tier ceiling, honoured by the runtime as
         # min(host ceiling, this value) — never looser than the host (runtime/app/server.js::
         # _effectiveRecoveryTier). No Studio UI sets this yet (tracked as a follow-up); until
