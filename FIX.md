@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed the Conxa Execute release build stopping on its first version number — 2026-09-21
+The automatic build for Conxa Execute stopped with an error because it tried to set the app's version to a number it already had. It is like a clerk refusing to change a label to what it already says. The build now accepts the same number and carries on, so the first release can go out.
+
 ## A task that needs a login now warns you when it visits a site nobody set up a sign-in for — 2026-09-21
 If a recorded task wandered onto a website that has no sign-in set up, it used to run happily until it hit that site's login page and then fail with no warning. Now the group page in Build Studio shows a small amber tag on that task naming the site, and the assistant is told the same thing before the task starts. It is only a heads-up, never a block — like a note on a route saying "no toll pass for this bridge" before you drive.
 
