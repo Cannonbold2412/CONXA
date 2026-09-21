@@ -67,14 +67,34 @@ Rules of thumb:
 ## 4. Honest limits
 
 - **Session lifetime is the unattended ceiling.** When a target app's login dies overnight, the
-  run fails fast at pre-flight with a clear message instead of breaking mid-flow — but someone
-  must re-authenticate before the next success. Vendor-controlled long-lived sessions
-  (PROD-4 / PRD §14.5 question 5, still open) are the structural fix.
+  run fails fast at pre-flight — it opens **no** sign-in window on the runner (nobody is there
+  to use it) — and the schedule's last-run message (`list_schedules`) names the app that needs
+  a person. Someone must re-authenticate on the machine before the next success. Vendor-controlled
+  long-lived sessions (PROD-4 / PRD §14.5 question 5, still open; see §4a) are the structural fix.
 - **Runner machines need someone occasionally.** Updates, re-auths, and the occasional reboot
   still involve a human; "runs while you sleep" ≠ "no ops ever."
 - **Same-machine concurrency cap is flat (5).** Memory-derived sizing was deliberately deferred
   (see `RT-3-CAP-SIZING` in TODO.md); raise `CONXA_MAX_CONCURRENT_RUNS` on roomy VMs if you
   know what you're doing.
+
+### 4a. Longer-lived sessions for your own automation traffic (vendor guidance)
+
+Conxa cannot lengthen a login it does not control — only the app's owner can. If you own the
+software being automated, you can set a sensible policy for your *own* runner machines, which
+is an app owner configuring their own product, not circumventing MFA:
+
+- **Longer session lifetime for the runner's account** — a dedicated service/automation user
+  with a session (or refresh-token) lifetime measured in days or weeks instead of hours.
+- **Device-locked sessions** — bind that account's sessions to the runner machine (device or IP
+  allow-list, device-bound tokens) so a long lifetime is safe: a stolen cookie is useless
+  elsewhere.
+- **A dedicated account per runner**, so its policy never loosens anyone's interactive login.
+- **Keep MFA on for humans.** The goal is one MFA at setup and then a long-lived session, not
+  removing the second factor.
+
+Nothing changes in Conxa when you do this: the runtime already reuses a valid session and only
+asks for a person when one fails its pre-flight probe. If it does fail, an unattended run reports
+which app needs signing in rather than opening a window (§4).
 
 ## 5. Where things live on the runner
 

@@ -619,10 +619,11 @@ sequenceDiagram
     RT->>RT: load execution.json + recovery.json
     RT->>RT: load storageState from cache/sessions/, validate against protected_url
     alt session missing or expired
-        RT->>Browser: open interactive login window(s)
-        User->>Browser: signs in
-        Browser-->>RT: session captured + saved
-        Note over RT,Claude: execute_skill waits for sign-in (default 45s) and continues<br/>in the same call. If it isn't done in time the reply says which app<br/>is still unsigned — Claude calls authenticate to keep waiting, then execute_skill
+        RT->>Browser: open ONE Chromium; a sign-in tab per missing app (valid apps untouched)
+        RT-->>Claude: returns at once: "Authentication required — sign in to <apps>" + run_id
+        User->>Browser: signs in (SSO / MFA / CAPTCHA — take as long as needed)
+        Browser-->>RT: detected automatically; tab closes; session saved
+        Note over RT,Claude: the workflow then starts BY ITSELF in the same Chromium —<br/>Claude does not run it again; it polls get_execution_status(run_id)<br/>for the result. Closed tab / failed sign-in is reported by name, and can be retried.
     else session valid
         RT->>Browser: launch Chromium (headed by default)
         loop For each step

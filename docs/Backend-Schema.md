@@ -225,6 +225,10 @@ written to `skill-packs/{company}/{group_id}/{skill_slug}/` (the sentinel
 local build output and after the real runtime syncs. See `docs/TRD.md` §5.2a
 and §11.1 for the full on-disk layout and delta-sync wire format.
 
+Each skill's own `manifest.json` also carries `"unclaimed_hosts": [hostname, ...]` **only when non-empty** —
+hostnames the recording visited that no `GroupApp` of its group covers (`group_store.unclaimed_hosts`,
+AUTH-1; see `docs/TRD.md` §5.2a "Unclaimed hosts"). Advisory only: the runtime warns, it never gates on it.
+
 Each skill's own `manifest.json` also carries `"required_apps": [app_id, ...]`
 — the subset of its group's `GroupApp`s that workflow's own `target_url`/
 `protected_url`, **and every hostname the recording actually visited**
@@ -2910,9 +2914,8 @@ a different V8 than official nodejs.org Node, causing silent deserialization seg
 %APPDATA%/Conxa/  (CONXA_DATA_DIR)
 └── cache/
     ├── sessions/
-    │   ├── {co}_state.json             ← AES-256-GCM encrypted storageState
-    │   ├── {co}_raw_state.json         ← plaintext fallback (no Conxa token)
-    │   └── {co}_auth_meta.json
+    │   ├── {co}__{appId}_state.json     ← AES-256-GCM encrypted storageState, one per group app
+    │   └── {co}__{appId}_raw_state.json ← plaintext fallback (no Conxa token)
     └── manifests.json                  ← skill index fast-load cache
 ```
 
