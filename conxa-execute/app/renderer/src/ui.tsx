@@ -26,7 +26,39 @@ export const paths = {
   restore: "M5 9V5h4M19 9V5h-4M5 15v4h4M19 15v4h-4",
   reload: "M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5",
   expand: "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7",
+  copy: "M9 9h11v11H9zM5 15V5h10",
+  edit: "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z",
+  check: "M20 6 9 17l-5-5",
 };
+
+/** Hover-revealed copy (+ optional edit) icons under a chat message; parent needs `group`. */
+export function MsgActions({ text, onEdit, className = "" }: { text: string; onEdit?: () => void; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const btn = "flex h-6 w-6 items-center justify-center rounded-md text-fg-dim hover:bg-bg-hover hover:text-fg";
+  return (
+    <div className={`flex gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 ${className}`}>
+      <button
+        type="button"
+        className={btn}
+        title={copied ? "Copied" : "Copy"}
+        aria-label="Copy message"
+        onClick={() => {
+          void navigator.clipboard.writeText(text).then(() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+      >
+        <Icon d={copied ? paths.check : paths.copy} size={14} />
+      </button>
+      {onEdit && (
+        <button type="button" className={btn} title="Edit" aria-label="Edit message" onClick={onEdit}>
+          <Icon d={paths.edit} size={14} />
+        </button>
+      )}
+    </div>
+  );
+}
 
 const BUTTON_VARIANT_CLASS = {
   primary: "bg-fg text-bg hover:opacity-90",

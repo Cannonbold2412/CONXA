@@ -3,7 +3,7 @@ import type { ChatMessage, ConfirmRun, ExecuteContext, HistoryRow, Identity, Ses
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
 import { BrowserPanel } from "./BrowserPanel";
-import { Button, Icon, Row, paths } from "./ui";
+import { Button, Icon, MsgActions, Row, paths } from "./ui";
 
 type Mode = "form" | "chat";
 
@@ -100,6 +100,31 @@ export function App() {
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("conxa-theme") === "light" ? "light" : "dark"),
   );
+
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const w = Number(localStorage.getItem("conxa-sidebar-width"));
+    return w >= 200 && w <= 480 ? w : 260;
+  });
+  const [resizing, setResizing] = useState(false);
+
+  function startResize(e: React.PointerEvent) {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setResizing(true);
+    let w = sidebarWidth;
+    const move = (ev: PointerEvent) => {
+      w = Math.min(480, Math.max(200, ev.clientX));
+      setSidebarWidth(w);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setResizing(false);
+      localStorage.setItem("conxa-sidebar-width", String(w));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
 
   useEffect(() => api.onConfirmRun(setPendingRun), [api]);
 
@@ -481,7 +506,16 @@ export function App() {
       />
 
       <div className="flex min-h-0 flex-1">
-      <aside className={`flex shrink-0 flex-col border-r border-line bg-bg-sidebar transition-[width] ${collapsed ? "w-[52px]" : "w-[260px]"}`}>
+      <aside
+        style={{ width: collapsed ? 52 : sidebarWidth }}
+        className={`relative flex shrink-0 flex-col border-r border-line bg-bg-sidebar ${resizing ? "" : "transition-[width]"}`}
+      >
+        {!collapsed && (
+          <div
+            onPointerDown={startResize}
+            className="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize hover:bg-line"
+          />
+        )}
         <div className="px-2 pt-3">
           <button type="button" onClick={goHome} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-fg-muted hover:bg-bg-hover hover:text-fg">
             <Icon d={paths.plus} />
@@ -614,15 +648,17 @@ export function App() {
             <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
               {displayLog.map((m, i) =>
                 m.role === "user" ? (
-                  <div key={i} className="mx-auto flex max-w-[720px] justify-end">
+                  <div key={i} className="group mx-auto flex max-w-[720px] flex-col items-end">
                     <div className="max-w-[70%] whitespace-pre-wrap rounded-2xl bg-bg-elevated px-4 py-2.5 text-[15px] leading-relaxed">
                       {m.content}
                     </div>
+                    <MsgActions className="mt-1" text={m.content} onEdit={busy ? undefined : () => setChatInput(m.content)} />
                   </div>
                 ) : (
-                  <div key={i} className="mx-auto max-w-[720px]">
+                  <div key={i} className="group mx-auto max-w-[720px]">
                     <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
                     <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
+                    <MsgActions className="mt-1" text={m.content} />
                   </div>
                 )
               )}

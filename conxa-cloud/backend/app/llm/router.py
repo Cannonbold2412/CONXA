@@ -572,6 +572,12 @@ class LLMRouter:
             # Streaming never uses json_object mode — the model would produce raw JSON text one
             # token at a time, which reads as garbage mid-stream (see route_text's docstring).
             body_dict = _openai_body_dict(task, payload_with_model, json_mode=on_delta is None)
+            # Kimi K3 on OpenRouter is pinned to one provider, with reasoning on and no fallbacks.
+            # ponytail: reasoning_details isn't echoed back across execute_chat turns, add if
+            # multi-turn tool chains lose their thread.
+            if "openrouter.ai" in entry.endpoint and "kimi-k3" in str(body_dict.get("model", "")).lower():
+                body_dict["reasoning"] = {"enabled": True}
+                body_dict["provider"] = {"only": ["sail-research/fp4"], "allow_fallbacks": False}
             if on_delta is not None:
                 body_dict["stream"] = True
             raw_body = json.dumps(body_dict).encode("utf-8")

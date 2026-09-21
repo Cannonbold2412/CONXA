@@ -56,11 +56,35 @@ function _reachedProtectedUrl(url, protectedUrl) {
   if (!protectedUrl) return false;
   try {
     const u = new URL(url);
-    const p = new URL(protectedUrl);
-    return u.hostname === p.hostname && !LOGIN_PATH_RE.test(u.pathname);
+    const p = new URL(protectedUrl.split("{}", 1)[0]);
+    if (u.hostname !== p.hostname) return false;
+    // An explicit {} means "anything under this prefix" (docs/TRD.md success_url wildcard; Python
+    // twin url_matches_pattern). Honour the path so "vercel.com/dashboard/{}" stops matching
+    // vercel.com/login. A bare-origin prefix keeps the hostname-only behaviour.
+    if (protectedUrl.includes("{}") && p.pathname !== "/" && !u.pathname.startsWith(p.pathname)) return false;
+    return !LOGIN_PATH_RE.test(u.pathname);
   } catch (_) {
     return false;
   }
+}
+
+// The navigable prefix of a success_url pattern — "https://drive.google.com/{}" is a matcher, not
+// an address; goto() on it lands on /%7B%7D. Python twin: recorder/session.py::_probe_app_session_sync.
+function _successPrefix(app) {
+  return String(app.success_url || "").split("{}", 1)[0];
+}
+
+// Where to send a login tab. When an app's sign-in lives on a different host than the app itself
+// (accounts.google.com -> drive.google.com, an Okta tenant -> the app), open THE APP: the provider
+// then sets its own return-to parameter (continue= / redirect_uri= / RelayState=) back at the app,
+// so sign-in ends where _reachedProtectedUrl is watching. Opening the IdP directly ends the journey
+// on the IdP and the check can never fire (AUTH-5). Same-host apps keep login_url: their success
+// host often serves a public logged-out page (github.com), and opening there would satisfy the
+// check before anyone signs in.
+function _loginEntryUrl(app) {
+  const success = _successPrefix(app);
+  if (!success) return app.login_url;
+  return _hostOf(success) === _hostOf(app.login_url) ? app.login_url : success;
 }
 
 // ─── Multi-app group auth ─────────────────────────────────────────────────
@@ -328,7 +352,8 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       results.push({ app, stored, sessionPath, valid: true, fromCache: isRequired });
       return;
     }
-    batch.push({ key, stored, protectedUrl: app.success_url || app.login_url, sessionPath, label: app.name });
+    batch.push({ key, stored, navUrl: _successPrefix(app) || app.login_url,
+      protectedUrl: app.success_url || app.login_url, sessionPath, label: app.name });
     results.push({ app, stored, sessionPath, valid: null, _batchIndex: batch.length - 1 });
   });
   // The `authenticate` tool with nothing to probe and nothing missing: report success without
@@ -441,7 +466,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     };
     const hostsOf = (a) => [_hostOf(a.login_url), _hostOf(a.success_url)].filter(Boolean);
     const pendings = await Promise.all(missingRequired.map((r) =>
-      beginInteractiveAuth(`${workspace_id}__${r.app.id}`, r.app.login_url, {
+      beginInteractiveAuth(`${workspace_id}__${r.app.id}`, _loginEntryUrl(r.app), {
         label: r.app.name,
         storedState: r.stored,
         protectedUrl: r.app.success_url || r.app.login_url,
@@ -575,7 +600,7 @@ async function _probeInSession(session, entries) {
     let tab;
     try {
       tab = await _newSessionPage(session, { label: entry.label, focus: false });
-      await tab.page.goto(entry.protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+      await tab.page.goto(entry.navUrl || entry.protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
       outcomes.set(entry.key, await _isAuthenticated(tab.page, entry.protectedUrl));
     } catch (_) {
       outcomes.set(entry.key, false);
@@ -1202,6 +1227,9 @@ module.exports = {
   refreshAppState,
   _rejectReasonForProtectedUrl,
   _reachedProtectedUrl,
+  _loginEntryUrl,
+  _successPrefix,
+  _probeInSession,
   _resolveGroup,
   _loadGroupAppSession,
   _loadSessionForKey,

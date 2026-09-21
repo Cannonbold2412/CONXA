@@ -528,6 +528,7 @@ def test_finish_group_app_auth_marks_group_and_workflows_ready(backend, monkeypa
     auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
 
     class FakeSession:
+        reached_wait_url = False  # RecordingSession always has it; False = the user closed the window by hand
         async def stop(self):
             # Mirrors RecordingSession.stop(): the recorder thread forces a final
             # storage_state autosave right before it tears down (session.py L1074).
@@ -557,10 +558,54 @@ def test_finish_group_app_auth_marks_group_and_workflows_ready(backend, monkeypa
 
     assert result["auth"]["ready"] is True
     assert result["auth"]["apps_authenticated"] == 1
+    # closed by hand, never reached success_url -> advisory (the session itself is still saved and ready)
+    assert "https://example.test/dashboard" in result["auth"]["apps"][0]["detect_warning"]
     updated = get_workflow(workflow.id)
     assert updated is not None
     assert updated.status == "ready"
 
+
+def test_finish_group_app_auth_has_no_warning_when_success_url_was_reached(backend, monkeypatch, tmp_path):
+    """A login that self-detected success_url is exactly what a run will also detect — nothing to warn about."""
+    b, _out = backend
+    globals_ = b.cmd_finish_group_app_auth.__globals__
+
+    from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "https://example.test/dashboard")
+    app_id = group.apps[0].id
+    auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
+
+    class FakeSession:
+        reached_wait_url = True
+
+        async def stop(self):
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(
+                json.dumps({"cookies": [{"name": "session", "value": "abc"}], "origins": []}),
+                encoding="utf-8",
+            )
+
+    class FakeRegistry:
+        def get(self, session_id: str):
+            return FakeSession() if session_id == "sess-1" else None
+
+        def pop(self, session_id: str):
+            return None
+
+    monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
+
+    result = b.cmd_finish_group_app_auth(
+        {"session_id": "sess-1", "group_id": group.id, "app_id": app_id},
+        "rid",
+    )
+
+    assert result["auth"]["apps"][0]["detect_warning"] == ""
 
 def test_finish_group_app_auth_fails_when_browser_closed_before_save(backend, monkeypatch, tmp_path):
     """Superseded test_auth_stop_recording_uses_autosaved_state_after_browser_close."""
@@ -578,6 +623,7 @@ def test_finish_group_app_auth_fails_when_browser_closed_before_save(backend, mo
     app_id = group.apps[0].id
 
     class FakeSession:
+        reached_wait_url = False  # RecordingSession always has it; False = the user closed the window by hand
         async def stop(self):
             return None  # no auth file ever written — browser closed before login completed
 
@@ -619,6 +665,7 @@ def test_finish_group_app_auth_fails_when_saved_state_has_no_session(backend, mo
     auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
 
     class FakeSession:
+        reached_wait_url = False  # RecordingSession always has it; False = the user closed the window by hand
         async def stop(self):
             auth_path.parent.mkdir(parents=True, exist_ok=True)
             auth_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")

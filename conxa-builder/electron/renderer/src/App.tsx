@@ -17,6 +17,7 @@ import { fetchWorkflow } from '@/api/workflowsApi'
 import { WorkflowListPage } from '@/pages/WorkflowListPage'
 import { GroupPage } from '@/pages/GroupPage'
 import { HumanEditPage } from '@/pages/HumanEditPage'
+import { InspectorPage } from '@/pages/InspectorPage'
 import { HumanEditListPage } from '@/pages/HumanEditListPage'
 import { PublishPage } from '@/pages/PublishPage'
 import { BuildInstallerPage } from '@/pages/BuildInstallerPage'
@@ -287,6 +288,7 @@ export function App() {
             <Route path="/workflows" element={<WorkflowListPage />} />
             <Route path="/workflows/:workflowId" element={<WorkflowRedirect />} />
             <Route path="/workflows/:workflowId/compile/:sessionId" element={<CompileProgress />} />
+            <Route path="/workflows/:workflowId/inspector" element={<InspectorPage />} />
             <Route path="/groups/:groupId" element={<GroupPage />} />
             <Route path="/edit" element={<HumanEditPage />} />
             <Route path="/edit/:skillId" element={<HumanEditPage />} />

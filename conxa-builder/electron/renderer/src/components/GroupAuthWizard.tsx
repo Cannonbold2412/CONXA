@@ -416,6 +416,10 @@ export function GroupAuthWizard({
               {isUnverified && (
                 <p className="mt-0.5 text-[11px] text-amber-300">Not verified recently — may have expired.</p>
               )}
+              {/* Amber, not red: the sign-in itself worked and is saved — it is the success URL that is suspect. */}
+              {isReady && app.detect_warning && (
+                <p className="mt-0.5 text-[11px] text-amber-300">{app.detect_warning}</p>
+              )}
             </div>
           </div>
         )

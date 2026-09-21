@@ -55,6 +55,9 @@ export type GroupAppStatus = {
    * session, not just "a session file exists". A `ready` app can still be unverified. */
   verified: boolean
   last_error: string
+  /** Set when the sign-in was saved without ever reaching success_url (closed by hand, or none set):
+   * a run watches for the same URL, so it may not detect this app as signed in. Advisory only. */
+  detect_warning: string
 }
 
 export type GroupAuthStatus = {

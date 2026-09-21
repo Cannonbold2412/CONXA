@@ -9,11 +9,10 @@ import {
   renameGroup,
   type GroupApp,
 } from '@/api/groupsApi'
-import { createWorkflow, fetchSkillPack, fetchSkillPackVersions, type SkillPackBuild, type Workflow } from '@/api/workflowsApi'
+import { createWorkflow, fetchSkillPack, fetchSkillPackVersions, updateWorkflow, type SkillPackBuild, type Workflow } from '@/api/workflowsApi'
 import { GroupAuthWizard } from '@/components/GroupAuthWizard'
 import { RecordWorkflowDialog } from '@/components/RecordWorkflowDialog'
 import { DeleteWorkflowButton } from '@/components/DeleteWorkflowButton'
-import { InspectorDrawer } from '@/components/inspector/InspectorDrawer'
 import { UsageCards } from '@/components/EntitlementMeters'
 import { WorkflowTestRow } from '@/components/WorkflowTests'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -37,7 +36,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { formatCompileEta, useCompileEtaSeconds, useCompileStore } from '@/store/compileStore'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
-import { FolderKanban, Layers, Loader2, Plus, Trash2 } from 'lucide-react'
+import { FolderKanban, Layers, Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
 
 function AddAppDialog({ groupId }: { groupId: string }) {
   const qc = useQueryClient()
@@ -169,6 +168,40 @@ function appsUsedBy(wf: Workflow, apps: GroupApp[]): GroupApp[] {
   return apps.filter((a) => hosts.has(hostnameOf(a.login_url)))
 }
 
+function RenameWorkflowButton({ workflow, onRenamed }: { workflow: Workflow; onRenamed: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const mutation = useMutation({
+    mutationFn: () => updateWorkflow(workflow.id, { name: name.trim() }),
+    onSuccess: () => {
+      setOpen(false)
+      onRenamed()
+    },
+    onError: (e) => toast.error((e as Error).message),
+  })
+  const canSave = !!name.trim() && name.trim() !== workflow.name && !mutation.isPending
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (v) setName(workflow.name) }}>
+      <DialogTrigger asChild>
+        <Button size="icon-sm" variant="outline" title="Edit name" className="border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white">
+          <Pencil className="size-3.5" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="border-white/10 bg-[#0d0f12] text-zinc-100">
+        <DialogHeader><DialogTitle className="text-white">Edit workflow</DialogTitle></DialogHeader>
+        <form
+          className="space-y-4 pt-2"
+          onSubmit={(e) => { e.preventDefault(); if (canSave) mutation.mutate() }}
+        >
+          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} className="border-white/10 bg-white/5 text-zinc-100" />
+          <Button type="submit" className="w-full" disabled={!canSave}>Save</Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 /** One workflow's whole lifecycle in a single row: name/status on the left,
  * the five-node Record → Compile → Review → Test → Ready to Package rail in
  * the middle, Inspector + Delete on the right. Replaces the old row that only
@@ -279,14 +312,16 @@ function WorkflowRow({
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            <InspectorDrawer
-              workflow={wf}
-              trigger={
-                <Button size="icon-sm" variant="outline" title="Inspector" className="border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white">
-                  <FolderKanban className="size-3.5" />
-                </Button>
-              }
-            />
+            <Button
+              size="icon-sm"
+              variant="outline"
+              title="Inspector"
+              className="border-white/10 bg-white/[0.04] text-zinc-400 hover:text-white"
+              onClick={() => navigate(`/workflows/${encodeURIComponent(wf.id)}/inspector?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
+            >
+              <FolderKanban className="size-3.5" />
+            </Button>
+            <RenameWorkflowButton workflow={wf} onRenamed={onChanged} />
             <DeleteWorkflowButton workflow={wf} onDeleted={onChanged} iconOnly />
           </div>
         </div>

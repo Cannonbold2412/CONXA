@@ -55,6 +55,18 @@ def _has_captured_session(auth_path: Path) -> bool:
     return False
 
 
+def _detect_warning(success_url: str, reached: bool) -> str:
+    """Why this sign-in may not be detected on its own at run time, or "" if it will be. The runtime
+    watches for the same success_url the recorder does, so a login the recorder never saw reach it
+    (closed by hand) is the earliest sign of a wrong or missing success_url."""
+    if not success_url:
+        return "No success URL is set, so a run can't tell when sign-in has finished. Set it to the page you land on once signed in."
+    if not reached:
+        return (f"Sign-in was saved, but the login never reached {success_url} on its own — you closed it by hand. "
+                "A run watches for that page too, so check it is where you land after signing in.")
+    return ""
+
+
 def group_auth_status(group) -> dict[str, Any]:
     """Per-app readiness for a group, plus the id of the first app still
     needing attention (used by both the setup wizard and the run gate).
@@ -90,6 +102,7 @@ def group_auth_status(group) -> dict[str, Any]:
             "checked_at": app.checked_at,
             "verified": verified,
             "last_error": app.last_error,
+            "detect_warning": app.detect_warning,
         })
         if state != "ready" and first_missing is None:
             first_missing = app.id
@@ -367,7 +380,7 @@ class GroupsMixin:
         whether the recorder self-detected success_url or the user closed the
         browser manually. Widens workflow status for every workflow in the
         group once this app (and all its siblings) are authenticated."""
-        from conxa_core.storage.group_store import set_group_app_auth, set_group_app_error, group_auth_dir
+        from conxa_core.storage.group_store import set_group_app_auth, set_group_app_error, group_auth_dir, update_app
         from conxa_core.storage.workflow_store import list_workflows, set_workflow_status_from_group_auth
 
         session_id = _safe_id(payload.get("session_id"), "session_id")
@@ -378,6 +391,7 @@ class GroupsMixin:
         if sess is None:
             raise _CommandError("session_not_found", f"No session {session_id}")
 
+        reached_success_url = bool(sess.reached_wait_url)  # read before stop() tears the session down
         self._loop.run(sess.stop())
         with self._rec_lock:
             if self._active_recording == session_id:
@@ -393,6 +407,9 @@ class GroupsMixin:
         group = set_group_app_auth(group_id, app_id, str(auth_path))
         if group is None:
             raise _CommandError("group_or_app_not_found", "No such group or app")
+
+        app = next((a for a in group.apps if a.id == app_id), None)
+        group = update_app(group_id, app_id, detect_warning=_detect_warning(app.success_url if app else "", reached_success_url)) or group
 
         status = group_auth_status(group)
         for wf in list_workflows(group.workspace_id):

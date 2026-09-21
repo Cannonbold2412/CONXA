@@ -164,6 +164,27 @@ def test_no_task_or_endpoint_ever_gets_a_reasoning_key(monkeypatch):
     assert all("reasoning" not in body for body in seen_bodies)
 
 
+def test_kimi_k3_on_openrouter_is_pinned_to_sail_research(monkeypatch):
+    router = _fresh_router(
+        [_entry(endpoint="https://openrouter.ai/api/v1", text_model="moonshotai/kimi-k3")], max_retries=1
+    )
+    seen_bodies: list[dict] = []
+
+    def fake_urlopen(req, timeout=None):
+        import json as _json
+
+        seen_bodies.append(_json.loads(req.data.decode("utf-8")))
+        return _FakeStreamResponse(_sse_lines('data: {"choices":[{"delta":{"content":"hi"}}]}', "data: [DONE]"))
+
+    monkeypatch.setattr("app.llm.router.request.urlopen", fake_urlopen)
+
+    router.route_text("copilot_reply", {}, 5_000, on_delta=lambda c: None)
+
+    assert seen_bodies[0]["model"] == "moonshotai/kimi-k3"
+    assert seen_bodies[0]["reasoning"] == {"enabled": True}
+    assert seen_bodies[0]["provider"] == {"only": ["sail-research/fp4"], "allow_fallbacks": False}
+
+
 def test_non_openrouter_endpoint_does_not_get_reasoning_key(monkeypatch):
     router = _fresh_router([_entry(endpoint="https://api.groq.com/openai/v1")], max_retries=1)
     seen_bodies: list[dict] = []

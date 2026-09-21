@@ -28,6 +28,11 @@ class GroupApp(BaseModel):
     # capture" — group_auth_status treats that as unverified even if captured_at
     # is set. Set by check_app_session_sync callers (recording gate, "Check now").
     checked_at: float | None = None
+    # Set when the last sign-in was saved without the recorder ever reaching success_url (or with no
+    # success_url set) — i.e. the login was closed by hand. The runtime detects sign-in by watching for
+    # that same URL, so a run may never see this app as signed in. Advisory only: the session itself
+    # is still valid, so it never affects `state`. Cleared on the next sign-in that self-detects.
+    detect_warning: str = ""
 
 
 class WorkflowGroup(BaseModel):

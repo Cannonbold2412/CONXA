@@ -15,9 +15,9 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | MCP — MCP | 1 | MCP-4 |
 | TEST — Testing & Cleanup | 1 | TEST-6 |
 | REC — Recorder | 1 | REC-STALE-1 |
-| AUTH — Authentication | 4 | AUTH-1, 2, 3, 4 |
+| AUTH — Authentication | 5 | AUTH-1, 2, 3, 4, 5 |
 | DEAD — Tech debt | 1 | DEAD-1 |
-| **Total** | **73** | |
+| **Total** | **74** | |
 
 ---
 
@@ -1393,7 +1393,7 @@ question — that compile produced inputs named `sports` and `react_select_3_lis
 dropdown's enum is also frozen from the recording (picking a different State still offers the
 recorded State's cities). None of these block a run; all deserve their own item.
 
-## AUTH — Authentication (4 done)
+## AUTH — Authentication (5 done)
 
 ### AUTH-1 — Warn at pre-flight when a workflow visits a host that has no sign-in app configured
 **Resolved:** 2026-09-21
@@ -1422,6 +1422,13 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Resolution:** `execute_skill` / `execute_sequence` take a new `wait_for_auth` argument; `false` makes a sign-in gap fail immediately instead of detaching. Build Studio's Run Test passes it, so a login finished later can no longer start an unattended run in the sandbox.
 - **Category:** Build Studio / Runtime
 - **Description:** Since 2026-09-21 `execute_skill` returns at once when sign-in is missing and the run starts by itself afterwards. Studio's Run Test treats any non-`Done.` text as a failure and moves on, so a sign-in completed later would start an unattended run in the sandbox. Studio's own group-auth gate runs first, so this needs the session to expire between the gate and the call. If it ever shows up, give Studio's sandbox call an opt-out (a `wait_for_auth: false` argument).
+- **Complexity:** S.
+
+### AUTH-5 — A sign-in whose login page is on a different host than the app is never detected (Google Drive, Okta, Entra)
+**Resolved:** 2026-09-21
+- **Resolution:** The runtime now opens a cross-host login tab at the app's `success_url` prefix instead of `login_url` (`browser.js::_loginEntryUrl`), so the provider's own return-to sends the user back where the watcher is looking; same-host apps are unchanged. `_reachedProtectedUrl` now honours the `{}` wildcard (path prefix before `{}`), and the freshness probe navigates to the `{}`-stripped prefix instead of a literal `/%7B%7D`. Build Studio records `GroupApp.detect_warning` when a login was saved without the recorder ever reaching `success_url` and shows it as an amber note on the app card. No pack rebuild needed.
+- **Category:** Runtime / Build Studio
+- **Description:** With `login_url` `accounts.google.com` and `success_url` `drive.google.com/{}`, the tab opened on Google's account page, Google's `continue=` pointed back at itself, sign-in ended on a host the watcher never checks, and the session was never captured nor the tab closed — every run parked on `awaiting_auth`. GitHub (same host) was unaffected.
 - **Complexity:** S.
 
 ## DEAD — Tech debt (1 done)

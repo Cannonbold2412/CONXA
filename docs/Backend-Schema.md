@@ -181,7 +181,9 @@ class GroupApp(BaseModel):
     id: str                    # Stable slug, e.g. "salesforce"
     name: str
     login_url: str
-    success_url: str           # Reaching this host = authenticated; "" = unset
+    success_url: str           # Reaching this host = authenticated; "" = unset. May end in a literal
+                                # "{}" wildcard ("anything after this"). Its host is also what maps a
+                                # workflow / mid-run login wall to this app, so it must be the APP's host.
     captured_at: float | None  # Unix timestamp, None until authenticated
     storage_state_path: str    # Absolute path to this app's captured session (local only)
     last_error: str            # Most recent capture failure, if any
@@ -191,6 +193,10 @@ class GroupApp(BaseModel):
                                 # exists") — group_auth_status derives a `verified` flag
                                 # from this (set + within a 600s TTL), so a `ready` badge
                                 # doesn't silently mean "never actually tested."
+    detect_warning: str        # Advisory. Set when the last sign-in was saved without the recorder
+                                # reaching success_url (closed by hand, or none set) — a run watches
+                                # for the same URL, so it may not detect this app as signed in.
+                                # Never affects `state`; cleared by a sign-in that self-detects.
 
 class WorkflowGroup(BaseModel):
     id: str

@@ -13,7 +13,7 @@ _PY_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "conxa-builder", "
 sys.path.insert(0, os.path.abspath(_PY_DIR))
 
 from conxa_core.models.workflow import GroupApp  # noqa: E402
-from handlers.groups import group_auth_status  # noqa: E402
+from handlers.groups import _detect_warning, group_auth_status  # noqa: E402
 
 
 def _group(*apps: GroupApp) -> SimpleNamespace:
@@ -102,3 +102,30 @@ def test_ready_app_with_stale_checked_at_is_unverified() -> None:
     status = group_auth_status(group)
 
     assert status["apps"][0]["verified"] is False
+
+
+def test_detect_warning_is_empty_when_the_login_reached_success_url() -> None:
+    assert _detect_warning("https://drive.google.com/{}", True) == ""
+
+
+def test_detect_warning_names_success_url_when_login_was_closed_by_hand() -> None:
+    warning = _detect_warning("https://drive.google.com/{}", False)
+
+    assert "https://drive.google.com/{}" in warning
+
+
+def test_detect_warning_flags_a_missing_success_url() -> None:
+    assert "No success URL" in _detect_warning("", False)
+    assert "No success URL" in _detect_warning("", True)
+
+
+def test_detect_warning_is_surfaced_but_never_changes_state() -> None:
+    group = _group(
+        GroupApp(id="a", name="A", login_url="https://x.test/login", captured_at=1.0,
+                 storage_state_path="s.json", detect_warning="heads up")
+    )
+
+    app = group_auth_status(group)["apps"][0]
+
+    assert app["detect_warning"] == "heads up"
+    assert app["state"] == "ready"  # advisory only: the saved session is still valid

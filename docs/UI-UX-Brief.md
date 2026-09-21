@@ -138,7 +138,7 @@ The production source of truth is:
   - **Test** — enabled once a skill exists, the shared skill package has been built, and the workflow isn't stale (edited since the last build); toggles an inline panel under the row that mounts `WorkflowTestRow` wholesale (same input dialog, group-auth gate, live log, and pass/fail badge as Test Skill's own list)
   - **Ready to Package** — enabled once the workflow's stage is `ready`; navigates to Publish Skill Package
 
-**Components:** `GroupPage`, `GroupAuthWizard` (now with row-level edit/remove), `AddAppDialog`, `NewWorkflowDialog` (group-scoped), `WorkflowStageRail`, `RecordWorkflowDialog`, `DeleteWorkflowButton`, `WorkflowTestRow` (reused inline), `InspectorDrawer`, `UsageCards`.
+**Components:** `GroupPage`, `GroupAuthWizard` (now with row-level edit/remove), `AddAppDialog`, `NewWorkflowDialog` (group-scoped), `WorkflowStageRail`, `RecordWorkflowDialog`, `DeleteWorkflowButton`, `WorkflowTestRow` (reused inline), `InspectorPage`, `UsageCards`.
 
 **UX issues:**
 - None known.
@@ -344,14 +344,14 @@ map as every other entitlement code (`lib/errorMessages.ts`) — no dedicated UI
 
 ---
 
-### 2.12 Inspector (`InspectorDrawer.tsx`)
+### 2.12 Inspector (`InspectorPage.tsx`, route `/workflows/:workflowId/inspector`)
 
 **Purpose:** On-demand package-file browser and internals viewer for the selected automation — the demoted home for what used to be the top-level Packages page.
-**Inputs:** The workflow passed in from wherever it's opened (currently the Group Page's per-row "Inspector" icon button — see §2.3a); matches it to the built skill package by comparing the workflow's own slug against each packaged skill's `workflow_slug` (the link `list_skill_packages`/`list_skill_package_files` expose between a workflow and the shared package).
+**Inputs:** The workflow id from the route, with `?from=` as the back target (opened from the Group Page's per-row "Inspector" icon button — see §2.3a). A full page, no longer a right-hand drawer; matches it to the built skill package by comparing the workflow's own slug against each packaged skill's `workflow_slug` (the link `list_skill_packages`/`list_skill_package_files` expose between a workflow and the shared package).
 **Outputs:** Read-only file tree + preview; "Open in Explorer"; a "Rebuild package" action (calls `buildSkillPackage()`, workspace-scoped — the manual escape hatch now that building has no page of its own, since sign-off auto-builds in the normal case).
 **User goal:** Audit built package contents when something needs a closer look — not part of the everyday flow.
 
-Replaces `SkillPackagesPage.tsx` (2026-07, Phase 1), reusing its `PanelChrome`/`StructureTrieRows` tree components and `lib/skillPackageTree` helpers unchanged. Deliberately scoped down from the original page: no rename/delete, no resizable panes, no cross-workflow package list — those were package-*management* features for engineers auditing the whole `data/skill-packages/` tree, not part of what an Inspector needs to do for a single workflow. The bundle_root path and per-file paths now live only in this drawer, never on a default surface.
+Replaces `SkillPackagesPage.tsx` (2026-07, Phase 1), reusing its `PanelChrome`/`StructureTrieRows` tree components and `lib/skillPackageTree` helpers unchanged. Deliberately scoped down from the original page: no rename/delete, no resizable panes, no cross-workflow package list — those were package-*management* features for engineers auditing the whole `data/skill-packages/` tree, not part of what an Inspector needs to do for a single workflow. The bundle_root path and per-file paths now live only on this page, never on a default surface.
 
 **UX issues (carried over):**
 - Rebuild has no confirmation step (it's cheap and idempotent, but a stray click could surprise a user mid-review).
