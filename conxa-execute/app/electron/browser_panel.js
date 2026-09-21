@@ -112,12 +112,12 @@ function newView(runId, { label, focus } = {}) {
   return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
 }
 
-// Control-channel op: "new_tab" — a tab_open step's second (or later) tab in a run
-// that already has a panel open.
-function newTab(runId, { label } = {}) {
+// Control-channel op: "new_tab" — a tab_open step's second (or later) tab, or a sign-in / probe tab
+// of a browser session, in a run that already has a panel open. `focus` is set for a sign-in.
+function newTab(runId, { label, focus } = {}) {
   const run = _runs.get(runId);
   if (!run) throw new Error(`browser_panel: no run ${runId} to add a tab to`);
-  const tabId = _createTab(run, runId, label);
+  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined);
   return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
 }
 

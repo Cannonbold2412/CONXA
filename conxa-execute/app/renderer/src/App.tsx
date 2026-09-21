@@ -10,6 +10,7 @@ type Mode = "form" | "chat";
 function statusLabel(status: string) {
   if (status === "completed") return "Done";
   if (status === "busy") return "Busy";
+  if (status === "awaiting_auth") return "Waiting for sign-in";
   return "Failed";
 }
 
@@ -517,7 +518,7 @@ export function App() {
               {collapsed ? "" : (
                 <span className="flex w-full items-center justify-between gap-2">
                   <span className="truncate">{h.skill || "run"}</span>
-                  <span className={h.status === "completed" ? "text-ok" : "text-err"}>{statusLabel(h.status)}</span>
+                  <span className={h.status === "completed" ? "text-ok" : h.status === "awaiting_auth" ? "text-fg-muted" : "text-err"}>{statusLabel(h.status)}</span>
                 </span>
               )}
             </Row>

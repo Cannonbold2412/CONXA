@@ -104,3 +104,11 @@ test("a login view asks the renderer to take focus; an ordinary run view does no
   panel.newView("run-login", { label: "GitHub", focus: true });
   assert.deepStrictEqual(last.meta, { focus: true }, "a login is blocking a run on the user — it comes forward");
 });
+
+test("a tab added to a run for a login (new_tab) can ask the renderer to take focus, like new_view", () => {
+  panel.newView("run-tabfocus", { label: "first" });
+  panel.newTab("run-tabfocus", { label: "Salesforce", focus: true });
+  assert.deepStrictEqual(last.meta, { focus: true });
+  panel.newTab("run-tabfocus", { label: "quiet" });
+  assert.strictEqual(last.meta, undefined, "an ordinary tab (or a probe) must not steal focus");
+});

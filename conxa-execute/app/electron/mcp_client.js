@@ -27,10 +27,6 @@ async function ensureEngine() {
   const cmd = resolveRuntimeCommand();
   if (!cmd) throw runtimeMissingError();
   const env = { ...process.env };
-  // The runtime's auth gate now waits for the user to finish signing in (its default is sized for
-  // the MCP SDK's 60s request timeout). callTool below raises this client's own timeout, so let
-  // the gate wait longer here — 90s still leaves the run 120s of its 210s execution budget.
-  if (!env.CONXA_AUTH_GATE_WAIT_MS) env.CONXA_AUTH_GATE_WAIT_MS = "90000";
   if (cmd.conxaDir && !env.CONXA_DIR) env.CONXA_DIR = cmd.conxaDir;
   if (cmd.conxaDir && /[\\/]\.conxa-dev$/i.test(cmd.conxaDir) && !env.CONXA_ENV) {
     env.CONXA_ENV = "dev";

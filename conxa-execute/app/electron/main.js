@@ -307,7 +307,8 @@ Rules:
 - If a run fails, read the failure text. Recovery (self-heal) happens inside the skill runtime; you may retry execute_skill with resume_from / step_overrides only when the failure text asks for them.
 - Do not run a shell, edit files, or browse the web yourself. There is no bash or write tool.
 - execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.
-- If execute_skill (or a result) says an application needs sign-in, call authenticate for that skill: it opens the sign-in tab(s) in the browser panel and waits while the user signs in. If it returns status "waiting", tell the user to finish signing in and call authenticate again; when it returns "signed_in", call execute_skill again. Never ask the user for their password.`;
+- If execute_skill says "Authentication required" (an application needs sign-in), the sign-in tab(s) are already open in the browser panel and the workflow starts BY ITSELF once the user has signed in. Tell the user which application(s) to sign in to and do NOT call execute_skill again. Then call get_execution_status with the run_id from that message until its state is completed or failed, and report the result (its summary). If the state is failed because sign-in was closed or cancelled, tell the user and offer to try again.
+- To get sign-in out of the way before a run, call authenticate for that skill: it opens the sign-in tab(s) and waits while the user signs in. If it returns status "waiting", tell the user to finish signing in and call authenticate again; when it returns "signed_in", call execute_skill. Never ask the user for their password.`;
 
 // A chat run never starts on the model's say-so alone: the renderer shows a confirm card and
 // the tool call waits here for the answer. The form path has its own explicit Run button, so

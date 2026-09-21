@@ -63,7 +63,7 @@ async function _dispatch({ op, runId, tabId, label, focus }) {
   if (!runId) throw new Error("missing runId");
   switch (op) {
     case "new_view":   return panel.newView(runId, { label, focus });
-    case "new_tab":    return panel.newTab(runId, { label });
+    case "new_tab":    return panel.newTab(runId, { label, focus });
     case "close_view":
       if (!tabId) throw new Error("missing tabId");
       await panel.closeTab(runId, tabId);
