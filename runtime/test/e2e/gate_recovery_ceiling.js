@@ -72,7 +72,6 @@ function stageEnv() {
   fs.writeFileSync(
     path.join(conxaDir, "skill-packs", "gate", "gate-skill", "execution.json"),
     JSON.stringify(BROKEN_EXECUTION, null, 2));
-  fs.writeFileSync(path.join(sessionsDir, "gate_raw_state.json"), JSON.stringify({ cookies: [], origins: [] }));
   const appDest = path.join(conxaDir, "conxa-app");
   fs.mkdirSync(appDest, { recursive: true });
   for (const f of APP_FILES) fs.copyFileSync(path.join(RUNTIME_ROOT, f), path.join(appDest, path.basename(f)));

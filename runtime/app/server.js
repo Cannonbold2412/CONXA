@@ -78,11 +78,12 @@ function _effectiveRecoveryTier(manifest) {
 // 240s client timeout. Build Studio's fast successful runs never approach this.
 const EXECUTION_DEADLINE_MS = Number(process.env.CONXA_EXECUTION_DEADLINE_MS) || 210000;
 
-// How long execute_skill's auth gate waits for the user to finish signing in before it gives up and
-// names the app still unsigned. Default stays under the MCP SDK's 60s request timeout; a client that
-// raises its own timeout (Conxa Execute) raises this via env. Sign-ins needing longer go through the
-// `authenticate` tool, which can block up to 10 minutes and is safe to call repeatedly.
-const AUTH_GATE_WAIT_MS = Number(process.env.CONXA_AUTH_GATE_WAIT_MS) || 45000;
+// When sign-in is missing, execute_skill does NOT wait for the human inside the MCP request (which
+// the client abandons after 60-240s, far shorter than an MFA/SSO/CAPTCHA login can take). It returns
+// at once and the run waits in the background — see _detachUntilSignedIn. Each sign-in tab has its
+// own 10-minute deadline (browser.js LOGIN_WAIT_MS) plus one reopen; this is the outer bound on the
+// background wait for all of them.
+const AUTH_DETACH_MAX_WAIT_MS = 25 * 60 * 1000;
 
 // ─── Parked recovery page (Tier 3/4 cross-call self-healing) ──────────────────
 // State + page-fingerprint helpers live in recovery_park.js; see that file's
@@ -237,6 +238,7 @@ let getCachedBrowser;
 let getAuthContext;
 let awaitAuthPending;
 let describeAuthWait;
+let authAppStatus;
 let releaseCachedBrowser;
 let teardownExecBrowser;
 let captureReAuth;
@@ -260,7 +262,7 @@ try {
   authManager  = require("./auth_manager");
   ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
   ({ getCachedBrowser, releaseCachedBrowser, teardownExecBrowser, captureReAuth, gracefulShutdown,
-     getAuthContext, awaitAuthPending, describeAuthWait,
+     getAuthContext, awaitAuthPending, describeAuthWait, authAppStatus,
      _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
   ({ resolveTargetHosts } = require("./target_hosts"));
   ({ createTracker, mapErrorToCode, drainSpill } = require("./tracker"));
@@ -609,6 +611,64 @@ function _schedulerStore() {
 }
 
 // ─── Tool handler ─────────────────────────────────────────────────────────────
+// ─── Detached sign-in wait ────────────────────────────────────────────────────
+// A run that needs a human to sign in does not hold its execute_skill call open: it returns at once
+// (so no MCP client ever sees a hung request or a timeout mid-MFA), and this task waits for the
+// sign-in tabs in the background, then re-issues the SAME request. That second call finds the warm,
+// already-signed-in browser session the login parked (browser.js) — same Chromium, same context —
+// and executes exactly like any run, so nothing about execution changes; only who waits does.
+function _joinNames(names) {
+  if (names.length <= 1) return names[0] || "the application";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+function _awaitingAuthMessage(names, runId, alreadyOpen) {
+  const who = _joinNames(names);
+  return (alreadyOpen
+      ? `Waiting for authentication to complete in the browser — finish signing in to ${who}.`
+      : `Authentication required — please sign in to ${who} in the browser window that just opened.`) +
+    ` Each sign-in tab closes by itself once you are signed in, and the workflow then starts on its own — do not run it again.` +
+    ` Check progress with get_execution_status (run_id: ${runId}).`;
+}
+const _textOf = (res) => ((res && res.content) || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+// Success is the "Done." prefix (Build Studio's Run Test reads it the same way) — err() is just text().
+const _resultStatus = (t) => (/^Done\./.test(t) ? "completed" : /^Execution cancelled/.test(t) ? "cancelled" : "failed");
+
+// -> { runId, names, joined }. `joined` when an identical request was already waiting: the caller
+// is pointed at that run instead of queueing a duplicate that would fire twice on sign-in.
+function _detachUntilSignedIn({ runId, toolName, args, skill, workspaceId, auth }) {
+  const apps = Array.isArray(auth.apps)
+    ? auth.apps.map((a) => ({ id: a.id, name: a.name, key: a.key }))
+    : [{ id: auth.key, name: workspaceId, key: auth.key }];
+  const names = apps.map((a) => a.name);
+  const fingerprint = JSON.stringify(args, (k, v) => (k.startsWith("_") ? undefined : v));
+  const dup = runRegistry.findAwaiting(fingerprint);
+  if (dup) return { runId: dup.run_id, names: dup.apps.map((a) => a.app), joined: true };
+
+  runRegistry.beginAwaitingAuth({ run_id: runId, skill, workspace_id: workspaceId, apps, statusOf: authAppStatus, fingerprint });
+  log("info", "auth_detached", { run_id: runId, skill, apps: names });
+  (async () => {
+    try {
+      const waited = await awaitAuthPending(auth, { timeoutMs: AUTH_DETACH_MAX_WAIT_MS });
+      if (runRegistry.isAuthCancelled(runId)) {
+        runRegistry.recordResult(runId, { skill, status: "cancelled", summary: "Cancelled while waiting for sign-in." });
+      } else if (!waited.every((w) => w.outcome === "captured")) {
+        // describeAuthWait names the app(s) and how to get a fresh sign-in tab.
+        runRegistry.recordResult(runId, { skill, status: "failed",
+          summary: `Authentication failed or was cancelled. ${describeAuthWait(waited)}` });
+      } else {
+        log("info", "auth_resumed", { run_id: runId, skill });
+        const t = _textOf(await _handleTool(toolName, { ...args, _run_id: runId, _after_auth: true }));
+        runRegistry.recordResult(runId, { skill, status: _resultStatus(t), summary: t });
+      }
+    } catch (e) {
+      runRegistry.recordResult(runId, { skill, status: "failed", summary: `The workflow could not start: ${e.message}` });
+    } finally {
+      runRegistry.endAwaitingAuth(runId);
+    }
+  })();
+  return { runId, names, joined: false };
+}
+
 async function _handleTool(name, args, extra) {
   const text = (t) => ({ content: [{ type: "text", text: t }] });
   const err  = (t) => text(t);
@@ -674,7 +734,17 @@ async function _handleTool(name, args, extra) {
 
   // ── get_execution_status ─────────────────────────────────────────────────────
   if (name === "get_execution_status") {
-    return text(JSON.stringify({ active_runs: runRegistry.list() }));
+    if (args.run_id) {
+      // One run, wherever it is: running, waiting for sign-in, or recently finished (with how it ended).
+      const runId = String(args.run_id);
+      return text(JSON.stringify(runRegistry.status(runId)
+        || { state: "unknown", run_id: runId, reason: "no running, waiting or recently finished run with that run_id" }));
+    }
+    return text(JSON.stringify({
+      active_runs: runRegistry.list(),
+      awaiting_auth: runRegistry.listAwaitingAuth(),
+      recent: runRegistry.listRecent(),
+    }));
   }
 
   // ── authenticate ─────────────────────────────────────────────────────────────
@@ -693,10 +763,17 @@ async function _handleTool(name, args, extra) {
       requiredAppIds: Array.isArray(args.apps) ? args.apps.map(String)
         : (entry && Array.isArray(entry.manifest.required_apps) ? entry.manifest.required_apps : undefined),
     };
-    const signedIn = { status: "signed_in", next: "Everything needed is signed in — call execute_skill." };
+    // AUTH-1: hosts the recording visited that no group app covers — never blocks, but the agent can
+    // tell the user to already be signed in there instead of the run dying at that login wall.
+    const _unclaimed = entry && Array.isArray(entry.manifest.unclaimed_hosts) ? entry.manifest.unclaimed_hosts : [];
+    const _unclaimedNote = _unclaimed.length
+      ? { unclaimed_hosts: _unclaimed, warning: `This workflow also visits ${_joinNames(_unclaimed)}, which has no sign-in set up. If it needs a login there, make sure you are already signed in — Conxa cannot check it beforehand.` }
+      : {};
+    const signedIn = { status: "signed_in", ..._unclaimedNote, next: "Everything needed is signed in — call execute_skill." };
     try {
       let r = await getAuthContext(workspaceId, authManager, authOpts);
       if (r.authenticated) return text(JSON.stringify(signedIn));
+      if (r.refused) return err(r.message);
       const waited = await awaitAuthPending(r, { timeoutMs: waitMs });
       if (waited.every((w) => w.outcome === "captured")) {
         r = await getAuthContext(workspaceId, authManager, authOpts);
@@ -988,7 +1065,9 @@ async function _handleTool(name, args, extra) {
 
     // Acquire a run slot (RT-3: one of possibly several concurrent runs, not a single process-wide
     // lock). runId is generated here — earlier than before — because the registry keys runs by it.
-    const _runId = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    // `_run_id` (internal, like `_trigger`): a run that waited for sign-in in the background resumes
+    // under the id its caller was already given, so get_execution_status keeps answering for it.
+    const _runId = args._run_id ? String(args._run_id) : `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     // Diagnostic phase markers (test_phase log entries) — pinpoint where a slow "Run Test" click
     // actually spends its time: host-lock wait, the two sequential Chromium launches inside
     // getCachedBrowser (headless session-validate + visible exec context), and the settle/drift
@@ -1509,25 +1588,48 @@ async function _handleTool(name, args, extra) {
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
           requiredAppIds: _requiredAppIdsUnion,
           runId: _runId,
+          noPrompt: trigger === "scheduled", // nobody is there to sign in — report it, never open a window
         });
-        let _authResult = await _getBrowser();
-        if (_authResult.authPending) {
-          // Sign-in windows were just opened. Wait for the user to finish instead of returning a
-          // "sign in, then run it again" that makes the caller loop. The wait counts against the
-          // run's deadline (exec.deadlineAt is fixed at start), so cap it to leave >= 60s to run.
-          _phase("auth_gate_wait_start");
-          const _waited = await awaitAuthPending(_authResult, {
-            timeoutMs: Math.min(AUTH_GATE_WAIT_MS, Math.max(0, exec.deadlineAt - Date.now() - 60000)),
-          });
-          _phase("auth_gate_wait_done");
-          if (_waited.every((w) => w.outcome === "captured")) {
-            _authResult = await _getBrowser(); // exactly one re-resolve, now that sessions are stored
-          } else {
-            _authResult = { ..._authResult, message: describeAuthWait(_waited) };
-          }
-        }
+        const _authResult = await _getBrowser();
         _phase("browser_context_ready");
+        // AUTH-1: warn (never block) about hosts this skill visits that have no sign-in app. Goes out
+        // as a test_phase entry — the only runtime log line Studio's Run Test relays to its test log.
+        const _unclaimedHosts = [...new Set(resolved.flatMap((r) => (r.entry.manifest && r.entry.manifest.unclaimed_hosts) || []))];
+        if (_unclaimedHosts.length) _phase(`no_signin_configured_for:${_unclaimedHosts.join(",")}`);
+        if (_authResult.refused) {
+          // Every browser session slot is leased by another run. Nothing ran and nothing was
+          // opened — say so plainly; the message deliberately never suggests cancelling those runs.
+          throw Object.assign(new Error(_authResult.message), { sessionsBusy: true });
+        }
+        if (_authResult.expiredApps) {
+          // A scheduled run found a login missing/expired: no window was opened (nobody to use it).
+          // The message names the app(s) and becomes the run's recorded summary for list_schedules.
+          throw Object.assign(new Error(_authResult.message), { session_expired: true, authWindowOpened: false });
+        }
         if (_authResult.authPending) {
+          const _pendingApps = Array.isArray(_authResult.apps) ? _authResult.apps : [_authResult];
+          // Detach: sign-in tabs are open, a human is needed, and that can take minutes. Nothing ran
+          // yet. Not for a scheduled run (nobody is there), not when the caller opted out with
+          // wait_for_auth: false, not when the launch itself failed (that message is already the real
+          // answer), and not for a run that already waited once.
+          if (trigger !== "scheduled" && args.wait_for_auth !== false && !args._after_auth && !_pendingApps.some((a) => a.reason === "launch_failed")) {
+            _hostRelease?.(); // a human sign-in can take minutes — don't hold the platform meanwhile
+            _hostRelease = null;
+            const d = _detachUntilSignedIn({
+              runId: _runId, toolName: name, args, skill: primary.entry.slug,
+              workspaceId: primary.entry.workspace_id, auth: _authResult,
+            });
+            _phase("auth_awaiting_detached");
+            // Pairs the wf_start above; same failure code the old "sign in, then run again" used.
+            _runTracker.emit("wf_fail", { dur: Date.now() - _wfStartAt, fsi: null,
+              fc: mapErrorToCode(Object.assign(new Error("sign-in required"), { session_expired: true })) });
+            return {
+              content: [{ type: "text", text: d.joined
+                ? `${_awaitingAuthMessage(d.names, d.runId, true)} (This is the same request already waiting.)`
+                : _awaitingAuthMessage(d.names, d.runId, _pendingApps.every((a) => a.reason === "already_open")) }],
+              _meta: { "conxa/awaiting_auth": { run_id: d.runId, apps: d.names } },
+            };
+          }
           // No valid session — a login window was just opened for the user. Nothing ran yet,
           // so there's no failedAt/page to report; the outer catch below turns this into an
           // actionable "sign in, then re-run" response instead of a raw failure.
@@ -1686,7 +1788,7 @@ async function _handleTool(name, args, extra) {
             // the dead app from — for a group pack, entry.manifest.target_url is the START
             // app, which is wrong when a SIBLING app's session is the one that died (see
             // CLAUDE.md group-auth notes / captureReAuth's host-matching fallback chain).
-            const loginUrl = _failedPage.url() || entry.manifest?.login_url || entry.manifest?.target_url || entry.manifest?.entry_url;
+            const loginUrl = _failedPage.url() || entry.manifest?.target_url;
             appendRecoveryEvent({ event: "auth_failure_detected", slug: entry.slug, step_index: failedStep });
             const refreshResult = await captureReAuth(entry.workspace_id, loginUrl, authManager, SESSIONS_DIR, log, {
               groupId: entry.manifest && entry.manifest.group_id,
@@ -1696,6 +1798,7 @@ async function _handleTool(name, args, extra) {
             // manages a saved session for — the login redirect isn't a tracked session dying
             // (see its comment). Don't dress up an unrelated step failure as a session expiry
             // for a made-up app; fall through to the real error below instead.
+            if (refreshResult.unresolved) runErr.authHostNote = refreshResult.note;
             if (!refreshResult.unresolved) {
               throw Object.assign(
                 new Error(refreshResult.message),
@@ -1713,28 +1816,16 @@ async function _handleTool(name, args, extra) {
             }
           }
           runErr.fromEntry = entry;
+          // A login wall on a site no group app covers (refreshResult.unresolved above): keep the
+          // real step failure, but add where the fix is instead of leaving a bare selector error.
+          if (runErr.authHostNote) runErr.message = `${runErr.message} ${runErr.authHostNote}`;
           throw runErr;
         }
       }
 
-      // Success — save session. Encrypt via the per-machine keytar-backed key;
-      // only fall back to a plaintext write if encryption itself fails (SG-11).
-      // Skipped for a Workflow Group run: the context holds N apps' sessions
-      // merged together, and dumping that back under the single company key
-      // would blur per-app boundaries — each app's own session is refreshed
-      // independently via getGroupAuthContext's per-app validate/re-auth.
-      const _isGroupRun = !!(primary.entry.manifest && primary.entry.manifest.group_id);
-      if (!_isGroupRun) {
-        const state = await _context.storageState();
-        try {
-          const sessionKey = await authManager.getSessionKey(primary.entry.workspace_id, log);
-          const encrypted = authManager.saveEncryptedSession(primary.entry.workspace_id, state, sessionKey, SESSIONS_DIR, log);
-          if (!encrypted) authManager.saveRawSession(primary.entry.workspace_id, state, SESSIONS_DIR, log);
-        } catch (_) {
-          authManager.saveRawSession(primary.entry.workspace_id, state, SESSIONS_DIR, log);
-        }
-      }
-
+      // No session save on success: the context holds every group app's session merged together, and
+      // dumping that back would blur per-app boundaries. Each app's own session file is written only
+      // by beginInteractiveAuth's sign-in and refreshed by getGroupAuthContext's per-app pre-flight.
       const url  = page.url();
       const shot = process.env.CONXA_CAPTURE_SUCCESS_SCREENSHOT === "1"
         ? await page.screenshot({ type: "png" }).catch(() => null)
@@ -1835,6 +1926,13 @@ async function _handleTool(name, args, extra) {
           );
         }
         return err(`Execution cancelled.${hostWaitNote} (run_id: ${_runId})`);
+      }
+
+      // No free browser session (see browser_session.js): not a failure of the skill, and there is
+      // nothing to tear down — no browser was handed out. Just release the platform lock.
+      if (runErr.sessionsBusy) {
+        _hostRelease?.();
+        return err(`${runErr.message} (run_id: ${_runId})`);
       }
 
       // Session expiry is a distinct condition, not a selector/DOM failure — no screenshot,

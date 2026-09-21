@@ -128,9 +128,14 @@ async function _findPageByMarker(context, markerUrl, runId) {
 // unsupported against Electron, so this is a control-channel round trip identical
 // in shape to acquire()'s first step, just without re-seeding storageState (the new
 // tab shares the run's existing context/cookies already).
-async function newTab({ context, runId, label }) {
-  const { markerUrl } = await _controlPost("new_tab", { runId, label });
-  return _findPageByMarker(context, markerUrl, runId);
+async function openTab({ context, runId, label, focus }) {
+  const { markerUrl, tabId } = await _controlPost("new_tab", { runId, label, focus });
+  return { page: await _findPageByMarker(context, markerUrl, runId), tabId };
+}
+// The tabId is what a caller needs to close just this one view later (see release below) — a
+// sign-in / probe tab inside a session, as opposed to a `tab_open` step's tab, which lives to run end.
+async function newTab(args) {
+  return (await openTab(args)).page;
 }
 
 // Tell Execute a view (or the whole run) is done. With `tabId` only that one view goes — a
@@ -147,4 +152,4 @@ function release({ runId, tabId }) {
   // idle cleanup (or app restart) reclaims it; never worth failing a run over.
 }
 
-module.exports = { endpoint, controlUrl, acquire, newTab, release };
+module.exports = { endpoint, controlUrl, acquire, newTab, openTab, release };

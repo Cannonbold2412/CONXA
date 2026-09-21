@@ -92,3 +92,10 @@ test("an unresolvable group contributes no host (fail open — nothing to lock)"
   });
   assert.deepStrictEqual(hosts, []);
 });
+
+test("only target_url names a host — entry_url/login_url are never written onto a manifest", () => {
+  const resolved = [{
+    entry: { workspace_id: "acme", slug: "legacy_fields", manifest: { entry_url: "https://a.example.com", login_url: "https://b.example.com" } },
+  }];
+  assert.deepStrictEqual(resolveTargetHosts(resolved, deps(null)), []);
+});

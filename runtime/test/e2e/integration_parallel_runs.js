@@ -116,21 +116,18 @@ async function testConcurrentRunPlans(url) {
 }
 
 async function testConcurrentBrowserLeases(url) {
-  // Minimal on-disk fixture browser.js's getAuthContext needs: a pack.json whose protected_url
-  // is this test's own server (so session validation succeeds immediately — no real login), and
-  // a raw session file so getAuthContext takes the "existing session" path rather than opening an
-  // interactive login window.
+  // Minimal on-disk fixture browser.js's getAuthContext needs: a pack.json with one group that has
+  // no apps, so there is nothing to sign in to and each call goes straight to a fresh session.
   const workspaceId = "ws-rt3-e2e";
   const packDir = path.join(CONXA_DIR, "skill-packs", workspaceId);
   fs.mkdirSync(packDir, { recursive: true });
-  fs.writeFileSync(path.join(packDir, "pack.json"), JSON.stringify({ target_url: url, protected_url: url }));
-  const sessionsDir = path.join(CONXA_DATA_DIR, "cache", "sessions");
-  fs.mkdirSync(sessionsDir, { recursive: true });
-  fs.writeFileSync(path.join(sessionsDir, `${workspaceId}_raw_state.json`), JSON.stringify({ cookies: [], origins: [] }));
+  fs.writeFileSync(path.join(packDir, "pack.json"), JSON.stringify({ target_url: url, groups: [{ id: "g", name: "G", apps: [] }] }));
 
   // Two concurrent leases for the SAME workspace — before RT-3 these would have raced onto the
-  // same cached context. Now: at most one is a genuine cache hit; both get real, independent
-  // contexts either way.
+  // same cached context. Every live browser is now a registered session (browser_session.js), so
+  // BOTH callers get their own independent, leased instance (distinct lease ids, counted against
+  // the session cap) — the old "loser gets an unregistered browser and closes it itself" contract
+  // (leaseKey null) is gone.
   const [resultX, resultY] = await Promise.all([
     getCachedBrowser(workspaceId, null, { headless: true }),
     getCachedBrowser(workspaceId, null, { headless: true }),
@@ -138,29 +135,21 @@ async function testConcurrentBrowserLeases(url) {
 
   check(!resultX.authPending && !resultY.authPending, "both concurrent leases authenticate against the fixture session");
   check(resultX.context !== resultY.context, "two concurrent runs never share one live browser context");
-  const leaseKeys = [resultX.leaseKey, resultY.leaseKey];
-  check(leaseKeys.filter(Boolean).length <= 1, "at most one concurrent caller holds the cache slot's lease");
+  check(resultX.leaseKey && resultY.leaseKey && resultX.leaseKey !== resultY.leaseKey,
+    "each concurrent caller holds its own registered lease");
 
-  // Release whichever one is leased (returns to the idle cache); close the other directly, same
-  // contract server.js follows (leaseKey null ⇒ caller owns and must close it).
-  const leased = resultX.leaseKey ? resultX : (resultY.leaseKey ? resultY : null);
-  const unleased = leased === resultX ? resultY : resultX;
-  if (leased) releaseCachedBrowser(leased.leaseKey);
-  await unleased.browser.close().catch(() => {});
+  // Release one (returns to the idle registry); the other stays leased.
+  releaseCachedBrowser(resultX.leaseKey);
+  // A subsequent call for the same workspace should now hit the released, idle session.
+  const resultZ = await getCachedBrowser(workspaceId, null, { headless: true });
+  check(resultZ.cached === true && resultZ.context === resultX.context,
+    "releasing a lease returns it to the registry for the next caller to reuse");
+  check(resultZ.context !== resultY.context, "the still-leased session is never handed to a third caller");
 
-  if (leased) {
-    // A subsequent call for the same workspace should now hit the released lease.
-    const resultZ = await getCachedBrowser(workspaceId, null, { headless: true });
-    check(resultZ.cached === true && resultZ.context === leased.context,
-      "releasing a lease returns it to the cache for the next caller to reuse");
-    releaseCachedBrowser(resultZ.leaseKey);
-    await leased.browser.close().catch(() => {});
-  } else {
-    // Race landed with neither call claiming the slot (both saw it filled by the other) —
-    // extremely unlikely given the code path, but close both cleanly rather than leak.
-    await resultX.browser.close().catch(() => {});
-    await resultY.browser.close().catch(() => {});
-  }
+  releaseCachedBrowser(resultZ.leaseKey);
+  releaseCachedBrowser(resultY.leaseKey);
+  await resultX.browser.close().catch(() => {});
+  await resultY.browser.close().catch(() => {});
 }
 
 async function main() {

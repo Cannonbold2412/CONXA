@@ -57,7 +57,6 @@ for (const workspaceId of fs.readdirSync(SKILL_PACK_SRC)) {
     activateVersion(path.join(workspaceDst, "_default", slug), GATE_VERSION, (versionDir) => copyDir(path.join(workspaceSrc, slug), versionDir));
   }
 }
-fs.writeFileSync(path.join(dataDir, "cache", "sessions", "e2e_raw_state.json"), JSON.stringify({ cookies: [], origins: [] }));
 
 function cleanup() { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} }
 

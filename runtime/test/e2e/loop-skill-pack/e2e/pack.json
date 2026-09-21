@@ -6,5 +6,6 @@
   "target_url": "",
   "protected_url": "",
   "skills": ["loop-skill"],
+  "groups": [{ "id": "e2e_group", "name": "Hermetic fixture", "apps": [] }],
   "tracking": { "enabled": false }
 }

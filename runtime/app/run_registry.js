@@ -60,9 +60,91 @@ function list() {
 // silent no-op.
 function requestCancel(runId) {
   const exec = _runs.get(runId);
-  if (!exec) return false;
-  exec.cancelRequested = true;
-  return true;
+  if (exec) { exec.cancelRequested = true; return true; }
+  // A run still waiting for a human to sign in has no exec yet — flag the wait so it never starts.
+  const waiting = _awaiting.get(runId);
+  if (waiting) { waiting.cancelled = true; return true; }
+  return false;
 }
 
-module.exports = { MAX_CONCURRENT_RUNS, begin, end, get, list, count, requestCancel };
+// ─── Runs detached from their execute_skill call ─────────────────────────────
+// When sign-in is missing, execute_skill returns at once and the run waits in the background for a
+// human to finish (server.js: _detachUntilSignedIn). The caller can no longer learn anything from a
+// return value, so the registry answers instead: is it still waiting and on what (awaiting_auth), how
+// did it end (a small ring of recent results), and cancel. An awaiting run holds no run slot — it
+// executes nothing yet — so it never counts against the concurrent-run cap; the browser session it
+// holds is what the session cap bounds.
+const RECENT_MAX = 10;
+const SUMMARY_MAX = 1000;
+const _awaiting = new Map(); // runId -> { run_id, skill, workspace_id, apps, statusOf, since, cancelled }
+let _recent = [];            // oldest first
+
+// rec: { run_id, skill, workspace_id, apps: [{ id, name, key }], statusOf(key) -> "waiting" | ...,
+//        fingerprint? }
+function beginAwaitingAuth(rec) {
+  _awaiting.set(rec.run_id, { ...rec, since: Date.now(), cancelled: false });
+}
+function endAwaitingAuth(runId) {
+  _awaiting.delete(runId);
+}
+function isAuthCancelled(runId) {
+  const w = _awaiting.get(runId);
+  return !!(w && w.cancelled);
+}
+function _awaitingSnapshot(w) {
+  return {
+    run_id: w.run_id,
+    skill: w.skill,
+    workspace_id: w.workspace_id,
+    apps: w.apps.map((a) => ({ app: a.name, status: w.statusOf(a.key) })),
+    since: new Date(w.since).toISOString(),
+    elapsed_ms: Date.now() - w.since,
+  };
+}
+// A run whose wait entry lingers while it executes (server.js keeps it until the resumed call
+// returns) is reported as running, not awaiting.
+function listAwaitingAuth() {
+  return [..._awaiting.values()].filter((w) => !_runs.has(w.run_id)).map(_awaitingSnapshot);
+}
+// The run already waiting on an identical request (same tool, skill and inputs), so a second,
+// impatient execute_skill joins it instead of queueing a duplicate that would fire twice on sign-in.
+function findAwaiting(fingerprint) {
+  if (!fingerprint) return null;
+  for (const w of _awaiting.values()) if (w.fingerprint === fingerprint) return _awaitingSnapshot(w);
+  return null;
+}
+
+// status: "completed" | "failed" | "cancelled". Trimmed — this is a status line, not a transcript.
+function recordResult(runId, { skill, status, summary }) {
+  _recent = _recent.filter((r) => r.run_id !== runId);
+  _recent.push({
+    run_id: runId, skill, status,
+    summary: String(summary || "").slice(0, SUMMARY_MAX),
+    ended_at: new Date().toISOString(),
+  });
+  if (_recent.length > RECENT_MAX) _recent = _recent.slice(-RECENT_MAX);
+}
+function listRecent() {
+  return _recent.map((r) => ({ ...r }));
+}
+
+// One run, wherever it is in its life: running, awaiting_auth, or ended. null if unknown/expired.
+function status(runId) {
+  const exec = _runs.get(runId);
+  if (exec) return { state: "running", ...list().find((r) => r.run_id === runId) };
+  const w = _awaiting.get(runId);
+  if (w) return { state: "awaiting_auth", ..._awaitingSnapshot(w) };
+  const done = _recent.find((r) => r.run_id === runId);
+  return done ? { state: done.status, ...done } : null;
+}
+
+// Test hook: forget awaiting runs and recorded results.
+function _resetAuth() {
+  _awaiting.clear();
+  _recent = [];
+}
+
+module.exports = {
+  MAX_CONCURRENT_RUNS, begin, end, get, list, count, requestCancel,
+  beginAwaitingAuth, endAwaitingAuth, isAuthCancelled, listAwaitingAuth, findAwaiting, recordResult, listRecent, status, _resetAuth,
+};

@@ -33,7 +33,7 @@ function resolveTargetHosts(resolved, deps) {
         continue;
       }
     }
-    const h = _hostOf(m?.target_url || m?.entry_url || m?.login_url);
+    const h = _hostOf(m?.target_url);
     if (h) hosts.add(h);
   }
   return [...hosts];

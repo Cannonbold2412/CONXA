@@ -88,6 +88,18 @@ async function run() {
     assert.ok(unresolved, "expected a reauth_app_unresolved log");
   });
 
+  await check("an unregistered login host gets a plain-language note naming the host, the group, and the fix", async () => {
+    const result = await browser.captureReAuth(WORKSPACE_ID, "https://drive.google.com/signin?x=1", null, tmpDataDir, () => {}, {
+      groupId: "g1",
+      fallbackUrl: "https://also-unmatched.example.net",
+    });
+    assert.strictEqual(result.unresolved, true);
+    assert.match(result.note, /drive\.google\.com/);
+    assert.match(result.note, /no sign-in set up/i);
+    assert.match(result.note, /Build Studio/);
+    assert.match(result.note, /Sales group/, "names the group so the user knows where to add it");
+  });
+
   fs.rmSync(tmpDataDir, { recursive: true, force: true });
   console.log(`\n${pass} passed`);
   if (process.exitCode) process.exit(process.exitCode);

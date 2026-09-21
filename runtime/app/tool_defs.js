@@ -19,7 +19,7 @@ const CORE_TOOL_DEFS = [
   },
   {
     name: "execute_skill",
-    description: "Conxa automation: execute a recorded browser workflow skill. Call list_skills first to get the skill slug, then get_skill_inputs to see required fields, then call this. Default watch: true (visible browser). Pass watch: false only if user explicitly asks for background execution.",
+    description: "Conxa automation: execute a recorded browser workflow skill. Call list_skills first to get the skill slug, then get_skill_inputs to see required fields, then call this. Default watch: true (visible browser). Pass watch: false only if user explicitly asks for background execution. If an application needs the user to sign in, this returns immediately with \"Authentication required — please sign in to <apps>\" and a run_id: sign-in tabs open in the browser, and the workflow starts BY ITSELF once the user finishes — do not call execute_skill again. Poll get_execution_status with that run_id until state is completed or failed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -36,6 +36,7 @@ const CORE_TOOL_DEFS = [
           description: "AI review checkpoints: map of \"<step index>\" → your structured answer object to that step's question (see the review request's Question and, if present, its required output schema). Used together with resume_from to continue past an ai_review pause. Example: { \"5\": { \"visible\": true, \"why\": \"the Payment Successful banner is showing\" } }.",
         },
         watch:       { type: "boolean", description: "true = open a visible browser so the user can watch; false = run headlessly in the background." },
+        wait_for_auth: { type: "boolean", description: "Default true: when sign-in is missing, return at once and let the run start by itself after the user signs in. false = never wait — fail immediately with the sign-in message instead, so nothing starts later behind the caller's back (used by Build Studio's Run Test)." },
         dry_run:     { type: "boolean", description: "PROD-3-DRYRUN: run every step except the final committing (irreversible) action — that step is resolved (proving its target still exists) but never clicked/submitted. Use to preview a skill with a destructive final step before actually committing it. Read-only/reversible steps still run normally." },
         _trigger:    { type: "string",  description: "Internal: set to \"scheduled\" only by the PROD-5 scheduler daemon. Do not set manually." },
       },
@@ -65,6 +66,7 @@ const CORE_TOOL_DEFS = [
           },
         },
         watch: { type: "boolean", description: "true = visible browser; false = headless." },
+        wait_for_auth: { type: "boolean", description: "Default true: when sign-in is missing, return at once and let the run start by itself after the user signs in. false = never wait — fail immediately with the sign-in message instead, so nothing starts later behind the caller's back (used by Build Studio's Run Test)." },
       },
       required: ["skills"],
     },
@@ -124,8 +126,14 @@ const CORE_TOOL_DEFS = [
   },
   {
     name: "get_execution_status",
-    description: "Conxa automation: list every currently running execution (there may be more than one — separate chats, or several skills started at once). Each entry includes run_id, skill, step progress, and elapsed time.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    description: "Conxa automation: see what is running. Lists every currently running execution (there may be more than one — separate chats, or several skills started at once) with run_id, skill, step progress and elapsed time; every run waiting for the user to sign in (awaiting_auth, with each application's status: waiting / signed_in / closed / failed); and how the most recent runs ended. Pass run_id (from execute_skill's response) to check one run: state is running, awaiting_auth, completed, failed or cancelled, and a finished run carries its result in summary. Call this after execute_skill reports that sign-in is needed — the workflow starts by itself once the user has signed in.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        run_id: { type: "string", description: "Check one run (from execute_skill's response text). Omit to list everything." },
+      },
+      required: [],
+    },
   },
   {
     name: "authenticate",

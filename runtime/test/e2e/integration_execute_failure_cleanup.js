@@ -7,8 +7,8 @@
 // execute_skill call threw "ReferenceError: _detachContextListeners is not defined" while
 // trying to clean up, regardless of what actually failed. This drives the real MCP tool-call
 // path (server.js), not run.js's runPlan in isolation, and forces the cheapest deterministic
-// failure available: a workspace with no target_url and no stored session, which throws
-// inside getAuthContext before any browser/page work — no Playwright browser install needed.
+// failure available: a pack with no `groups` block, which throws inside getAuthContext before any
+// browser/page work — no Playwright browser install needed.
 //
 // Run: node test/e2e/integration_execute_failure_cleanup.js
 
@@ -49,9 +49,8 @@ async function main() {
 
   writeSkill(skillPacksDir, workspaceId, "no-auth-skill");
 
-  // Deliberately empty target_url/protected_url, and NO raw/encrypted session file staged —
-  // getAuthContext falls through every session path and throws "No target_url configured"
-  // before any browser/page work happens.
+  // Deliberately NO `groups` block — getAuthContext can't resolve a sign-in group for the skill and
+  // throws "No sign-in group found" before any browser/page work happens.
   fs.writeFileSync(path.join(skillPacksDir, workspaceId, "pack.json"), JSON.stringify({
     workspace_id: workspaceId, skill_pack_version: "0.0.1", required_runtime: ">=0.0.0",
     target_url: "", protected_url: "",
@@ -101,7 +100,7 @@ async function main() {
     // _handleTool entirely, and server.js's outer catch wraps THAT as "Internal error: ...".
     check(!/Internal error:/.test(text), `the real failure reaches the caller, not masked by a crash during cleanup (got: ${text.slice(0, 200)})`);
     check(!/is not defined/.test(text), `cleanup does not crash with a ReferenceError (got: ${text.slice(0, 200)})`);
-    check(/No target_url configured/.test(text), `the actual auth failure is reported cleanly (got: ${text.slice(0, 200)})`);
+    check(/No sign-in group found/.test(text), `the actual auth failure is reported cleanly (got: ${text.slice(0, 200)})`);
 
     // Prove the process is still alive and responsive after the failure — a crash mid-cleanup
     // could otherwise leave the run registry slot stuck or the process wedged for every later call.

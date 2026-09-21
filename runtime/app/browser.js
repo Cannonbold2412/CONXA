@@ -3,6 +3,14 @@ const { chromium } = require("./host_bridge").hostRequire("playwright");
 const fs   = require("fs");
 const path = require("path");
 const hostBrowser = require("./host_browser");
+const sessions = require("./browser_session");
+
+// How often a pending sign-in is checked, how long after success we wait for post-login JS to write
+// its tokens before capturing, and how long a closed login tab may still be followed by a success
+// elsewhere before it counts as abandoned. Env-overridable so tests don't sit through the defaults.
+const LOGIN_POLL_MS = Number(process.env.CONXA_LOGIN_POLL_MS) || 1500;
+const LOGIN_SETTLE_MS = Number(process.env.CONXA_LOGIN_SETTLE_MS) || 1500;
+const LOGIN_CLOSE_GRACE_MS = Number(process.env.CONXA_LOGIN_CLOSE_GRACE_MS) || 3000;
 
 // env.js is authoritative (see server.js note): process.env is already normalized
 // under the host exe; the resolve() fallback only serves standalone dev mode.
@@ -91,9 +99,39 @@ function mergeStorageStates(states) {
   return { cookies, origins: [...originsByUrl.values()] };
 }
 
-// Resolve a workspace's WorkflowGroup from pack.json's `groups` block. Packs
-// built before Workflow Groups shipped have no `groups` key — callers must
-// treat that as "take the legacy single-session path", not an error.
+// Does a cookie/origin `domain` (".salesforce.com" parent-scoped, or "login.salesforce.com"
+// host-only) belong with `host`? Same site, or either side a dot-boundary subdomain of the other —
+// bare endsWith would let "evilforce.com" match "force.com".
+function _domainBelongsToHost(domain, host) {
+  const d = String(domain || "").replace(/^\./, "").toLowerCase();
+  const h = String(host || "").toLowerCase();
+  return !!d && !!h && (d === h || h.endsWith("." + d) || d.endsWith("." + h));
+}
+
+// Slice ONE app's storageState out of a shared-context snapshot. Logins land in the same context
+// the workflow runs in, so it holds every app's cookies at once; writing it whole into each app's
+// file would let a stale sibling copy shadow a fresh login on the next merge (mergeStorageStates
+// keeps the FIRST cookie seen per name|domain|path). Owned = domains/origins `previous` already
+// had, plus anything on `hosts` (the app's login/success hosts) — the fallback is what makes an
+// app's very first login attributable, when there is no previous file. Anything else is dropped —
+// unless `claimedElsewhere` (the OTHER group apps' hosts) is given, in which case a cookie no app
+// claims (an SSO identity provider's, say) is kept too: the old separate login window saved it, and
+// it is what makes the next re-login one click. Python twin:
+// packages/conxa-core/conxa_core/storage/storage_state.py::refresh_app_state (no `hosts` there).
+function refreshAppState(previous, current, hosts = [], claimedElsewhere = null) {
+  const ownedDomains = new Set(((previous && previous.cookies) || []).map((c) => c.domain));
+  const ownedOrigins = new Set(((previous && previous.origins) || []).map((o) => o.origin));
+  const on = (list, domain) => list.some((h) => _domainBelongsToHost(domain, h));
+  const keep = (domain, owned) => owned || on(hosts, domain) || (claimedElsewhere !== null && !on(claimedElsewhere, domain));
+  return {
+    cookies: ((current && current.cookies) || []).filter((c) => keep(c.domain, ownedDomains.has(c.domain))),
+    origins: ((current && current.origins) || []).filter((o) => keep(_hostOf(o.origin), ownedOrigins.has(o.origin))),
+  };
+}
+
+// Resolve a workspace's WorkflowGroup from pack.json's `groups` block. null means the pack has no
+// `groups` (built before Workflow Groups) or not this group — getAuthContext reports that as a
+// pack that needs rebuilding; captureReAuth and target_hosts.js treat it as "no group info".
 function _resolveGroup(workspace_id, groupId) {
   const pack = _loadPack(workspace_id);
   const groups = Array.isArray(pack.groups) ? pack.groups : [];
@@ -238,16 +276,16 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   const logFn = opts.logFn;
   const required = _filterRequiredApps(group.apps, opts.requiredAppIds);
   const requiredIds = new Set(required.map((a) => a.id));
+  const key = _sessionKey(workspace_id, opts, headless);
 
   // opts.authOnly: the `authenticate` tool only wants to know whether sign-in is complete (opening
-  // login windows for whatever is missing) — never a run context, so every site that would build
+  // login tabs for whatever is missing) — never a run context, so every site that would build
   // one returns { authenticated: true } instead.
   if (opts.authOnly && (group.apps.length === 0 || (Array.isArray(opts.requiredAppIds) && opts.requiredAppIds.length === 0))) {
     return { authenticated: true };
   }
   if (group.apps.length === 0) {
-    const { browser, context } = await _buildExecContext(undefined, headless);
-    return { browser, context, protectedUrl: "", sessionSource: "group-no-apps" };
+    return _openSessionResult(key, undefined, headless, opts, { protectedUrl: "", sessionSource: "group-no-apps" });
   }
 
   // A manifest that EXPLICITLY declares zero required apps (opts.requiredAppIds is an
@@ -260,8 +298,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   // run has no chance of needing. If such a skill does wander somewhere unexpected despite
   // its own manifest, it hits a normal auth failure there instead of arriving pre-authenticated.
   if (Array.isArray(opts.requiredAppIds) && opts.requiredAppIds.length === 0) {
-    const { browser, context } = await _buildExecContext(undefined, headless);
-    return { browser, context, protectedUrl: "", sessionSource: "group-no-required-apps" };
+    return _openSessionResult(key, undefined, headless, opts, { protectedUrl: "", sessionSource: "group-no-required-apps" });
   }
 
   // Load every app's stored session first (no browser), then decide who pays a
@@ -288,30 +325,84 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     const key = `${workspace_id}__${app.id}`;
     const isRequired = requiredIds.has(app.id);
     if (!isRequired || (sessionPath && _readValidationCache(key, sessionPath))) {
-      results.push({ app, stored, valid: true, fromCache: isRequired });
+      results.push({ app, stored, sessionPath, valid: true, fromCache: isRequired });
       return;
     }
-    batch.push({ key, stored, protectedUrl: app.success_url || app.login_url, sessionPath });
-    results.push({ app, stored, valid: null, _batchIndex: batch.length - 1 });
+    batch.push({ key, stored, protectedUrl: app.success_url || app.login_url, sessionPath, label: app.name });
+    results.push({ app, stored, sessionPath, valid: null, _batchIndex: batch.length - 1 });
   });
-  const outcomes = await _validateSessionsBatch(batch);
-  for (const r of results) {
-    if (r.valid !== null) continue;
-    const entry = batch[r._batchIndex];
-    r.valid = outcomes.get(entry.key);
-    if (r.valid && entry.sessionPath) _writeValidationCache(entry.key, entry.sessionPath);
-    delete r._batchIndex;
-  }
-  const validatedCount = results.filter((r) => r.valid).length;
-  if (logFn) logFn("info", "test_phase", {
-    phase: `group_auth_validate_done:${validatedCount}/${results.length}_valid`,
-    ms: Date.now() - _groupAuthT0,
-    network_checked: batch.length,
-    ttl_cached: results.filter((r) => r.fromCache).length,
-  });
-  const missingRequired = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
+  // The `authenticate` tool with nothing to probe and nothing missing: report success without
+  // building any browser at all.
+  const missingStored = results.some((r) => requiredIds.has(r.app.id) && !r.stored);
+  if (opts.authOnly && batch.length === 0 && !missingStored) return { authenticated: true };
 
-  if (missingRequired.length > 0) {
+  // ONE Chromium for the whole session (see browser_session.js). Every stored session is seeded
+  // into it; a required app that still needs a live check is probed in a throwaway tab of it; an
+  // app that is missing or expired gets a sign-in tab in it. So the browser a login lands in is the
+  // browser the workflow runs in — nothing is re-seeded from disk and nothing is re-validated.
+  // Newest session file first: mergeStorageStates keeps the FIRST cookie per name|domain|path, so a
+  // stale sibling's copy of a shared cookie (an SSO identity provider's) must not beat a fresh login.
+  const seed = mergeStorageStates(results.filter((r) => r.stored)
+    .sort((a, b) => _mtimeOrZero(b.sessionPath) - _mtimeOrZero(a.sessionPath))
+    .map((r) => r.stored));
+  let opened;
+  try {
+    opened = await _openSession(key, seed, headless, opts);
+  } catch (e) {
+    // Chromium itself won't start (missing / mid-install). If a required app needed the browser for
+    // a check or a sign-in, report it the way a failed login-window launch always was — a
+    // `launch_failed` sign-in result callers surface at once instead of waiting on a window that
+    // never opened. With nothing to check it is a plain run-context failure: propagate.
+    const needy = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
+    if (needy.length === 0) throw e;
+    return {
+      authPending: true,
+      loginUrl: needy[0].app.login_url,
+      message: e.message,
+      apps: needy.map((r) => ({
+        id: r.app.id, name: r.app.name, loginUrl: r.app.login_url,
+        authPending: true, key: `${workspace_id}__${r.app.id}`, reason: "launch_failed", launchFailed: true, message: e.message,
+      })),
+    };
+  }
+  if (opened.refused) return opened;
+  const { session, id } = opened;
+  const protectedUrlOf = () => (required[0] && (required[0].success_url || required[0].login_url))
+    || (results.find((r) => r.valid) && (results.find((r) => r.valid).app.success_url || results.find((r) => r.valid).app.login_url))
+    || "";
+  // A warm session of this key that another call parked in the meantime already passed pre-flight.
+  if (opened.reused) return _sessionResult(session, id, { sessionSource: "group" });
+
+  try {
+    if (batch.length > 0) {
+      const outcomes = await _probeInSession(session, batch);
+      for (const r of results) {
+        if (r.valid !== null) continue;
+        const entry = batch[r._batchIndex];
+        r.valid = outcomes.get(entry.key);
+        if (r.valid && entry.sessionPath) _writeValidationCache(entry.key, entry.sessionPath);
+        delete r._batchIndex;
+      }
+    }
+    const validatedCount = results.filter((r) => r.valid).length;
+    if (logFn) logFn("info", "test_phase", {
+      phase: `group_auth_validate_done:${validatedCount}/${results.length}_valid`,
+      ms: Date.now() - _groupAuthT0,
+      network_checked: batch.length,
+      ttl_cached: results.filter((r) => r.fromCache).length,
+    });
+    const missingRequired = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
+
+    if (missingRequired.length === 0) {
+      if (opts.authOnly) {
+        // Nothing to run — park the warm, signed-in browser for the next call (an Execute view is
+        // released outright: it belongs to that one run).
+        sessions.release(id, { closeNow: Boolean(session.hostOwned) });
+        return { authenticated: true };
+      }
+      return _sessionResult(session, id, { protectedUrl: protectedUrlOf(), sessionSource: "group" });
+    }
+
     const names = missingRequired.map((r) => r.app.name);
     const plural = missingRequired.length === 1;
     const message =
@@ -321,6 +412,34 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     const alreadyOpenMessage =
       `Sign-in for ${names.join(", ")} is already waiting in ${plural ? "an open window" : "open windows"} ` +
       `— finish signing in there, then run the skill again.`;
+
+    // An unattended (scheduled) run has nobody to sign in: opening a login window on a machine no one
+    // is sitting at only strands it. Report which app needs a person instead, and close the session.
+    if (opts.noPrompt) {
+      sessions.release(id, { closeNow: true });
+      return {
+        authPending: false,
+        expiredApps: names,
+        message: `${names.join(", ")} ${plural ? "is" : "are"} not signed in — the saved sign-in is missing or has expired — and a scheduled run has nobody to sign in. ` +
+          `Sign in on this machine (run the skill once, or use the authenticate tool); it will run on schedule again after that.`,
+      };
+    }
+
+    // A headless browser cannot show a login page, so an unattended run that needs a human still
+    // opens its own visible window (the one case that costs a second Chromium) and this session —
+    // useless once the login lands somewhere else — is closed rather than kept warm.
+    const inSession = !headless;
+    if (!inSession) sessions.release(id, { closeNow: true });
+
+    // While sign-in is pending the session stays leased (it holds the login tabs). The last app to
+    // settle parks it warm — the caller's next getCachedBrowser reuses it, already signed in — or
+    // closes it if anything went wrong or a login ended up in someone else's window.
+    const hold = { remaining: missingRequired.length, clean: true };
+    const settleOne = () => {
+      if (--hold.remaining > 0 || !inSession) return;
+      sessions.release(id, { closeNow: !hold.clean });
+    };
+    const hostsOf = (a) => [_hostOf(a.login_url), _hostOf(a.success_url)].filter(Boolean);
     const pendings = await Promise.all(missingRequired.map((r) =>
       beginInteractiveAuth(`${workspace_id}__${r.app.id}`, r.app.login_url, {
         label: r.app.name,
@@ -330,8 +449,21 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
         sessionsDir: SESSIONS_DIR,
         logFn,
         runId: opts.runId,
+        ...(inSession ? {
+          session,
+          hosts: hostsOf(r.app),
+          claimedElsewhere: group.apps.filter((a) => a.id !== r.app.id).flatMap(hostsOf),
+          onSettled: (h) => { if (h.outcome !== "captured") hold.clean = false; settleOne(); },
+        } : {}),
       })
     ));
+    if (inSession) {
+      // Apps whose login is not ours to settle (already open in another session's window, or it
+      // never launched) count down here instead; the session is then not worth keeping.
+      for (const p of pendings) {
+        if (p.reason === "already_open" || p.reason === "launch_failed" || !p.authPending) { hold.clean = false; settleOne(); }
+      }
+    }
     const allPending = pendings.every((p) => p.authPending);
     // A real launch failure (chromium missing/mid-install, etc.) on any one app must win
     // over the generic "windows just opened" message — it's the actionable diagnosis.
@@ -344,15 +476,10 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
           : pendings.find((p) => !p.authPending)?.message),
       apps: missingRequired.map((r, i) => ({ id: r.app.id, name: r.app.name, loginUrl: r.app.login_url, ...pendings[i] })),
     };
+  } catch (e) {
+    sessions.release(id, { closeNow: true });
+    throw e;
   }
-
-  if (opts.authOnly) return { authenticated: true };
-  const merged = mergeStorageStates(results.filter((r) => r.valid).map((r) => r.stored));
-  const { browser, context, page, hostOwned } = await _buildExecContext(merged, headless, opts);
-  const protectedUrl = (required[0] && (required[0].success_url || required[0].login_url))
-    || (results.find((r) => r.valid) && (results.find((r) => r.valid).app.success_url || results.find((r) => r.valid).app.login_url))
-    || "";
-  return { browser, context, page, hostOwned, protectedUrl, sessionSource: "group" };
 }
 
 async function _persistSession(workspace_id, state, authManager, sessionsDir, logFn) {
@@ -370,89 +497,114 @@ async function _persistSession(workspace_id, state, authManager, sessionsDir, lo
   }
 }
 
-// ─── Browser cache (per-workspace, short idle timeout) ─────────────────────────
-// A cache hit skips re-validating the underlying app session(s) entirely (see the
-// `entry.context.pages()` liveness-only check below) — it only proves the browser process is
-// still alive, not that the login is still good. That's a real staleness window: authentication
-// is meant to be pre-flight-only (validated before a run starts), so a session that expires
-// while sitting in this cache is only discovered mid-run instead, which the pre-flight model is
-// supposed to prevent. Kept short (not zero — that would defeat the point of caching for a fast
-// back-to-back sequence) rather than re-validating on every hit, which would add a probe's worth
-// of latency to the common, nothing-expired case.
+// ─── Browser sessions (registry in browser_session.js) ─────────────────────────
+// EVERY live Chromium — headless or visible — is a registered session, so the 5-instance cap holds
+// for all of them. A session is a LEASE (RT-3): a run holds it `busy` for the whole execution (and
+// through a parked recovery); the idle timer only starts once it is released; two concurrent runs
+// never share one live context (tabs.js's popup registry and the per-run download listener both
+// assume exactly one run per context), so a call that finds its session leased gets its own.
 //
-// RT-3: each cache entry is a LEASE, not a free-for-all. A run holds it `busy` for the whole
-// execution (and through a parked recovery, if the run ends by parking); the idle timer only
-// starts counting once the lease is released. Two concurrent runs must never share one live
-// context (tabs.js's popup registry and the per-run download listener both assume exactly one
-// run is driving a context), so a call that finds its slot already busy gets its own independent,
-// uncached browser instead of waiting for or stealing the lease. This also fixes a standalone
-// bug the old always-armed timer had: a headless run longer than IDLE_MS used to have its
-// browser closed out from under it mid-execution — busy entries are now exempt.
-const _cache    = new Map();
-const IDLE_MS   = 90 * 1000;
+// A parked session skips pre-flight on reuse — it only proves the browser is still alive, not that
+// the logins are, a real staleness window (authentication is pre-flight-only, so an expiry inside
+// it surfaces mid-run instead). Kept short rather than re-validating on every hit, which would add
+// a probe's worth of latency to the common nothing-expired case. A visible run's session is not
+// parked: server.js closes its browser at teardown and release() then drops the dead entry at once.
 
-function _scheduleCleanup(cacheKey) {
-  const entry = _cache.get(cacheKey);
-  if (!entry) return;
-  clearTimeout(entry.idleTimer);
-  entry.idleTimer = setTimeout(async () => {
-    const b = entry.browser;
-    _cache.delete(cacheKey);
-    if (b) await b.close().catch(() => {});
-  }, IDLE_MS);
+// A session is one Chromium keyed by what it is authenticated for: requiredAppIds is part of the
+// key because two skills in the same group can depend on different app subsets, so a context built
+// (or auth-gated) for one must never be reused for the other. A host-owned (Execute) session also
+// carries its run id — its views live under that id in Execute's panel, so another run must not
+// inherit them.
+function _sessionKey(workspace_id, opts, headless) {
+  const appsKey = Array.isArray(opts.requiredAppIds) ? `[${[...opts.requiredAppIds].sort().join(",")}]` : "*";
+  const host = !headless && opts.runId && hostBrowser.endpoint() ? `::host:${opts.runId}` : "";
+  return `${workspace_id}::${opts.groupId || ""}::${appsKey}::${headless ? "h" : "w"}${host}`;
+}
+
+// Registers a new Chromium (or Execute view) for `key`, seeded with `stored`. Reuses a parked one if
+// there is one; refuses (-> { refused, message }) when every slot is leased. The session object
+// carries its own close(), which is the ONE teardown seam (teardownExecBrowser).
+function _openSession(key, stored, headless, opts = {}) {
+  return sessions.acquire(key, {
+    create: async () => {
+      const built = await _buildExecContext(stored, headless, opts);
+      const session = { ...built, hostRunId: built.hostOwned ? opts.runId : undefined };
+      session.close = () => teardownExecBrowser({
+        browser: session.browser, context: session.context, hostOwned: session.hostOwned, runId: session.hostRunId,
+      });
+      return session;
+    },
+  });
+}
+
+// What every caller of getCachedBrowser/getAuthContext gets for a ready session. `leaseKey` is the
+// registry id server.js hands back to releaseCachedBrowser.
+function _sessionResult(session, id, extra = {}) {
+  if (extra.protectedUrl !== undefined) session.protectedUrl = extra.protectedUrl;
+  return {
+    browser: session.browser, context: session.context, page: session.page,
+    hostOwned: session.hostOwned, hostRunId: session.hostRunId,
+    protectedUrl: session.protectedUrl || "", leaseKey: id, ...extra,
+  };
+}
+async function _openSessionResult(key, stored, headless, opts, extra) {
+  const r = await _openSession(key, stored, headless, opts);
+  return r.refused ? r : _sessionResult(r.session, r.id, extra);
+}
+
+// A throwaway or sign-in tab inside a session. A launched context makes its own page; Execute's
+// Electron target can't (see host_browser.js), so it asks Execute for a labelled view instead and
+// keeps the tab id, which is what lets just this one view be closed later.
+async function _newSessionPage(session, { label, focus } = {}) {
+  if (session.hostOwned) {
+    const { page, tabId } = await hostBrowser.openTab({ context: session.context, runId: session.hostRunId, label, focus });
+    return { page, hostTabId: tabId };
+  }
+  return { page: await session.context.newPage() };
+}
+async function _closeSessionPage(session, { page, hostTabId }) {
+  try { if (!page.isClosed()) await page.close(); } catch (_) {}
+  if (session.hostOwned && hostTabId) await hostBrowser.release({ runId: session.hostRunId, tabId: hostTabId });
+}
+
+// Live-check stored sessions in throwaway tabs of the session's own context — no separate browser.
+// Each entry: { key, protectedUrl, label }. A failure on one entry marks just that entry invalid.
+async function _probeInSession(session, entries) {
+  const outcomes = new Map();
+  await Promise.all(entries.map(async (entry) => {
+    let tab;
+    try {
+      tab = await _newSessionPage(session, { label: entry.label, focus: false });
+      await tab.page.goto(entry.protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+      outcomes.set(entry.key, await _isAuthenticated(tab.page, entry.protectedUrl));
+    } catch (_) {
+      outcomes.set(entry.key, false);
+    } finally {
+      if (tab) await _closeSessionPage(session, tab);
+    }
+  }));
+  return outcomes;
 }
 
 async function getCachedBrowser(workspace_id, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
-  // requiredAppIds is part of the cache key: two skills in the same group can depend on
-  // different app subsets, so a context built (or auth-gated) for one must never be
-  // reused for the other.
-  const appsKey = Array.isArray(opts.requiredAppIds) ? `[${[...opts.requiredAppIds].sort().join(",")}]` : "*";
-  const cacheKey = opts.groupId ? `${workspace_id}::${opts.groupId}::${appsKey}` : workspace_id;
-  if (headless) {
-    const entry = _cache.get(cacheKey);
-    if (entry && !entry.busy && entry.browser && entry.context) {
-      try {
-        entry.context.pages(); // throws if closed
-        clearTimeout(entry.idleTimer); // leased — not idle until released
-        entry.busy = true;
-        return { browser: entry.browser, context: entry.context, protectedUrl: entry.protectedUrl, cached: true, leaseKey: cacheKey };
-      } catch (_) {
-        _cache.delete(cacheKey);
-      }
-    }
-    // Entry missing, dead, or already leased by a concurrent run — build independently rather
-    // than waiting for or stealing the lease. Falls through to getAuthContext below.
-  }
+  // A parked session of this key skips pre-flight entirely — it only proves the browser is still
+  // alive, not that the logins are, which is a real staleness window kept short by the registry's
+  // idle timeout (authentication is meant to be pre-flight-only).
+  const hit = sessions.reuse(_sessionKey(workspace_id, opts, headless));
+  if (hit) return { ..._sessionResult(hit.session, hit.id), cached: true };
   const result = await getAuthContext(workspace_id, authManager, {
-    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds, runId: opts.runId,
+    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds, runId: opts.runId, noPrompt: opts.noPrompt,
   });
-  // authPending means no browser/context was built (a login window was opened instead) —
-  // nothing to cache or lease.
-  if (result.authPending) return { ...result, cached: false, leaseKey: null };
-
-  // Only claim the cache slot when it's genuinely free — a concurrent call may have filled it
-  // between the busy-check above and here (both saw it missing and raced getAuthContext). The
-  // loser of that race gets a leaseKey of null: its browser is real and usable for this run, but
-  // it is this call's alone, never entered into the cache, and must be closed directly by the
-  // caller at teardown rather than released back to a slot it doesn't own.
-  if (headless && (!_cache.has(cacheKey) || _cache.get(cacheKey).browser === undefined)) {
-    _cache.set(cacheKey, { browser: result.browser, context: result.context, protectedUrl: result.protectedUrl, idleTimer: null, busy: true });
-    return { ...result, cached: false, leaseKey: cacheKey };
-  }
-  return { ...result, cached: false, leaseKey: null };
+  // authPending / refused mean no browser was handed out — nothing to lease.
+  return { ...result, cached: false, leaseKey: result.leaseKey || null };
 }
 
-// Ends a run's lease on a cached browser (no-op for a null leaseKey — that browser was never in
-// the cache and the caller closes it directly instead). Re-arms the idle timer from this moment,
-// not from when the lease was originally acquired, so a long-running execution never gets its
-// browser reaped mid-run for merely having been checked out for a while.
-function releaseCachedBrowser(leaseKey) {
+// Ends a run's lease on a session (no-op for a null leaseKey). Re-arms the idle timer from this
+// moment, not from when the lease was acquired, so a long execution is never reaped mid-run.
+function releaseCachedBrowser(leaseKey, opts) {
   if (!leaseKey) return;
-  const entry = _cache.get(leaseKey);
-  if (!entry) return;
-  entry.busy = false;
-  _scheduleCleanup(leaseKey);
+  sessions.release(leaseKey, opts);
 }
 
 // ─── Session management ───────────────────────────────────────────────────────
@@ -483,36 +635,6 @@ function _rejectReasonForProtectedUrl(url) {
   return "";
 }
 
-function _authMetaPath(workspace_id) {
-  return path.join(SESSIONS_DIR, `${workspace_id}_auth_meta.json`);
-}
-
-function _readAuthMeta(workspace_id) {
-  try {
-    const metaPath = _authMetaPath(workspace_id);
-    return fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, "utf8")) : {};
-  } catch (_) {
-    return {};
-  }
-}
-
-function _writeAuthMeta(workspace_id, patch) {
-  const meta = {
-    ..._readAuthMeta(workspace_id),
-    ...patch,
-    updated_at: new Date().toISOString(),
-  };
-  fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-  fs.writeFileSync(_authMetaPath(workspace_id), JSON.stringify(meta, null, 2), { mode: 0o600 });
-  return meta;
-}
-
-function _resolveProtectedUrl(workspace_id, pack = {}) {
-  const metaUrl = String((_readAuthMeta(workspace_id).protected_url || "")).trim();
-  if (metaUrl) return metaUrl;
-  return String((pack.protected_url || "")).trim();
-}
-
 async function _isAuthenticated(page, protectedUrl) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline) {
@@ -520,53 +642,6 @@ async function _isAuthenticated(page, protectedUrl) {
     await new Promise(r => setTimeout(r, 200));
   }
   return false;
-}
-
-// Validate a batch of stored sessions against ONE shared headless browser —
-// N contexts instead of N cold chromium.launch()es, which is where most of the
-// old per-app cost went (launch contention effectively serialized parallel
-// validations). Each entry: { key, stored, protectedUrl }. Entries without a
-// stored state are invalid; entries without a URL are trivially valid. A
-// context-level failure marks just that entry invalid, not the whole batch.
-async function _validateSessionsBatch(entries) {
-  const outcomes = new Map();
-  const pending = [];
-  for (const entry of entries) {
-    if (!entry.stored) { outcomes.set(entry.key, false); continue; }
-    if (!entry.protectedUrl) { outcomes.set(entry.key, true); continue; }
-    pending.push(entry);
-  }
-  if (pending.length === 0) return outcomes;
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--disable-blink-features=AutomationControlled"],
-  });
-  try {
-    await Promise.all(pending.map(async (entry) => {
-      let context;
-      try {
-        context = await browser.newContext({ ...STEALTH_CONTEXT_OPTIONS, storageState: entry.stored, acceptDownloads: true });
-        const page = await context.newPage();
-        await page.goto(entry.protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-        outcomes.set(entry.key, await _isAuthenticated(page, entry.protectedUrl));
-      } catch (_) {
-        if (!outcomes.has(entry.key)) outcomes.set(entry.key, false);
-      } finally {
-        if (context) await context.close().catch(() => {});
-      }
-    }));
-  } finally {
-    await browser.close().catch(() => {});
-  }
-  return outcomes;
-}
-
-// Single-session convenience wrapper over _validateSessionsBatch — kept for the
-// non-group paths in getAuthContext, which validate one session at a time.
-async function _validateSession(stored, protectedUrl) {
-  if (!protectedUrl) return true;
-  const outcomes = await _validateSessionsBatch([{ key: "single", stored, protectedUrl }]);
-  return outcomes.get("single");
 }
 
 // opts.runId, when set, is Execute's cue to borrow its own browser view instead of
@@ -598,7 +673,24 @@ async function _buildExecContext(stored, headless = false, opts = {}) {
 // a chromium.launch()/goto() failure surfaces to the caller immediately instead of
 // being swallowed by a detached background task (see beginInteractiveAuth).
 async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
-  const { storedState, runId, logFn, label } = opts;
+  const { storedState, runId, logFn, label, session } = opts;
+  // In-session (the normal case): a sign-in is just another tab of the session's own context, so
+  // the cookies it earns are already where the workflow will run. One trade-off, the same one the
+  // host branch below documents: the context was built for the RUN, so it does not carry
+  // STEALTH_CONTEXT_OPTIONS (a fixed UA/locale/timezone would change the environment the run
+  // reports against its recording). A visible Chromium's own UA is not a headless tell, and
+  // _maskAutomation still applies per page.
+  if (session) {
+    const tab = await _newSessionPage(session, { label, focus: true });
+    try {
+      await _maskAutomation(tab.page);
+      await tab.page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    } catch (e) {
+      await _closeSessionPage(session, tab);
+      throw e;
+    }
+    return { session, loginPage: tab.page, hostTabId: tab.hostTabId };
+  }
   // EXEC-41 Stage 2: a login window is just another headed browser, so it gets the exact
   // same host branch as a skill run's own context (see _buildExecContext) — Execute's panel,
   // not a separate OS window, when Execute is the client. One real, accepted trade-off: the
@@ -645,6 +737,7 @@ const LOGIN_WAIT_MS = 10 * 60 * 1000;
 // Wait for the user to finish signing in (or close the window) and return the
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
+  if (opened.session) return _waitForSessionLogin(workspace_id, opened, opts);
   const { protectedUrl, waitMs = LOGIN_WAIT_MS } = opts;
   const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId, hostTabId } = opened;
   let lastUrl = "";
@@ -755,6 +848,92 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   return { state: lastState, protectedUrl: lastUrl };
 }
 
+// _waitForInteractiveAuth for a sign-in TAB inside a session (see _openInteractiveAuthWindow).
+// Detection is a poll over EVERY page of the shared context rather than events on one window: it
+// is what makes "finished in a different tab", an OAuth popup, a multi-hop SSO redirect and a login
+// page that closes itself all look the same — some page of this context is on the app, off its
+// login path (_reachedProtectedUrl, host-scoped, so an OAuth leg through another host never counts).
+// Only the login tab and pages it opened (page.opener() chain) are closed afterwards; another
+// app's concurrent login tab, and tabs the user opened themselves, are never touched.
+// Resolves { state, protectedUrl } — `state` is already sliced to this app (refreshAppState).
+async function _waitForSessionLogin(key, opened, opts = {}) {
+  const { session, loginPage, hostTabId } = opened;
+  const { protectedUrl, waitMs = LOGIN_WAIT_MS, storedState, hosts = [], claimedElsewhere = null } = opts;
+  const ctx = session.context;
+
+  const mine = new Set([loginPage]);
+  const adopt = async (page) => {
+    try { const from = await page.opener(); if (from && mine.has(from)) mine.add(page); } catch (_) {}
+  };
+  ctx.on("page", adopt);
+
+  const isClosed = (p) => { try { return p.isClosed(); } catch (_) { return true; } };
+  // A launched session's context is private to this run, so any page in it counts (that is what
+  // makes a login finished in another tab work). A host-owned context is Execute's single shared
+  // one — every run's views live in it — so only pages this login created may count, or another
+  // run's already-signed-in page would be mistaken for this sign-in and its session captured (EXEC-45).
+  const candidates = () => (session.hostOwned ? [...mine] : ctx.pages());
+  const reached = () => candidates().find((p) => {
+    if (isClosed(p)) return false;
+    try { return protectedUrl ? _reachedProtectedUrl(p.url(), protectedUrl) : !_rejectReasonForProtectedUrl(p.url()); } catch (_) { return false; }
+  });
+
+  let outcome = null;
+  await new Promise((resolve) => {
+    let closedAt = 0;
+    const finish = (o) => {
+      if (outcome) return;
+      outcome = o;
+      clearInterval(poll); clearTimeout(deadline);
+      try { session.browser.off("disconnected", onGone); } catch (_) {}
+      resolve();
+    };
+    const onGone = () => finish("gone");
+    const poll = setInterval(() => {
+      if (reached()) return finish("reached");
+      // The login tab is closed and nothing else got there — but a page that closes itself right
+      // after a redirect can beat the poll, so give a success elsewhere a moment to show up.
+      if (isClosed(loginPage)) {
+        if (!closedAt) closedAt = Date.now();
+        else if (Date.now() - closedAt >= LOGIN_CLOSE_GRACE_MS) finish("closed");
+      }
+    }, LOGIN_POLL_MS);
+    const deadline = setTimeout(() => finish("timeout"), waitMs);
+    // A launched session's window/browser being closed; an Execute view closing is caught by the
+    // login tab's own isClosed() above (the CDP connection is Execute's whole process).
+    try { session.browser.on("disconnected", onGone); } catch (_) {}
+  });
+
+  let state = null;
+  let landedUrl = "";
+  if (outcome === "reached") {
+    await new Promise((r) => setTimeout(r, LOGIN_SETTLE_MS)); // post-login JS writes its tokens late
+    const page = reached();
+    landedUrl = page ? page.url() : "";
+    try { state = await ctx.storageState(); } catch (_) {}
+  }
+
+  try { ctx.off("page", adopt); } catch (_) {}
+  for (const p of mine) {
+    if (p === loginPage) await _closeSessionPage(session, { page: p, hostTabId });
+    else { try { if (!isClosed(p)) await p.close(); } catch (_) {} }
+  }
+
+  if (outcome === "reached") {
+    if (!state) throw new Error(`Authentication session was not captured for ${key}. Please try again.`);
+    return { state: refreshAppState(storedState, state, hosts, claimedElsewhere), protectedUrl: landedUrl };
+  }
+  if (outcome === "timeout") {
+    throw Object.assign(
+      new Error(`The login window for ${key} timed out before sign-in finished. Run the skill again to get a new one.`),
+      { loginTimedOut: true },
+    );
+  }
+  throw new Error(outcome === "gone"
+    ? `The browser was closed before sign-in finished for ${key}.`
+    : `The sign-in tab for ${key} was closed before sign-in finished.`);
+}
+
 // Per-workspace handle for an in-flight (or just-finished) interactive login window, so a
 // second execute_skill call while the window is open doesn't spawn a second one.
 const _pendingAuth = new Map();
@@ -767,7 +946,7 @@ const _pendingAuth = new Map();
 // with no session captured (user closed it before signing in) reopens once, then gives
 // up — the next call to this function starts a fresh attempt.
 async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
-  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId, label } = opts;
+  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId, label, session, hosts, claimedElsewhere, onSettled } = opts;
 
   const existing = _pendingAuth.get(workspace_id);
   if (existing && existing.status === "pending") {
@@ -778,7 +957,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 
   let opened;
   try {
-    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label });
+    opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label, session });
   } catch (e) {
     // authPending stays true so the existing "gate on auth" handling in callers still
     // fires (they only branch on this flag) — only the message differs, carrying the
@@ -791,17 +970,27 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 
   // Callers (the execute_skill gate, the `authenticate` tool) await this via awaitInteractiveAuth.
   // The body never rejects — every failure lands in handle.outcome/message below.
+  // Runs before `settled` resolves, so whoever awaits the outcome sees the session already released.
+  const settle = () => { try { if (onSettled) onSettled(handle); } catch (_) {} };
   handle.settled = (async () => {
     let lastErr = null;
     let currentlyOpen = opened;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const { state, protectedUrl: capturedUrl } =
-          await _waitForInteractiveAuth(workspace_id, currentlyOpen, { protectedUrl });
+        const { state } =
+          await _waitForInteractiveAuth(workspace_id, currentlyOpen, { protectedUrl, storedState, hosts, claimedElsewhere });
         await _persistSession(workspace_id, state, authManager, sessionsDir, logFn);
-        _writeAuthMeta(workspace_id, { protected_url: capturedUrl });
+        // Just signed in inside the very context the run will use — nothing left to prove, so stamp
+        // the validation cache instead of making the next pre-flight probe it again.
+        if (session) {
+          try {
+            const { sessionPath } = await _loadSessionForKey(workspace_id, authManager, logFn);
+            if (sessionPath) _writeValidationCache(workspace_id, sessionPath);
+          } catch (_) {}
+        }
         handle.status = "done";
         handle.outcome = "captured";
+        settle();
         return;
       } catch (e) {
         lastErr = e;
@@ -811,7 +1000,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
         if (e.loginTimedOut) break;
         if (attempt === 0) {
           try {
-            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label });
+            currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label, session });
           } catch (e2) {
             lastErr = e2;
             break;
@@ -822,6 +1011,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
     handle.status = "done";
     handle.outcome = "abandoned";
     handle.message = lastErr && lastErr.message;
+    settle();
   })();
 
   const message = reopened
@@ -858,6 +1048,15 @@ async function awaitAuthPending(result, { timeoutMs } = {}) {
   })));
 }
 
+// One plain word for a login's state, for get_execution_status: waiting | signed_in | closed | failed.
+// No handle at all means the sign-in tab never opened.
+function authAppStatus(key) {
+  const h = _pendingAuth.get(key);
+  if (!h) return "failed";
+  if (h.status !== "done") return "waiting";
+  return h.outcome === "captured" ? "signed_in" : "closed";
+}
+
 // One honest sentence for whatever is still unsigned after awaitAuthPending — names the real state
 // (window still open vs closed vs never launched) instead of claiming a window "just opened".
 function describeAuthWait(waited) {
@@ -877,50 +1076,18 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
   const headless = opts.headless !== false; // default true
   const logFn = opts.logFn;
 
-  // Workflow Groups path: a pack with a `groups` block resolves every app's
-  // session and merges them, instead of the single workspace-wide session
-  // below. Packs built before Workflow Groups shipped have no `groups` key,
-  // so _resolveGroup returns null and behavior is unchanged — see
-  // _resolveGroup's comment.
+  // Every pack Build Studio produces carries a `groups` block and every skill belongs to one (the
+  // build refuses otherwise), so sign-in is always resolved per group app. A group with no apps is
+  // valid — getGroupAuthContext runs it with no gate. There is no single-session fallback (AUTH-2):
+  // a pack whose group can't be resolved was built before Workflow Groups or lost its group.
   const group = _resolveGroup(workspace_id, opts.groupId);
-  if (group && group.apps && group.apps.length > 0) {
-    return getGroupAuthContext(workspace_id, group, authManager, { headless, logFn, requiredAppIds: opts.requiredAppIds, runId: opts.runId, authOnly: opts.authOnly });
+  if (!group) {
+    throw new Error(
+      `No sign-in group found for ${workspace_id}${opts.groupId ? ` (group ${opts.groupId})` : ""} — this skill pack ` +
+      `predates Workflow Groups or its group was removed. Rebuild the pack in Build Studio and publish it again.`);
   }
-
-  const pack = _loadPack(workspace_id);
-  const protectedUrl = _resolveProtectedUrl(workspace_id, pack);
-  const targetUrl    = pack.target_url || protectedUrl;
-
-  // Resolve whichever of the encrypted/raw session files is newest — see
-  // _loadSessionForKey. A keytar/decrypt failure there legitimately means "no usable
-  // session, fall back to interactive auth" (loadDecryptedSession already returns null
-  // internally for a corrupt file). _validateSession/_buildExecContext below run
-  // unguarded, matching _validateSessionsBatch's pattern: a real failure there (e.g. a
-  // broken/misconfigured browser install) must propagate with its own message, not be
-  // swallowed and replaced by the misleading "No target_url configured" thrown further down.
-  const { stored, sessionPath } = await _loadSessionForKey(workspace_id, authManager, logFn);
-  const lastKnownState = stored; // best available (possibly expired) session — seeds the login window
-  if (stored && await _validateSession(stored, protectedUrl)) {
-    _writeAuthMeta(workspace_id, { protected_url: protectedUrl });
-    if (opts.authOnly) return { authenticated: true };
-    const { browser, context, page, hostOwned } = await _buildExecContext(stored, headless, opts);
-    return {
-      browser, context, page, hostOwned, protectedUrl,
-      sessionSource: sessionPath && sessionPath.endsWith("_raw_state.json") ? "raw" : "encrypted",
-    };
-  }
-
-  // No valid session — open an interactive login window for the user (non-blocking).
-  if (!targetUrl) throw new Error(`No target_url configured for workspace ${workspace_id}. Cannot authenticate.`);
-
-  return beginInteractiveAuth(workspace_id, targetUrl, {
-    label: pack.name || workspace_id,
-    storedState: lastKnownState,
-    protectedUrl,
-    authManager,
-    sessionsDir: SESSIONS_DIR,
-    logFn,
-    runId: opts.runId,
+  return getGroupAuthContext(workspace_id, group, authManager, {
+    headless, logFn, requiredAppIds: opts.requiredAppIds, runId: opts.runId, authOnly: opts.authOnly, noPrompt: opts.noPrompt,
   });
 }
 
@@ -967,7 +1134,13 @@ async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, l
       // that had nothing to do with it — worse than no guess. Report unresolved and let the
       // caller fall back to the plain step-failure message instead of fabricating a culprit.
       if (logFn) logFn("info", "reauth_app_unresolved", { workspace_id, loginUrl, fallbackUrl: opts.fallbackUrl || null });
-      return { authPending: false, unresolved: true, loginUrl };
+      // `note` is for the person: name the site and where to fix it, without claiming a session died.
+      const host = _hostOf(loginUrl);
+      return {
+        authPending: false, unresolved: true, loginUrl,
+        note: `The page is at a sign-in screen on ${host || "a site"}, which has no sign-in set up in the ${group.name} group. ` +
+          `If this workflow needs you signed in there, add it as an app in that group in Build Studio, then run again.`,
+      };
     }
     if (logFn) logFn("info", "reauth_app_resolved", { workspace_id, appId: app.id, matchedBy });
     return {
@@ -1006,11 +1179,7 @@ async function teardownExecBrowser({ browser, context, hostOwned, runId }) {
 }
 
 async function gracefulShutdown() {
-  for (const [, entry] of _cache.entries()) {
-    clearTimeout(entry.idleTimer);
-    if (entry.browser) await entry.browser.close().catch(() => {});
-  }
-  _cache.clear();
+  await sessions.closeAll();
   process.exit(0);
 }
 
@@ -1026,22 +1195,20 @@ module.exports = {
   awaitInteractiveAuth,
   awaitAuthPending,
   describeAuthWait,
+  authAppStatus,
   _pendingAuth,
   gracefulShutdown,
   mergeStorageStates,
-  _authMetaPath,
-  _readAuthMeta,
-  _writeAuthMeta,
-  _resolveProtectedUrl,
+  refreshAppState,
   _rejectReasonForProtectedUrl,
   _reachedProtectedUrl,
   _resolveGroup,
   _loadGroupAppSession,
   _loadSessionForKey,
-  _validateSessionsBatch,
   _readValidationCache,
   _writeValidationCache,
   _buildExecContext,
+  _sessionKey,
   _openInteractiveAuthWindow,
   _waitForInteractiveAuth,
   AUTH_VALIDATION_TTL_MS,

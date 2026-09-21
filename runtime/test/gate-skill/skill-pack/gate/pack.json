@@ -6,5 +6,6 @@
   "target_url": "",
   "protected_url": "",
   "skills": ["gate-skill"],
+  "groups": [{ "id": "gate_group", "name": "Hermetic fixture", "apps": [] }],
   "tracking": { "enabled": false }
 }

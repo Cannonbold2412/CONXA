@@ -1,12 +1,14 @@
 "use strict";
 
-// The execute_skill auth gate waits for sign-in and then continues the run in the SAME call — it
-// used to throw "sign in, then run the skill again" the instant a login window opened, which sent
-// callers into an endless re-run loop. Here a local "app" whose login page lands straight on an
-// authenticated page stands in for a user signing in: execute_skill opens the (real, headed)
-// login window, waits, captures the session, and must finish the run without a second call.
+// A run that needs sign-in does not hold its execute_skill call open. It returns AT ONCE naming the
+// application, waits for the sign-in in the background, and then starts by itself — the caller never
+// re-issues it (that re-run loop, and the 45-90s wait that ended in "still waiting", is what this
+// replaces). Here a local "app" whose login page lands straight on an authenticated page stands in
+// for a user signing in. Over real MCP stdio: execute_skill must come back immediately with the
+// app's name and a run_id, the run must finish with no second execute_skill call, and its outcome
+// must be readable through get_execution_status.
 //
-// Run: node test/e2e/integration_auth_gate_waits.js
+// Run: node test/e2e/integration_auth_detached.js
 
 const os = require("os");
 const path = require("path");
@@ -61,7 +63,6 @@ async function main() {
 
   const env = Object.assign({}, process.env, {
     CONXA_DIR, CONXA_DATA_DIR, CONXA_SKIP_SELF_UPDATE: "1", PLAYWRIGHT_BROWSERS_PATH: BROWSERS,
-    CONXA_AUTH_GATE_WAIT_MS: "60000", // ample for the local bounce; the run itself has its own deadline
   });
   const child = spawn(process.execPath, ["app/server.js"], { cwd: RUNTIME_DIR, env, stdio: ["pipe", "pipe", "pipe"] });
   let stderrBuf = "";
@@ -89,22 +90,63 @@ async function main() {
   try {
     await send("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "test", version: "1" } });
 
+    // A scheduled run has nobody to sign in: it must fail at once naming the app, open no sign-in
+    // tab and detach nothing. Runs FIRST — it leaves no session behind, so the flow below still
+    // starts signed out.
+    const sched = await send("tools/call", { name: "execute_skill", arguments: { skill: "gate-skill", workspace_id: workspaceId, watch: false, _trigger: "scheduled" } });
+    const schedText = sched?.result?.content?.[0]?.text || JSON.stringify(sched);
+    check(/App A is not signed in/.test(schedText) && /nobody to sign in/.test(schedText), "a scheduled run fails at once and names the app that needs a person");
+    check(!/Authentication required|do not run it again/.test(schedText), "a scheduled run does not detach or claim a window opened");
+    const schedStatus = JSON.parse((await send("tools/call", { name: "get_execution_status", arguments: {} }))?.result?.content?.[0]?.text || "{}");
+    check(Array.isArray(schedStatus.awaiting_auth) && schedStatus.awaiting_auth.length === 0, "a scheduled run leaves nothing waiting for sign-in");
+
+    // wait_for_auth is part of the published tool contract (Build Studio's Run Test sets it false).
+    const tools = (await send("tools/list", {}))?.result?.tools || [];
+    check(tools.find((t) => t.name === "execute_skill")?.inputSchema?.properties?.wait_for_auth?.type === "boolean", "execute_skill advertises wait_for_auth");
+
+    const t0 = Date.now();
     const resp = await send("tools/call", { name: "execute_skill", arguments: { skill: "gate-skill", workspace_id: workspaceId, watch: false } });
     const text = resp?.result?.content?.[0]?.text || JSON.stringify(resp);
-    console.log(`# execute_skill -> ${text.slice(0, 200).replace(/\n/g, " ")}`);
+    const tookMs = Date.now() - t0;
+    console.log(`# execute_skill (${tookMs}ms) -> ${text.slice(0, 260).replace(/\n/g, " ")}`);
 
-    check(!/sign in|authentication|log ?in/i.test(text), "the run finished in one call — no 'sign in, then run it again'");
-    check(/auth_gate_wait_start/.test(stderrBuf) && /auth_gate_wait_done/.test(stderrBuf), "the gate waited for the sign-in window");
+    check(/Authentication required — please sign in to App A/.test(text), "execute_skill names the application that needs sign-in");
+    check(/do not run it again/i.test(text), "it tells the caller NOT to run the workflow again");
+    const runId = (text.match(/run_id: (r_[a-z0-9_]+)/) || [])[1];
+    check(Boolean(runId), "it returns a run_id to check on");
+    check(resp?.result?._meta?.["conxa/awaiting_auth"]?.run_id === runId, "the structured _meta carries the same run_id for machine callers");
+    check(!/Done\./.test(text), "it returned before the workflow ran, not after");
 
-    // A second call finds the captured session: no login window, no wait.
+    // No second execute_skill: the run must start by itself once the sign-in lands.
+    let last = null;
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline) {
+      const s1 = await send("tools/call", { name: "get_execution_status", arguments: { run_id: runId } });
+      last = JSON.parse(s1?.result?.content?.[0]?.text || "{}");
+      if (last.state === "completed" || last.state === "failed" || last.state === "cancelled") break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    console.log(`# get_execution_status(${runId}) -> ${JSON.stringify(last).slice(0, 220)}`);
+    check(last && last.state === "completed", "the run started by itself after sign-in and completed");
+    check(last && /^Done\./.test(last.summary || ""), "its result is readable from get_execution_status");
+
+    const all = await send("tools/call", { name: "get_execution_status", arguments: {} });
+    const allJson = JSON.parse(all?.result?.content?.[0]?.text || "{}");
+    check((allJson.recent || []).some((r) => r.run_id === runId), "the finished run appears in the recent results");
+    check(Array.isArray(allJson.awaiting_auth) && allJson.awaiting_auth.length === 0, "nothing is left waiting for sign-in");
+
+    const unknown = await send("tools/call", { name: "get_execution_status", arguments: { run_id: "r_nope" } });
+    check(/"state":"unknown"/.test(unknown?.result?.content?.[0]?.text || ""), "an unknown run_id is reported, not silently ignored");
+
+    // Signed in now: a later run goes straight through with no detour.
     stderrBuf = "";
     const again = await send("tools/call", { name: "execute_skill", arguments: { skill: "gate-skill", workspace_id: workspaceId, watch: false } });
-    check(!/auth_gate_wait_start/.test(stderrBuf), "the session was stored — a later run does not hit the gate");
+    const againText = again?.result?.content?.[0]?.text || "";
+    check(/^Done\./.test(againText) && !/auth_detached/.test(stderrBuf), "the session was stored — a later run does not hit the gate");
 
     // authenticate on an already-signed-in skill is an instant yes.
     const auth = await send("tools/call", { name: "authenticate", arguments: { skill: "gate-skill", workspace_id: workspaceId } });
     check(/"status":"signed_in"/.test(auth?.result?.content?.[0]?.text || ""), "authenticate reports signed_in once the session exists");
-    void again;
   } finally {
     child.kill();
     app.close();

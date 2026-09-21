@@ -8,7 +8,7 @@ const assert = require("node:assert");
 
 const {
   awaitInteractiveAuth, awaitAuthPending, describeAuthWait, beginInteractiveAuth,
-  getGroupAuthContext, _pendingAuth,
+  getGroupAuthContext, authAppStatus, _pendingAuth,
 } = require("../../app/browser");
 
 test("awaitInteractiveAuth: no handle -> none; finished handle -> its outcome, immediately", async () => {
@@ -66,4 +66,14 @@ test("authOnly: a group with nothing to gate reports authenticated without build
   const group = { name: "G", apps: [{ id: "a", name: "A", login_url: "https://a.test/login" }] };
   assert.deepStrictEqual(await getGroupAuthContext("ws_g", group, null, { authOnly: true, requiredAppIds: [] }), { authenticated: true });
   assert.deepStrictEqual(await getGroupAuthContext("ws_g", { name: "G", apps: [] }, null, { authOnly: true }), { authenticated: true });
+});
+
+test("authAppStatus: an in-flight or finished login as one plain word, for get_execution_status", () => {
+  _pendingAuth.set("s_pending", { status: "pending", outcome: null });
+  _pendingAuth.set("s_done", { status: "done", outcome: "captured" });
+  _pendingAuth.set("s_closed", { status: "done", outcome: "abandoned" });
+  assert.strictEqual(authAppStatus("s_pending"), "waiting");
+  assert.strictEqual(authAppStatus("s_done"), "signed_in");
+  assert.strictEqual(authAppStatus("s_closed"), "closed");
+  assert.strictEqual(authAppStatus("s_never_opened"), "failed", "no login handle at all means it never got a window");
 });

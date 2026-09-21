@@ -77,8 +77,6 @@ for (const workspace_id of fs.readdirSync(SKILL_PACK_SRC)) {
     activateVersion(path.join(workspaceDst, "_default", slug), GATE_VERSION, (versionDir) => copyDir(path.join(workspaceSrc, slug), versionDir));
   }
 }
-// Empty raw session → getAuthContext skips interactive login (protected_url is "").
-fs.writeFileSync(path.join(sessionsDir, "gate_raw_state.json"), JSON.stringify({ cookies: [], origins: [] }));
 
 // Stage the app layer the host loads from disk (CONXA_DIR/conxa-app/current/server.js).
 const appRoot = path.join(conxaDir, "conxa-app");
