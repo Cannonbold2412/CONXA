@@ -248,6 +248,39 @@ function _mtimeOrZero(p) {
   try { return fs.statSync(p).mtimeMs; } catch (_) { return 0; }
 }
 
+// ─── Remembered landing address ────────────────────────────────────────────────────────────────
+// docs/artifacts/login-desk.html "Follow the journey": the first real stop after a sign-in (learned
+// from the customer's own login, not typed in) is remembered so later runs — and the judge's
+// snapshots — have a real protectedUrl to check even when the app has no configured success_url.
+// Same read/write shape as the validation cache above, one file, keyed the same way.
+function _landingUrlsPath() {
+  return path.join(SESSIONS_DIR, "_landing_urls.json");
+}
+function _readLanding(key) {
+  try { return JSON.parse(fs.readFileSync(_landingUrlsPath(), "utf8"))[key] || ""; } catch (_) { return ""; }
+}
+// Stores only the origin — matching (_reachedProtectedUrl, _snapshotLoginEntry's snapshots) is hostname
+// scoped, never path-specific, so there is nothing to gain from keeping a full path and a real risk
+// of it going stale as the app's own routes change. Refuses to learn a sign-in-service host or
+// anything still login-shaped — those are never "the app", they're a hop through it.
+function _writeLanding(key, url) {
+  if (!url || _rejectReasonForProtectedUrl(url)) return;
+  try {
+    const u = new URL(url);
+    if (loginSignals.isKnownIdpHost(u.hostname)) return;
+    let cache = {};
+    try { cache = JSON.parse(fs.readFileSync(_landingUrlsPath(), "utf8")); } catch (_) {}
+    cache[key] = `${u.origin}/`;
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+    fs.writeFileSync(_landingUrlsPath(), JSON.stringify(cache));
+  } catch (_) {}
+}
+// success_url (explicit) beats the learned landing address (observed) beats login_url (the only
+// thing guaranteed to exist) — see docs/artifacts/login-desk.html's "What's typed in" table.
+function _protectedUrlOf(app, key) {
+  return app.success_url || _readLanding(key) || app.login_url;
+}
+
 // Resolve a session for `key` (a bare workspace_id, or `${workspace_id}__${appId}` for a
 // group app) WITHOUT launching a browser, preferring whichever of the encrypted/raw files
 // was written most recently — not always the encrypted file. A raw file newer than the
@@ -402,7 +435,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       return;
     }
     batch.push({ key, stored, navUrl: _successPrefix(app) || app.login_url,
-      protectedUrl: app.success_url || app.login_url, sessionPath, label: app.name });
+      protectedUrl: _protectedUrlOf(app, key), sessionPath, label: app.name });
     results.push({ app, stored, sessionPath, valid: null, _batchIndex: batch.length - 1 });
   });
   // The `authenticate` tool with nothing to probe and nothing missing: report success without
@@ -441,8 +474,8 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   }
   if (opened.refused) return opened;
   const { session, id } = opened;
-  const protectedUrlOf = () => (required[0] && (required[0].success_url || required[0].login_url))
-    || (results.find((r) => r.valid) && (results.find((r) => r.valid).app.success_url || results.find((r) => r.valid).app.login_url))
+  const protectedUrlOf = () => (required[0] && _protectedUrlOf(required[0], `${workspace_id}__${required[0].id}`))
+    || (results.find((r) => r.valid) && _protectedUrlOf(results.find((r) => r.valid).app, `${workspace_id}__${results.find((r) => r.valid).app.id}`))
     || "";
   // A warm session of this key that another call parked in the meantime already passed pre-flight.
   if (opened.reused) return _sessionResult(session, id, { sessionSource: "group" });
@@ -518,7 +551,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       beginInteractiveAuth(`${workspace_id}__${r.app.id}`, _loginEntryUrl(r.app), {
         label: r.app.name,
         storedState: r.stored,
-        protectedUrl: r.app.success_url || r.app.login_url,
+        protectedUrl: _protectedUrlOf(r.app, `${workspace_id}__${r.app.id}`),
         authManager,
         sessionsDir: SESSIONS_DIR,
         logFn,
@@ -724,19 +757,21 @@ async function _isAuthenticated(page, protectedUrl) {
 // _waitForSessionLogin and _waitForInteractiveAuth below so the two never grow independently
 // drifting copies of the same rule.
 
-// Judge: re-ask the login entry URL in the background, in a throwaway tab of the SAME context a
-// lookout just fired in, and see whether it still shows a login form. Deliberately gated by the
-// caller to run only when a lookout has just fired — never on a timer — so a bot-protected site's
-// login page isn't hit any more than the person's own navigation already hits it. Returns "yes" /
-// "no", or null (probe itself failed — a network hiccup, a timeout) which the ladder treats as
-// "can't tell", falling through to the lookout-agreement backup rule rather than saving OR
-// blocking on a probe error.
-async function _judgeLogin(session, entryUrl, protectedUrl) {
+// Judge: re-ask the login entry URL in the background, in a throwaway tab of the SAME context —
+// once before sign-in even starts (the "before" snapshot) and again whenever a lookout fires
+// afterwards — and hand both snapshots to login_signals.js::judgeFromSnapshots for the actual
+// before/after compare (docs/artifacts/login-desk.html "Ask for the login page again"). The "after"
+// call is gated by the caller to run only when a lookout has just fired — never on a timer — so a
+// bot-protected site's login page isn't hit any more than the person's own navigation already hits
+// it. Returns `{ url, hasPasswordBox }`, or null if the probe itself failed (network hiccup,
+// timeout) — the pure layer treats that as "can't tell" either way.
+async function _snapshotLoginEntry(session, entryUrl) {
   let tab;
   try {
     tab = await _newSessionPage(session, { label: "verify", focus: false });
     await tab.page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-    return _reachedProtectedUrl(tab.page.url(), protectedUrl) ? "yes" : "no";
+    const hasPasswordBox = await evalOn(tab.page, pageScripts.passwordBoxProbe, undefined, 1200);
+    return { url: tab.page.url(), hasPasswordBox: hasPasswordBox === true };
   } catch (_) {
     return null;
   } finally {
@@ -1008,7 +1043,7 @@ const LOGIN_WAIT_MS = 10 * 60 * 1000;
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   if (opened.session) return _waitForSessionLogin(workspace_id, opened, opts);
-  const { protectedUrl, waitMs = LOGIN_WAIT_MS, entryUrl = "", logFn } = opts;
+  const { protectedUrl, waitMs = LOGIN_WAIT_MS, entryUrl = "", logFn, beforeSnapshot = null } = opts;
   const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId, hostTabId } = opened;
   const loginHost = _hostOf(entryUrl) || _hostOf(protectedUrl);
   let lastUrl = "";
@@ -1031,6 +1066,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   const lookoutState = { hostsSeen: [], firedAt: {}, sawPasswordBox: false };
   let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
   let judging = false;
+  let judgedAtFiredCount = 0; // only re-ask the judge once a NEW lookout has fired, never on every tick
   let decisionReason = null; // AUTH-7: which ladder rung (or human_override) decided a capture
   const _waitStartMs = Date.now();
 
@@ -1054,6 +1090,8 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
       // (bypasses judge/backup-agreement/even a currently-showing pause sign).
       if (_checkHumanOverride(workspace_id)) {
         decisionReason = "human_override";
+      } else if (loginSignals.alreadySignedIn(beforeSnapshot)) {
+        decisionReason = "already_signed_in";
       } else {
         const pages = _liveTabPages();
         const nowMs = Date.now();
@@ -1062,13 +1100,20 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
         // are the same set here.
         const { paused } = await _sampleLookouts(lookoutState, { ownPages: pages, broadPages: pages }, { loginHost, protectedUrl }, nowMs);
 
-        // Judge: only once a lookout has fired, never while a previous probe is in flight, and
-        // never while paused — gentle with the website, never asked on a timer of its own.
-        const anyFired = Object.keys(lookoutState.firedAt).length > 0;
-        if (anyFired && judgeVerdict !== "yes" && !judging && !paused) {
+        // Judge: only once a NEW lookout has fired since the last ask, never while a previous probe
+        // is in flight, and never while paused — gentle with the website, never asked on a timer of
+        // its own. Compares against the "before" snapshot (judgeFromSnapshots); if that snapshot
+        // itself never resolved (or there wasn't one — see beginInteractiveAuth), fall back to the
+        // plain protectedUrl-reached check this replaces.
+        const firedCount = Object.keys(lookoutState.firedAt).length;
+        if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
           judging = true;
-          _judgeLogin({ hostOwned, context: loginCtx, hostRunId }, entryUrl || protectedUrl, protectedUrl)
-            .then((v) => { judgeVerdict = v; })
+          judgedAtFiredCount = firedCount;
+          _snapshotLoginEntry({ hostOwned, context: loginCtx, hostRunId }, entryUrl || protectedUrl)
+            .then((after) => {
+              judgeVerdict = loginSignals.judgeFromSnapshots(beforeSnapshot, after)
+                ?? (after ? (_reachedProtectedUrl(after.url, protectedUrl) ? "yes" : "no") : null);
+            })
             .catch(() => {})
             .finally(() => { judging = false; });
         }
@@ -1192,7 +1237,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
 // Resolves { state, protectedUrl } — `state` is already sliced to this app (refreshAppState).
 async function _waitForSessionLogin(key, opened, opts = {}) {
   const { session, loginPage, hostTabId } = opened;
-  const { protectedUrl, waitMs = LOGIN_WAIT_MS, storedState, hosts = [], claimedElsewhere = null, entryUrl = "", logFn } = opts;
+  const { protectedUrl, waitMs = LOGIN_WAIT_MS, storedState, hosts = [], claimedElsewhere = null, entryUrl = "", logFn, beforeSnapshot = null } = opts;
   const ctx = session.context;
   const loginHost = _hostOf(entryUrl) || _hostOf(protectedUrl);
 
@@ -1218,6 +1263,7 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
   const lookoutState = { hostsSeen: [], firedAt: {}, sawPasswordBox: false };
   let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
   let judging = false;
+  let judgedAtFiredCount = 0; // only re-ask the judge once a NEW lookout has fired, never on every tick
 
   let outcome = null;
   let decisionReason = null; // AUTH-7: which ladder rung (or human_override) decided a "reached" outcome
@@ -1243,19 +1289,29 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
         // AUTH-6: the human said so — an unconditional save, ahead of everything else below
         // (bypasses judge/backup-agreement/even a currently-showing pause sign).
         if (_checkHumanOverride(key)) { decisionReason = "human_override"; return finish("reached"); }
+        if (loginSignals.alreadySignedIn(beforeSnapshot)) {
+          decisionReason = "already_signed_in";
+          return finish("reached");
+        }
 
         const pages = livePages();
         const nowMs = Date.now();
         const { paused } = await _sampleLookouts(lookoutState,
           { ownPages: myLivePages(), broadPages: pages }, { loginHost, protectedUrl }, nowMs);
 
-        // Judge: only once a lookout has fired, never while a previous probe is in flight, and
-        // never while paused — gentle with the website, never asked on a timer of its own.
-        const anyFired = Object.keys(lookoutState.firedAt).length > 0;
-        if (anyFired && judgeVerdict !== "yes" && !judging && !paused) {
+        // Judge: only once a NEW lookout has fired since the last ask, never while a previous probe
+        // is in flight, and never while paused — gentle with the website, never asked on a timer of
+        // its own. Falls back to the plain protectedUrl-reached check when there was no "before"
+        // snapshot to compare against (see beginInteractiveAuth).
+        const firedCount = Object.keys(lookoutState.firedAt).length;
+        if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
           judging = true;
-          _judgeLogin(session, entryUrl || protectedUrl, protectedUrl)
-            .then((v) => { judgeVerdict = v; })
+          judgedAtFiredCount = firedCount;
+          _snapshotLoginEntry(session, entryUrl || protectedUrl)
+            .then((after) => {
+              judgeVerdict = loginSignals.judgeFromSnapshots(beforeSnapshot, after)
+                ?? (after ? (_reachedProtectedUrl(after.url, protectedUrl) ? "yes" : "no") : null);
+            })
             .catch(() => {})
             .finally(() => { judging = false; });
         }
@@ -1348,6 +1404,15 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   }
   const reopened = existing && existing.status === "done" && existing.outcome === "abandoned";
 
+  // The "before" snapshot (docs/artifacts/login-desk.html "Ask for the login page again"), taken
+  // in a throwaway tab BEFORE the visible login window opens — so it can never race the person's
+  // own sign-in and misread an already-fresh session as "before". Only possible for the in-session
+  // case: the launched-browser fallback (an unattended run with no session yet) has no context to
+  // borrow a throwaway tab from at this point, so it skips the snapshot and the judge below falls
+  // back to its plain protectedUrl-reached check. ponytail: no before-snapshot for that fallback —
+  // add one (its own short-lived browser) if that path turns out to need the judge's precision too.
+  const beforeSnapshot = session ? await _snapshotLoginEntry(session, targetUrl).catch(() => null) : null;
+
   let opened;
   try {
     opened = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label, session });
@@ -1370,9 +1435,13 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
     let currentlyOpen = opened;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const { state, proveOk, accountName } = await _waitForInteractiveAuth(workspace_id, currentlyOpen,
-          { protectedUrl, storedState, hosts, claimedElsewhere, entryUrl: targetUrl, logFn });
+        const { state, protectedUrl: landedUrl, proveOk, accountName } = await _waitForInteractiveAuth(workspace_id, currentlyOpen,
+          { protectedUrl, storedState, hosts, claimedElsewhere, entryUrl: targetUrl, logFn, beforeSnapshot });
         await _persistSession(workspace_id, state, authManager, sessionsDir, logFn);
+        // docs/artifacts/login-desk.html "Follow the journey": remember where THIS sign-in actually
+        // landed, so a later run (or the judge's own snapshot) has a real address to check even
+        // when the app was configured with no success_url at all.
+        _writeLanding(workspace_id, landedUrl);
         // Just signed in inside the very context the run will use — nothing left to prove, so stamp
         // the validation cache instead of making the next pre-flight probe it again.
         if (session) {
@@ -1613,6 +1682,9 @@ module.exports = {
   _loadSessionForKey,
   _readValidationCache,
   _writeValidationCache,
+  _readLanding,
+  _writeLanding,
+  _protectedUrlOf,
   _buildExecContext,
   _sessionKey,
   _openInteractiveAuthWindow,

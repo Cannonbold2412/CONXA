@@ -50,12 +50,14 @@ async function waitFor(fn, what, ms = 15000) {
 // "late pass" scenario). /login bounces an already-fully-signed-in visitor to /home, same as any
 // real login page and what browser.js's judge specifically checks for.
 function startApp() {
+  const hits = { login: 0 };
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
       const cookies = req.headers.cookie || "";
       const authed = /(?:^|;\s*)sid=1/.test(cookies);
       const pending = /(?:^|;\s*)pending=1/.test(cookies);
       if (req.url.startsWith("/login")) {
+        hits.login++;
         if (authed) { res.writeHead(302, { Location: "/home" }); return res.end(); }
         res.writeHead(200, { "content-type": "text/html" });
         return res.end("<body><input type=password></body>");
@@ -93,7 +95,7 @@ function startApp() {
       }
       res.writeHead(404); res.end();
     });
-    srv.listen(0, "127.0.0.1", () => resolve({ srv, port: srv.address().port }));
+    srv.listen(0, "127.0.0.1", () => resolve({ srv, port: srv.address().port, hits }));
   });
 }
 
@@ -190,6 +192,63 @@ async function run() {
     const lastEntry = JSON.parse(logLines[logLines.length - 1]);
     assert.strictEqual(lastEntry.key, key);
     assert.strictEqual(lastEntry.decision, "human_override", "AUTH-7's decision log must record WHY this one saved");
+  });
+
+  await check("already signed in: the 'before' snapshot alone saves a sibling app's shared SSO cookie", async () => {
+    await reset();
+    const ws = `ws_sso`;
+    // Two apps sharing one origin (one SSO cookie): AppA has a valid, cache-trusted session; AppB
+    // has nothing stored, so pre-flight opens a login window for it — but the context is seeded
+    // with AppA's cookie first, so AppB's login page is ALREADY signed in the instant it's asked
+    // (docs/artifacts/login-desk.html "Old login still works").
+    fs.mkdirSync(path.join(tmp, "skill-packs", ws), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "skill-packs", ws, "pack.json"), JSON.stringify({
+      groups: [{ id: "g1", name: "Team", apps: [
+        { id: "a", name: "AppA", login_url: `${ORIGIN}/login`, success_url: `${ORIGIN}/home` },
+        { id: "b", name: "AppB", login_url: `${ORIGIN}/login`, success_url: `${ORIGIN}/home` },
+      ] }],
+    }));
+    fs.mkdirSync(SESSIONS(), { recursive: true });
+    const fileA = path.join(SESSIONS(), `${ws}__a_raw_state.json`);
+    fs.writeFileSync(fileA, JSON.stringify({
+      cookies: [{ name: "sid", value: "1", domain: "127.0.0.1", path: "/", expires: -1, httpOnly: false, secure: false, sameSite: "Lax" }],
+      origins: [],
+    }));
+    browser._writeValidationCache(`${ws}__a`, fileA);
+
+    const before = APP.hits.login;
+    const r1 = await getCachedBrowser(ws, null, { headless: false, groupId: "g1", requiredAppIds: ["a", "b"], runId: `run_${ws}` });
+    assert.strictEqual(r1.authPending, true);
+    assert.deepStrictEqual(r1.apps.map((x) => x.id), ["b"], "only AppB needed a login window");
+    const waited = await awaitAuthPending(r1, { timeoutMs: 15000 });
+    assert.deepStrictEqual(waited.map((w) => w.outcome), ["captured"]);
+
+    const decisionLines = fs.readFileSync(path.join(tmp, "logs", "login_signals.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const last = decisionLines.filter((d) => d.key === `${ws}__b`).pop();
+    assert.strictEqual(last.decision, "already_signed_in", "the before-snapshot alone decided this, not the ladder");
+    // The before-snapshot, the visible login tab's own first navigation, and the prover's re-check
+    // each touch /login once — never the ladder's judge/lookout machinery on top of that.
+    assert.ok(APP.hits.login - before <= 3, "no extra /login hits from the ladder — the before-snapshot alone decided this");
+  });
+
+  await check("judge: the whole OTP flow costs only a handful of /login hits, never one per poll tick", async () => {
+    // The regression this guards: the judge used to be re-asked on EVERY tick once any lookout had
+    // fired (login_signals.js's own shouldAskJudge tests cover the pure rule; this proves the wiring
+    // end to end). CONXA_LOGIN_POLL_MS is 50 here, so the OLD bug would rack up a hit roughly every
+    // 50ms across a ~400ms pause — a handful of hits, not dozens.
+    await reset();
+    const ws = workspace("judgeonce");
+    const before = APP.hits.login;
+    const r1 = await getCachedBrowser(ws, null, opts(ws));
+    const ctx = launched[0].contexts()[0];
+    await waitFor(() => loginTabs(ctx).length === 1, "login tab");
+    await loginTabs(ctx)[0].goto(`${ORIGIN}/auth-start`); // password-gone lookout fires -> the OTP screen goes up
+    await sleep(400); // several poll ticks while paused, then several more once it's not
+    await loginTabs(ctx)[0].goto(`${ORIGIN}/mfa-complete`);
+    const waited = await awaitAuthPending(r1, { timeoutMs: 15000 });
+    assert.deepStrictEqual(waited.map((w) => w.outcome), ["captured"]);
+    // before-snapshot + visible tab's own first nav + at most a couple of real judge asks + prover.
+    assert.ok(APP.hits.login - before <= 6, `expected only a handful of /login hits, got ${APP.hits.login - before}`);
   });
 
   await reset();

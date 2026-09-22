@@ -53,7 +53,7 @@ function startApp() {
         if (authed) { res.writeHead(200, { "content-type": "text/html" }); return res.end("<body>home</body>"); }
         res.writeHead(302, { Location: "/login" }); return res.end();
       }
-      // The judge (browser.js::_judgeLogin) re-asks the login page in the background and expects a
+      // The judge (browser.js::_snapshotLoginEntry) re-asks the login page in the background and expects a
       // signed-in visitor to be bounced off it, exactly like a real login page — a plain-password
       // app's own success_url and login_url are often the same host, so this is what tells the judge
       // apart "still logging in" from "already done" when it re-requests login_url.

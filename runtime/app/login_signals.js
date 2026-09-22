@@ -99,6 +99,73 @@ function looksPaused(domProbe) {
   return domProbe.otpLikeInputCount >= 2 || Boolean(domProbe.hasOneTimeCodeAutocomplete);
 }
 
+// ── Judge (before/after snapshot compare) ───────────────────────────────────────────────────────
+// A snapshot is `{ url, hasPasswordBox }` — what the login entry URL showed at one point in time —
+// or null if the probe that would have gathered it failed. Gathering (goto + password-box probe)
+// lives in browser.js::_snapshotLoginEntry; this is the pure "what does it mean" half, same split
+// as the rest of this file.
+//
+// A snapshot "looks like a login answer" when it's on a known IdP host, has a login-shaped path
+// (LOGIN_PATH_RE, hoisted out of browser.js's _reachedProtectedUrl so both call sites share one
+// definition), or still shows a password box. Any of those means "not signed in, as far as this
+// probe can tell".
+const LOGIN_PATH_RE = /^\/(login|signin|sign-in|session-expired)(\/|$|\?)/i;
+function looksLikeLoginAnswer({ url, hasPasswordBox } = {}) {
+  if (hasPasswordBox) return true;
+  try {
+    const u = new URL(url);
+    if (isKnownIdpHost(u.hostname)) return true;
+    return LOGIN_PATH_RE.test(u.pathname);
+  } catch (_) {
+    return true; // no url to read — treat as "can't confirm signed-in", never as a false yes.
+  }
+}
+
+// Same origin+path (ignoring query/hash) — "the login address gave the same answer both times".
+function _sameAnswer(a, b) {
+  try {
+    const ua = new URL(a.url);
+    const ub = new URL(b.url);
+    return ua.origin === ub.origin && ua.pathname === ub.pathname;
+  } catch (_) {
+    return a.url === b.url;
+  }
+}
+
+// The artifact's "Ask for the login page again" trick: compare what the login entry URL showed
+// before sign-in against what it shows now.
+//   after is null                    -> null   (the probe itself failed — can't tell)
+//   before and after read the same   -> null   (can't tell — the site shows its login page either
+//                                                way; the backup rule takes over)
+//   after no longer looks like login -> "yes"  (bounced off — signed in)
+//   otherwise                        -> "no"   (still looks like a login answer — false alarm)
+// `before` may also be null (the pre-sign-in snapshot itself failed) — in that case there is
+// nothing to compare against, so this always returns null and the caller falls back to its
+// existing protectedUrl-reached check.
+function judgeFromSnapshots(before, after) {
+  if (!after) return null;
+  if (!before) return null;
+  if (_sameAnswer(before, after)) return null;
+  return looksLikeLoginAnswer(after) ? "no" : "yes";
+}
+
+// Should the judge be re-asked THIS tick? Only once a NEW lookout has fired since the last ask
+// (firedCount > judgedAtFiredCount — lookouts are monotonic, so this is exactly "something changed
+// since we last asked"), never while a previous probe is still in flight, never while paused, and
+// never once the judge has already said yes. This is what stops the judge being hit on every single
+// poll tick once one lookout has fired and stays fired — gentle with the website, per the artifact's
+// own "Safety" section.
+function shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused }) {
+  return firedCount > judgedAtFiredCount && judgeVerdict !== "yes" && !judging && !paused;
+}
+
+// "Already signed in" — the very first thing checked, before any window is even shown: if the
+// "before" snapshot itself doesn't look like a login answer, an old saved login still works and
+// there is nothing to wait for. Mirrors the artifact's "Old login still works" row.
+function alreadySignedIn(before) {
+  return Boolean(before) && !looksLikeLoginAnswer(before);
+}
+
 // ── The decision ladder ──────────────────────────────────────────────────────────────────────
 // `firedAt`: { journey?: ms, passwordGone?: ms, newTickets?: ms } — first-fire timestamp per
 // lookout, or absent/undefined if it hasn't fired. Lookouts are monotonic (once true, always
@@ -138,6 +205,10 @@ module.exports = {
   sameTickets,
   ticketsChanged,
   looksPaused,
+  looksLikeLoginAnswer,
+  judgeFromSnapshots,
+  shouldAskJudge,
+  alreadySignedIn,
   backupAgreementHeldMs,
   ladderVerdict,
   DEFAULT_BACKUP_AGREE_MS,

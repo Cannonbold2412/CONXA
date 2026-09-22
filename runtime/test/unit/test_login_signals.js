@@ -15,6 +15,10 @@ const {
   sameTickets,
   ticketsChanged,
   looksPaused,
+  looksLikeLoginAnswer,
+  judgeFromSnapshots,
+  shouldAskJudge,
+  alreadySignedIn,
   backupAgreementHeldMs,
   ladderVerdict,
 } = require("../../app/login_signals");
@@ -115,4 +119,87 @@ test("ladder: can't-tell (judge null) falls back to the backup rule once two loo
 test("ladder: can't-tell with only one lookout never saves on the backup rule alone", () => {
   const v = ladderVerdict({ paused: false, judge: null, firedAt: { journey: 1000 }, nowMs: 999999 });
   assert.deepStrictEqual(v, { action: "wait", reason: "insufficient_signal" });
+});
+
+// ── looksLikeLoginAnswer / judgeFromSnapshots / alreadySignedIn ─────────────────────────────────
+// docs/artifacts/login-desk.html "Ask for the login page again" — the judge's before/after compare.
+
+test("looksLikeLoginAnswer: a password box always counts, regardless of URL", () => {
+  assert.ok(looksLikeLoginAnswer({ url: "https://app.acme-cloud.io/dashboard", hasPasswordBox: true }));
+});
+
+test("looksLikeLoginAnswer: a known IdP host always counts, even off a /login-shaped path", () => {
+  assert.ok(looksLikeLoginAnswer({ url: "https://accounts.google.com/signin/v2/identifier", hasPasswordBox: false }));
+});
+
+test("looksLikeLoginAnswer: a login-shaped path counts even with no password box (e.g. email-first)", () => {
+  assert.ok(looksLikeLoginAnswer({ url: "https://app.acme.com/login", hasPasswordBox: false }));
+});
+
+test("looksLikeLoginAnswer: an ordinary app page with neither is not a login answer", () => {
+  assert.ok(!looksLikeLoginAnswer({ url: "https://app.acme-cloud.io/dashboard", hasPasswordBox: false }));
+});
+
+test("looksLikeLoginAnswer: an unparseable url is treated as a login answer, never a false yes", () => {
+  assert.ok(looksLikeLoginAnswer({ url: "", hasPasswordBox: false }));
+});
+
+test("judgeFromSnapshots: after is null (probe failed) -> can't tell", () => {
+  assert.strictEqual(judgeFromSnapshots({ url: "https://app.acme.com/login", hasPasswordBox: true }, null), null);
+});
+
+test("judgeFromSnapshots: before is null (pre-sign-in probe failed) -> can't tell", () => {
+  assert.strictEqual(judgeFromSnapshots(null, { url: "https://app.acme.com/dashboard", hasPasswordBox: false }), null);
+});
+
+test("judgeFromSnapshots: same origin+path both times -> can't tell (site shows its login page either way)", () => {
+  const before = { url: "https://app.acme.com/login", hasPasswordBox: true };
+  const after = { url: "https://app.acme.com/login?x=1", hasPasswordBox: true }; // query ignored
+  assert.strictEqual(judgeFromSnapshots(before, after), null);
+});
+
+test("judgeFromSnapshots: bounced off the login page to the app -> yes", () => {
+  const before = { url: "https://app.acme.com/login", hasPasswordBox: true };
+  const after = { url: "https://app.acme.com/dashboard", hasPasswordBox: false };
+  assert.strictEqual(judgeFromSnapshots(before, after), "yes");
+});
+
+test("judgeFromSnapshots: still shows a login-shaped answer at a different address -> no (false alarm)", () => {
+  const before = { url: "https://app.acme.com/login", hasPasswordBox: true };
+  const after = { url: "https://accounts.google.com/signin", hasPasswordBox: false };
+  assert.strictEqual(judgeFromSnapshots(before, after), "no");
+});
+
+test("alreadySignedIn: the before snapshot already doesn't look like a login answer -> old login still works", () => {
+  assert.ok(alreadySignedIn({ url: "https://app.acme-cloud.io/dashboard", hasPasswordBox: false }));
+});
+
+test("alreadySignedIn: a real login page, or no snapshot at all, is not already signed in", () => {
+  assert.ok(!alreadySignedIn({ url: "https://app.acme.com/login", hasPasswordBox: true }));
+  assert.ok(!alreadySignedIn(null));
+});
+
+// ── shouldAskJudge ───────────────────────────────────────────────────────────────────────────
+// The regression this guards: the judge used to be re-asked on EVERY tick once any lookout had
+// fired, hammering the site's login page over and over (docs/artifacts/login-desk.html "Gentle
+// with the website"). It must fire once per NEW lookout, then go quiet until another one fires.
+
+test("shouldAskJudge: fires the first time a lookout has fired", () => {
+  assert.ok(shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: false }));
+});
+
+test("shouldAskJudge: does NOT re-fire tick after tick with no NEW lookout, even many ticks later", () => {
+  const opts = { firedCount: 1, judgedAtFiredCount: 1, judgeVerdict: "no", judging: false, paused: false };
+  assert.ok(!shouldAskJudge(opts));
+  assert.ok(!shouldAskJudge(opts), "still no on a later tick — nothing changed");
+});
+
+test("shouldAskJudge: fires again once a SECOND, different lookout fires", () => {
+  assert.ok(shouldAskJudge({ firedCount: 2, judgedAtFiredCount: 1, judgeVerdict: "no", judging: false, paused: false }));
+});
+
+test("shouldAskJudge: never while paused, never while a previous ask is still in flight, never once judge already said yes", () => {
+  assert.ok(!shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: true }));
+  assert.ok(!shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: true, paused: false }));
+  assert.ok(!shouldAskJudge({ firedCount: 2, judgedAtFiredCount: 1, judgeVerdict: "yes", judging: false, paused: false }));
 });
