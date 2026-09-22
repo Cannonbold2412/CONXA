@@ -64,6 +64,10 @@ def _copilot_modality(task: str, payload: dict[str, Any]) -> str | None:
     attached to the request body (see _openai_body_dict's copilot_diagnose/copilot_reply
     branches), so the configured dev text_model must itself be multimodal-capable if screenshots
     are expected to be read."""
+    if task == "execute_chat":
+        # Execute is multimodal-only: every turn (with or without an image) uses the multimodal
+        # model. No dev override.
+        return "multimodal"
     if task not in ("copilot_diagnose", "copilot_reply"):
         return None
     if settings.environment == "dev":

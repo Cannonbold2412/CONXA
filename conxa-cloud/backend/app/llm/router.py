@@ -302,6 +302,10 @@ class LLMRouter:
             if pool is not None and entry.pool != pool:
                 continue
 
+            # Execute's dedicated deployment is never picked by an unfiltered / any-pool fallback.
+            if pool is None and entry.pool == "execute":
+                continue
+
             return entry
 
         return None
@@ -358,7 +362,7 @@ class LLMRouter:
                 break
 
             entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal, pool=pool)
-            if entry is None and pool is not None:
+            if entry is None and pool is not None and pool != "execute":
                 _debug_log(f"router: pool={pool} exhausted{' for vision' if for_vision else ''}, falling back to any pool")
                 entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal)
 
@@ -371,7 +375,7 @@ class LLMRouter:
                         time.sleep(wait_s)
                         wait_budget -= wait_s
                         entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal, pool=pool)
-                        if entry is None and pool is not None:
+                        if entry is None and pool is not None and pool != "execute":
                             entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal)
                     else:
                         wait_budget = 0

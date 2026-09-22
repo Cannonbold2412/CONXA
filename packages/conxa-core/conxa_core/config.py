@@ -535,6 +535,19 @@ class Settings(BaseSettings):
         default="", validation_alias=_provider_env("LLM_PRO_FALLBACK_MULTIMODAL_MODEL")
     )
 
+    # Conxa Execute's own dedicated deployment (single endpoint, no rotation, ONE multimodal
+    # model for every turn - text and image alike). Unset =
+    # Execute chat keeps using the shared pool exactly as before.
+    execute_llm_provider: str = Field(default="", validation_alias=_provider_env("EXECUTE_LLM_PROVIDER"))
+    execute_llm_endpoint: str = Field(default="", validation_alias=_provider_env("EXECUTE_LLM_ENDPOINT"))
+    execute_llm_api_keys: str = Field(default="", validation_alias=_provider_env("EXECUTE_LLM_API_KEYS"))
+    execute_llm_multimodal_model: str = Field(
+        default="", validation_alias=_provider_env("EXECUTE_LLM_MULTIMODAL_MODEL")
+    )
+    execute_llm_fallback_multimodal_model: str = Field(
+        default="", validation_alias=_provider_env("EXECUTE_LLM_FALLBACK_MULTIMODAL_MODEL")
+    )
+
     # Cashfree payment gateway. These intentionally do not use the SKILL_ prefix.
     cashfree_app_id: str = Field(default="", validation_alias="CASHFREE_APP_ID")
     cashfree_secret_key: str = Field(default="", validation_alias="CASHFREE_SECRET_KEY")
@@ -688,8 +701,19 @@ class Settings(BaseSettings):
             self.llm_pro_fallback_text_model, self.llm_pro_fallback_vision_model,
             self.llm_pro_multimodal_model, self.llm_pro_fallback_multimodal_model,
         ))
+        # Execute is multimodal-only: the one model fills every slot (the router's vision gate
+        # keys on vision_model, and every execute_chat turn takes the vision path).
+        mm, mm_fb = self.execute_llm_multimodal_model, self.execute_llm_fallback_multimodal_model
+        result.extend(self._tier_provider_configs(
+            "execute", self.execute_llm_provider, self.execute_llm_endpoint,
+            self.execute_llm_api_keys, mm, mm, mm_fb, mm_fb, mm, mm_fb,
+        ))
 
         return result
+
+    @property
+    def has_execute_llm(self) -> bool:
+        return any(p.pool == "execute" for p in self.enabled_llm_providers())
 
     def _tier_provider_configs(
         self,

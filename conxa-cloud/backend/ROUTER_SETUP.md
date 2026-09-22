@@ -104,6 +104,10 @@ LLM_STARTER_MULTIMODAL_MODEL=
 LLM_PRO_MULTIMODAL_MODEL=
 ```
 
+### Conxa Execute's dedicated model
+
+Set `EXECUTE_LLM_PROVIDER`, `_ENDPOINT`, `_API_KEYS` and `_MULTIMODAL_MODEL` (optional `_FALLBACK_MULTIMODAL_MODEL`; see `.env.example`) to route Execute chat to its own single endpoint. Execute is multimodal-only: that one model serves every turn, text or image. It is never shared with, or a fallback for, the other pools. Unset = Execute uses the shared pool.
+
 Leave it unset to keep using `vision_model` for Copilot's screenshot turns as before — it never
 errors, it just degrades to the shared vision model.
 
