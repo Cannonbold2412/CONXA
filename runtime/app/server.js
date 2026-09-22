@@ -777,7 +777,16 @@ async function _handleTool(name, args, extra) {
       const waited = await awaitAuthPending(r, { timeoutMs: waitMs });
       if (waited.every((w) => w.outcome === "captured")) {
         r = await getAuthContext(workspaceId, authManager, authOpts);
-        return text(JSON.stringify(r.authenticated ? signedIn : { status: "waiting", message: r.message }));
+        // A captured sign-in can still carry a Prover warning (the saved session didn't check out
+        // in a fresh probe) — additive field, never changes `status`, so existing callers reading
+        // just that are unaffected.
+        const proveWarnings = waited.map((w) => w.message).filter(Boolean);
+        const warned = proveWarnings.length ? { login_warnings: proveWarnings } : {};
+        // AUTH-8: a best-effort positive confirmation, kept separate from login_warnings above —
+        // it is never a warning, and a miss (no name found) is silent, not an empty string here.
+        const signedInAs = waited.map((w) => w.accountName).filter(Boolean);
+        const named = signedInAs.length ? { signed_in_as: signedInAs } : {};
+        return text(JSON.stringify(r.authenticated ? { ...signedIn, ...warned, ...named } : { status: "waiting", message: r.message }));
       }
       const failed = waited.some((w) => w.outcome === "launch_failed");
       return text(JSON.stringify({

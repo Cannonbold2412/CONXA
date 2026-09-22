@@ -11,15 +11,29 @@ const assert = require("node:assert");
 process.env.CONXA_LOGIN_POLL_MS = "20";
 process.env.CONXA_LOGIN_SETTLE_MS = "5";
 process.env.CONXA_LOGIN_CLOSE_GRACE_MS = "50";
+process.env.CONXA_LOGIN_BACKUP_AGREE_MS = "5";
 const { _waitForInteractiveAuth } = require("../../app/browser");
+// The judge (see login_signals.js's ladder) opens a throwaway probe tab — via
+// context.newPage() for a launched session, or hostBrowser.openTab() for a host-owned one — and
+// re-requests the login entry URL to see whether it still shows a login form. Faked here the same
+// way the site itself would behave: signed in, so the probe lands straight on the app.
+const hostBrowser = require("../../app/host_browser");
 
-const page = (url) => ({ url: () => url, isClosed: () => false, close: async () => {}, opener: async () => null });
+const page = (url) => ({ url: () => url, isClosed: () => false, close: async () => {}, opener: async () => null,
+  goto: async (u) => { page.lastGoto = u; }, evaluate: async () => false });
+const probePage = () => page("https://app.test/home");
+hostBrowser.openTab = async () => ({ page: probePage(), tabId: "probe" });
+hostBrowser.release = async () => {};
+
 const STATE = { cookies: [{ name: "sid", value: "1", domain: "app.test", path: "/" }], origins: [] };
 function session({ hostOwned, pages }) {
   return {
     hostOwned, hostRunId: hostOwned ? "r_1" : undefined,
     browser: { on() {}, off() {} },
-    context: { pages: () => pages, on() {}, off() {}, storageState: async () => STATE },
+    context: {
+      pages: () => pages, on() {}, off() {}, storageState: async () => STATE,
+      cookies: async () => STATE.cookies, newPage: async () => probePage(),
+    },
   };
 }
 const opts = { protectedUrl: "https://app.test/home", waitMs: 400, hosts: ["app.test"] };

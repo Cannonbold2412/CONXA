@@ -53,6 +53,11 @@ function startApp() {
         if (authed) { res.writeHead(200, { "content-type": "text/html" }); return res.end("<body>home</body>"); }
         res.writeHead(302, { Location: "/login" }); return res.end();
       }
+      // The judge (browser.js::_judgeLogin) re-asks the login page in the background and expects a
+      // signed-in visitor to be bounced off it, exactly like a real login page — a plain-password
+      // app's own success_url and login_url are often the same host, so this is what tells the judge
+      // apart "still logging in" from "already done" when it re-requests login_url.
+      if (req.url.startsWith("/login") && authed) { res.writeHead(302, { Location: "/home" }); return res.end(); }
       res.writeHead(200, { "content-type": "text/html" }); res.end("<body>login</body>");
     });
     srv.listen(0, () => resolve({ srv, port: srv.address().port }));
@@ -173,6 +178,16 @@ async function run() {
     await loginTabs(ctx, B_ORIGIN)[0].goto(`${B_ORIGIN}/auth`);
     const waited = await awaitAuthPending(r1, { timeoutMs: 15000 });
     assert.deepStrictEqual(waited.map((w) => w.outcome), ["captured", "captured"]);
+
+    // AUTH-7: an ordinary, ladder-decided capture (not the human override) must record WHICH
+    // rung decided it — never "human_override", which only fires from the file-drop signal.
+    const decisionLines = fs.readFileSync(path.join(tmp, "logs", "login_signals.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const decisionsForThisWorkspace = decisionLines.filter((d) => d.key.startsWith(`${ws}__`));
+    assert.strictEqual(decisionsForThisWorkspace.length, 2, "one decision line per app");
+    for (const d of decisionsForThisWorkspace) {
+      assert.ok(["judge_yes", "lookouts_agreed"].includes(d.decision), `expected a real ladder reason, got ${d.decision}`);
+    }
+
     const r2 = await getCachedBrowser(ws, null, opts(ws));
     assert.ok(!r2.authPending);
     assert.strictEqual(launched.length, 1);

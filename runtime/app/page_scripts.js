@@ -390,6 +390,78 @@ function overlayProbe() {
   };
 }
 
+// ── Login-completion signals (login_signals.js's page-side counterparts) ────────────────────────
+// Self-contained for the same "in-page" reason as settleSignature/environmentSignature above: no
+// closure over module scope, evaluated standalone once re-parsed in the page realm.
+
+// Password-box lookout: does any frame currently show a password field? Same-origin iframes only
+// — a cross-origin iframe throws on .contentDocument access by construction and is skipped, the
+// same limitation every other page_scripts.js DOM probe already accepts for embedded content.
+function passwordBoxProbe() {
+  function hasPasswordField(root) {
+    try { return !!root.querySelector('input[type="password"]'); } catch (_) { return false; }
+  }
+  if (hasPasswordField(document)) return true;
+  var frames = document.querySelectorAll("iframe");
+  for (var i = 0; i < frames.length; i++) {
+    try {
+      if (frames[i].contentDocument && hasPasswordField(frames[i].contentDocument)) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
+// Pause-sign lookout: an OTP/texted-code entry screen has an unambiguous DOM shape — either the
+// standard autocomplete="one-time-code" marker, or a run of single-character numeric/text inputs.
+// Deliberately does not attempt to recognise "choose an account" or "approve on your phone"
+// screens, which have no comparably reliable structural signature without reading text (see
+// login_signals.js::looksPaused's ponytail note).
+function pauseSignProbe() {
+  var hasOneTimeCodeAutocomplete = !!document.querySelector('input[autocomplete="one-time-code"]');
+  var otpLike = document.querySelectorAll(
+    'input[maxlength="1"][inputmode="numeric"], input[maxlength="1"][type="tel"], input[maxlength="1"][type="text"]'
+  );
+  return { otpLikeInputCount: otpLike.length, hasOneTimeCodeAutocomplete: hasOneTimeCodeAutocomplete };
+}
+
+// Tickets lookout, storage half — cookie names come from Playwright's own context.cookies() in
+// Node; this supplies the other half (localStorage/sessionStorage key COUNTS only, never values or
+// even key names, per the "secrets stay on the machine" rule).
+function storageKeyCounts() {
+  function countKeys(storage) {
+    try { return storage.length; } catch (_) { return 0; }
+  }
+  return { localStorageKeys: countKeys(window.localStorage), sessionStorageKeys: countKeys(window.sessionStorage) };
+}
+
+// AUTH-8 — "Signed in as ___". Unlike every probe above, this one is DELIBERATELY text-reading:
+// the whole point is to surface the actual account name as a positive confirmation, best-effort
+// and never blocking (see browser.js's call site — a miss is silent, never a warning). Looks for
+// a short (2-60 char) label on or near a marker that plausibly identifies an account/profile
+// control, never a value with no such marker nearby (avoids grabbing arbitrary page headings).
+function accountNameProbe() {
+  var MARKER_SEL =
+    '[aria-label*="account" i], [aria-label*="profile" i], [aria-label*="user menu" i], ' +
+    '[data-testid*="account" i], [data-testid*="profile" i], [data-testid*="avatar" i], ' +
+    'header [role="button"], nav [role="button"], [role="banner"] [role="button"]';
+  function shortLabel(s) {
+    var t = (s || "").trim().replace(/\s+/g, " ");
+    return t.length >= 2 && t.length <= 60 ? t : "";
+  }
+  var candidates = document.querySelectorAll(MARKER_SEL);
+  for (var i = 0; i < candidates.length; i++) {
+    var el = candidates[i];
+    var direct = shortLabel(el.getAttribute("aria-label")) || shortLabel(el.textContent);
+    if (direct) return direct;
+    var img = el.querySelector && el.querySelector("img[alt]");
+    if (img) {
+      var alt = shortLabel(img.getAttribute("alt"));
+      if (alt) return alt;
+    }
+  }
+  return "";
+}
+
 module.exports = {
   extractDescriptor,
   rafStable,
@@ -406,4 +478,8 @@ module.exports = {
   INVENTORY_SELECTOR,
   scrollVirtualContainerStep,
   scrollDominantScrollableElement,
+  passwordBoxProbe,
+  pauseSignProbe,
+  storageKeyCounts,
+  accountNameProbe,
 };

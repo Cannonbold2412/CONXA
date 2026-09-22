@@ -4,13 +4,37 @@ const fs   = require("fs");
 const path = require("path");
 const hostBrowser = require("./host_browser");
 const sessions = require("./browser_session");
+const pageScripts = require("./page_scripts");
+const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
+const loginSignals = require("./login_signals");
+const loginDecisionLog = require("./login_decision_log");
 
 // How often a pending sign-in is checked, how long after success we wait for post-login JS to write
 // its tokens before capturing, and how long a closed login tab may still be followed by a success
 // elsewhere before it counts as abandoned. Env-overridable so tests don't sit through the defaults.
 const LOGIN_POLL_MS = Number(process.env.CONXA_LOGIN_POLL_MS) || 1500;
-const LOGIN_SETTLE_MS = Number(process.env.CONXA_LOGIN_SETTLE_MS) || 1500;
 const LOGIN_CLOSE_GRACE_MS = Number(process.env.CONXA_LOGIN_CLOSE_GRACE_MS) || 3000;
+// The backup rule's agreement window ("two or more lookouts for N seconds") and the point at
+// which an inconclusive sign-in gets a diagnostic log line — see login_signals.js's ladder and
+// docs/artifacts/login-desk.html's "Who do we believe?" section. LOGIN_HUMAN_PROMPT_MS has no UI
+// to trigger yet (Phase 2 — an "I'm done signing in" control); until then it only marks when to
+// log that a wait is taking unusually long, so a stuck sign-in is visible in diagnostics well
+// before the LOGIN_WAIT_MS ceiling gives up on it.
+const LOGIN_BACKUP_AGREE_MS = Number(process.env.CONXA_LOGIN_BACKUP_AGREE_MS) || loginSignals.DEFAULT_BACKUP_AGREE_MS;
+// AUTH-6: has a UI trigger now (Conxa Execute's per-login-tab "Done" button, and the
+// `conxa-runtime login-done <key>` CLI subcommand for every other client) — see
+// _checkHumanOverride below. Still only logs `login_signal_inconclusive` on its own; the human
+// override is a separate, explicit signal, not something this deadline triggers by itself.
+const LOGIN_HUMAN_PROMPT_MS = Number(process.env.CONXA_LOGIN_HUMAN_PROMPT_MS) || 25000;
+// Timekeeper: how often the ticket signature is resampled while waiting for calm, and the hard
+// cap on how long it will wait for two consecutive samples to match before saving anyway (some
+// sites never go fully quiet). Mirrors settle.js's own two-consecutive-matches shape, applied to
+// a different signal (ticket names/counts, not DOM shape). The budget falls back to the OLD flat
+// settle delay's env var — anyone already tuning CONXA_LOGIN_SETTLE_MS down for fast tests gets
+// the same effect on the new calm-wait without having to touch it.
+const LOGIN_TIMEKEEPER_POLL_MS = Number(process.env.CONXA_LOGIN_TIMEKEEPER_POLL_MS) || 500;
+const LOGIN_TIMEKEEPER_BUDGET_MS =
+  Number(process.env.CONXA_LOGIN_TIMEKEEPER_BUDGET_MS) || Number(process.env.CONXA_LOGIN_SETTLE_MS) || 5000;
 
 // env.js is authoritative (see server.js note): process.env is already normalized
 // under the host exe; the resolve() fallback only serves standalone dev mode.
@@ -22,6 +46,31 @@ const LOGIN_URL_PATTERNS = [
   "login", "signin", "sign-in", "auth", "oauth", "sso",
   "session/new", "account/login", "accountchooser", "account-chooser",
 ];
+
+// AUTH-6: "I'm done signing in" — a plain file-drop signal, same shape as handover.js's own resume
+// mechanism (existence-only, unauthenticated — same OS user, same machine, no new exposure that
+// doesn't already exist) but rooted at CONXA_DIR rather than CONXA_DATA_DIR: CONXA_DIR is what
+// Conxa Execute's Electron process actually resolves and forwards (runtime_path.js + mcp_client.js),
+// while CONXA_DATA_DIR is computed only inside this runtime process and never travels back to
+// Execute — rooting there would leave Execute's own button unable to find the right directory.
+const LOGIN_DONE_DIR = path.join(CONXA_DIR, "login-done");
+function _humanOverrideFile(key) {
+  return path.join(LOGIN_DONE_DIR, `${key}.cmd`);
+}
+// Checked once per poll tick in both wait functions, BEFORE the ladder verdict — a hit is an
+// unconditional "save", bypassing judge/backup-agreement/even a currently-showing pause sign. The
+// human is the authority of last resort (docs/artifacts/login-desk.html's third door into save).
+// Consumes the file on the way past, same as handover.js's file-drop signal.
+function _checkHumanOverride(key) {
+  const file = _humanOverrideFile(key);
+  try {
+    if (!fs.existsSync(file)) return false;
+    fs.unlinkSync(file);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 // Shared context options for any Chromium instance that talks to a real target site
 // (interactive login, session validation) — matches a normal desktop browser closely
@@ -580,9 +629,9 @@ async function _openSessionResult(key, stored, headless, opts, extra) {
 // A throwaway or sign-in tab inside a session. A launched context makes its own page; Execute's
 // Electron target can't (see host_browser.js), so it asks Execute for a labelled view instead and
 // keeps the tab id, which is what lets just this one view be closed later.
-async function _newSessionPage(session, { label, focus } = {}) {
+async function _newSessionPage(session, { label, focus, loginKey } = {}) {
   if (session.hostOwned) {
-    const { page, tabId } = await hostBrowser.openTab({ context: session.context, runId: session.hostRunId, label, focus });
+    const { page, tabId } = await hostBrowser.openTab({ context: session.context, runId: session.hostRunId, label, focus, loginKey });
     return { page, hostTabId: tabId };
   }
   return { page: await session.context.newPage() };
@@ -669,6 +718,202 @@ async function _isAuthenticated(page, protectedUrl) {
   return false;
 }
 
+// ── Multi-signal login-completion detection ─────────────────────────────────────────────────
+// See login_signals.js's header for the vocabulary. This section is the Playwright-touching
+// half (signal gathering); login_signals.js is the pure decision half. Shared by both
+// _waitForSessionLogin and _waitForInteractiveAuth below so the two never grow independently
+// drifting copies of the same rule.
+
+// Judge: re-ask the login entry URL in the background, in a throwaway tab of the SAME context a
+// lookout just fired in, and see whether it still shows a login form. Deliberately gated by the
+// caller to run only when a lookout has just fired — never on a timer — so a bot-protected site's
+// login page isn't hit any more than the person's own navigation already hits it. Returns "yes" /
+// "no", or null (probe itself failed — a network hiccup, a timeout) which the ladder treats as
+// "can't tell", falling through to the lookout-agreement backup rule rather than saving OR
+// blocking on a probe error.
+async function _judgeLogin(session, entryUrl, protectedUrl) {
+  let tab;
+  try {
+    tab = await _newSessionPage(session, { label: "verify", focus: false });
+    await tab.page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    return _reachedProtectedUrl(tab.page.url(), protectedUrl) ? "yes" : "no";
+  } catch (_) {
+    return null;
+  } finally {
+    if (tab) await _closeSessionPage(session, tab);
+  }
+}
+
+// One tick's lookout read across every currently-live candidate page. Mutates `state` in place
+// (hostsSeen for the journey lookout, firedAt for the backup rule, sawPasswordBox so "gone" can
+// only fire after a box was actually seen) since this runs inside a setInterval tick, where
+// threading a return value back out is more awkward than the mutation it would produce anyway.
+// Returns { paused } — the one signal every caller needs synchronously, right now, to gate saving.
+// `ownPages` are pages we KNOW belong to this one login (the login tab and pages it opened —
+// `mine` in both callers below); `broadPages` is candidates()'s wider set, which for a launched
+// (non-host-owned) session is EVERY page of the shared context — deliberately wide, so a sign-in
+// finished in a tab the user opened themselves still counts. That width is only safe for the
+// precise, hostname+path-scoped protectedUrl check: a sibling app's own login sharing the same
+// launched context (the "cold start, N apps" case) will legitimately navigate to ITS OWN app page
+// mid-poll, and none of the other signals here are hostname-scoped enough to tell that apart from
+// this app's own journey — so password-box, pause-sign and the generic journey fallback all read
+// ONLY `ownPages`, never `broadPages`.
+async function _sampleLookouts(state, { ownPages, broadPages }, { loginHost, protectedUrl }, nowMs) {
+  let anyPasswordBox = false;
+  let anyPaused = false;
+  for (const p of ownPages) {
+    let url = "";
+    try { url = p.url(); } catch (_) { continue; }
+    if (url && !_isBlankUrl(url)) {
+      const host = _hostOf(url);
+      if (host && state.hostsSeen[state.hostsSeen.length - 1] !== host) state.hostsSeen.push(host);
+    }
+    try {
+      const hasPw = await evalOn(p, pageScripts.passwordBoxProbe, undefined, 1200);
+      if (hasPw === true) anyPasswordBox = true;
+    } catch (_) {}
+    try {
+      const pauseProbe = await evalOn(p, pageScripts.pauseSignProbe, undefined, 1200);
+      if (pauseProbe !== EVAL_TIMED_OUT && loginSignals.looksPaused(pauseProbe)) anyPaused = true;
+    } catch (_) {}
+  }
+  // "Password box gone" only ever fires once a box was actually observed first — a login whose
+  // FIRST screen has no password field (email-first, then password on the next screen) must not
+  // fire this the instant it loads just because there is no box yet.
+  if (state.sawPasswordBox && !anyPasswordBox && state.firedAt.passwordGone === undefined) {
+    state.firedAt.passwordGone = nowMs;
+  }
+  if (anyPasswordBox) state.sawPasswordBox = true;
+
+  // Journey. Two ways to fire, tried in order:
+  //  1. The precise check: some page is at protectedUrl's own host, off a login-shaped path
+  //     (_reachedProtectedUrl already does exactly this — the SAME check _waitForSessionLogin used
+  //     as its sole signal before this file existed). This is the common case, including a same-host
+  //     app whose login and dashboard share a hostname, which classifyJourney's host-difference
+  //     logic below cannot see at all (it would find nothing "new" to credit). Broad on purpose —
+  //     this is the one check hostname+path-scoped enough to stay safe across a shared context.
+  //  2. The generic fallback: a new, real (non-login, non-IdP) HOST has appeared, on OWN pages only
+  //     (see the function comment above), and the page currently there doesn't itself look like a
+  //     login/auth page by the generic word-pattern check — covers a cross-host app reached via an
+  //     IdP hop with no success_url configured to name it, and an SSO hop landing on the app's own
+  //     separate re-login prompt.
+  if (state.firedAt.journey === undefined) {
+    const protectedHit = protectedUrl && broadPages.some((p) => {
+      try { return _reachedProtectedUrl(p.url(), protectedUrl); } catch (_) { return false; }
+    });
+    if (protectedHit) {
+      state.firedAt.journey = nowMs;
+    } else {
+      const journeyHost = loginSignals.classifyJourney(state.hostsSeen, loginHost);
+      if (journeyHost) {
+        let urlOnJourneyHost = "";
+        for (let i = ownPages.length - 1; i >= 0; i--) {
+          try { if (_hostOf(ownPages[i].url()) === journeyHost) { urlOnJourneyHost = ownPages[i].url(); break; } } catch (_) {}
+        }
+        if (!urlOnJourneyHost || !_rejectReasonForProtectedUrl(urlOnJourneyHost)) state.firedAt.journey = nowMs;
+      }
+    }
+  }
+
+  return { paused: anyPaused };
+}
+
+// Tickets signature for ONE representative page (whichever live candidate is passed in) plus the
+// context-wide cookie jar — cookies are context-scoped in Playwright, so reading them once per
+// tick from the context itself (rather than per-page) is both cheaper and unambiguous.
+async function _ticketSignatureNow(context, page) {
+  let cookieNames = [];
+  try { cookieNames = (await context.cookies()).map((c) => c.name); } catch (_) {}
+  let storageKeyCounts = {};
+  if (page) {
+    try {
+      const counts = await evalOn(page, pageScripts.storageKeyCounts, undefined, 1200);
+      if (counts !== EVAL_TIMED_OUT && counts) storageKeyCounts = counts;
+    } catch (_) {}
+  }
+  return loginSignals.ticketSignature({ cookieNames, storageKeyCounts });
+}
+
+// Timekeeper: wait for the ticket signature to stop changing before saving — replaces a flat
+// settle delay with "two consecutive samples match, or a budget runs out", the same shape
+// settle.js already uses for a different signal (DOM shape, not ticket names/counts).
+async function _waitForTicketsCalm(context, getRepresentativePage, {
+  budgetMs = LOGIN_TIMEKEEPER_BUDGET_MS, pollMs = LOGIN_TIMEKEEPER_POLL_MS,
+} = {}) {
+  const deadline = Date.now() + budgetMs;
+  // Deliberately does NOT take a baseline sample before the loop starts. The artifact's own "late
+  // pass" walkthrough shows the FIRST timekeeper check after a ticket fires still reporting "still
+  // changing" even though nothing has fired since — two SEPARATE post-decision polls must agree,
+  // not "whatever was true the instant we decided to save" vs. the first poll. Without this, a
+  // write that lands between the decision and the first poll (the exact "late pass" case) can
+  // pass unnoticed: the pre-loop baseline and the first sample would both already include it,
+  // reading as "unchanged" from tick one.
+  let prev = null;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
+    const sig = await _ticketSignatureNow(context, getRepresentativePage());
+    if (prev && loginSignals.sameTickets(prev, sig)) return;
+    prev = sig;
+  }
+}
+
+// Prover: verify the just-captured session actually authenticates before reporting success. A
+// launched (non-host-owned) browser gets a true isolated re-test — a brand new context seeded
+// with nothing but the captured `state` — which is what catches a site that keeps part of its
+// login in page-memory that was never written to a cookie or localStorage (so it was never really
+// captured at all). A host-owned (Conxa Execute) session can't do that: Electron's CDP target
+// implements neither Target.createBrowserContext nor Target.createTarget (see host_browser.js),
+// so there is exactly one context for every run in the panel. That branch re-tests in a fresh TAB
+// of the same shared context instead — weaker (it still shares the context's other cookies) but
+// still catches the same page-memory-only failure a same-context re-test can reach. A real,
+// accepted gap for host-owned logins — see docs/TRD.md §4.5's CDP-context limitation.
+// ponytail: reload-in-shared-context for host-owned, not a true isolated context — upgrade if
+// Electron ever exposes Target.createBrowserContext.
+async function _proveSession(navTarget, protectedUrl, { hostOwned, context, hostRunId, browser, state }) {
+  if (!navTarget) return true;
+  const checkAgainst = protectedUrl || navTarget;
+  if (hostOwned) {
+    let tab;
+    try {
+      const opened = await hostBrowser.openTab({ context, runId: hostRunId, label: "verify", focus: false });
+      tab = opened;
+      await tab.page.goto(navTarget, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+      return await _isAuthenticated(tab.page, checkAgainst);
+    } catch (_) {
+      return false;
+    } finally {
+      if (tab) {
+        try { if (!tab.page.isClosed()) await tab.page.close(); } catch (_) {}
+        if (tab.tabId) await hostBrowser.release({ runId: hostRunId, tabId: tab.tabId }).catch(() => {});
+      }
+    }
+  }
+  let freshCtx = null;
+  try {
+    freshCtx = await browser.newContext({ storageState: state });
+    const page = await freshCtx.newPage();
+    await page.goto(navTarget, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+    return await _isAuthenticated(page, checkAgainst);
+  } catch (_) {
+    return false;
+  } finally {
+    if (freshCtx) await freshCtx.close().catch(() => {});
+  }
+}
+
+// AUTH-8 — "Signed in as ___": a best-effort, never-blocking positive confirmation. A miss (no
+// plausible marker found, or the probe itself fails) is silent — this never becomes a warning,
+// unlike the Prover above. Run once, on the page that actually landed the sign-in.
+async function _probeAccountName(page) {
+  if (!page) return "";
+  try {
+    const name = await evalOn(page, pageScripts.accountNameProbe, undefined, 1500);
+    return name && name !== EVAL_TIMED_OUT ? name : "";
+  } catch (_) {
+    return "";
+  }
+}
+
 // opts.runId, when set, is Execute's cue to borrow its own browser view instead of
 // launching one (see host_browser.js). Only reachable when headless is false — a
 // borrowed browser is always visible, by definition of what Execute uses it for —
@@ -706,7 +951,7 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
   // reports against its recording). A visible Chromium's own UA is not a headless tell, and
   // _maskAutomation still applies per page.
   if (session) {
-    const tab = await _newSessionPage(session, { label, focus: true });
+    const tab = await _newSessionPage(session, { label, focus: true, loginKey: workspace_id });
     try {
       await _maskAutomation(tab.page);
       await tab.page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
@@ -729,7 +974,7 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
   if (runId && hostBrowser.endpoint()) {
     try {
       const { browser: loginBrowser, context: loginCtx, page: loginPage, hostTabId } =
-        await hostBrowser.acquire({ runId, storageState: storedState, label, focus: true });
+        await hostBrowser.acquire({ runId, storageState: storedState, label, focus: true, loginKey: workspace_id });
       await _maskAutomation(loginPage);
       await loginPage.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       return { loginBrowser, loginCtx, loginPage, hostOwned: true, hostRunId: runId, hostTabId };
@@ -763,11 +1008,15 @@ const LOGIN_WAIT_MS = 10 * 60 * 1000;
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   if (opened.session) return _waitForSessionLogin(workspace_id, opened, opts);
-  const { protectedUrl, waitMs = LOGIN_WAIT_MS } = opts;
+  const { protectedUrl, waitMs = LOGIN_WAIT_MS, entryUrl = "", logFn } = opts;
   const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId, hostTabId } = opened;
+  const loginHost = _hostOf(entryUrl) || _hostOf(protectedUrl);
   let lastUrl = "";
   let lastState = null;
+  let proveOk = true;
+  let accountName = "";
   let _autoCloseScheduled = false;
+  let _finalizing = false; // guards two overlapping _captureIfAuthenticated runs (interval + framenavigated)
 
   // Shared close point for both the auto-close-on-success timer below and the final
   // fallback close — mirrors teardownExecBrowser's reasoning exactly: loginBrowser.close()
@@ -779,26 +1028,77 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     if (hostOwned && hostRunId) await hostBrowser.release({ runId: hostRunId, tabId: hostTabId });
   };
 
-  // Capture storageState when the user lands on an authenticated page. Scoped to
-  // protectedUrl's own hostname when known — an OAuth leg through a different host
-  // (accounts.google.com, whose URLs contain "auth"/"oauth"/"signin") is never mistaken
-  // for "still on the login page". Falls back to the old whole-URL heuristic when
-  // protectedUrl isn't known yet.
-  // On first successful capture, schedule auto-close after 1.5 s so the user
-  // does not need to close the window manually.  The 1.5 s gap lets the
-  // periodic interval fire once more to pick up any localStorage tokens
-  // written by post-login JS after the redirect completes.
-  // If the user closes the window before the timer fires, `disconnected`
-  // resolves the outer promise and the already-captured state is used.
+  const lookoutState = { hostsSeen: [], firedAt: {}, sawPasswordBox: false };
+  let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
+  let judging = false;
+  let decisionReason = null; // AUTH-7: which ladder rung (or human_override) decided a capture
+  const _waitStartMs = Date.now();
+
+  const _liveTabPages = () => {
+    try { return loginCtx.pages().filter((p) => { try { return !p.isClosed(); } catch (_) { return false; } }); }
+    catch (_) { return [loginPage]; }
+  };
+
+  // Runs the multi-signal ladder (see login_signals.js) across every open tab of this login
+  // context, then Timekeeper + capture + Prover once it says save. Gated by _finalizing so the
+  // periodic interval and the framenavigated-driven calls below can never overlap each other —
+  // signal gathering is real async work now (DOM probes), not the instant boolean check this
+  // replaces, so overlap would otherwise be easy to hit. On first successful capture, schedule
+  // auto-close after 1.5 s so the user does not need to close the window manually; if they close
+  // it first, `disconnected` resolves the outer promise and the already-captured state is used.
   const _captureIfAuthenticated = async () => {
-    const reached = protectedUrl
-      ? _reachedProtectedUrl(lastUrl, protectedUrl)
-      : !_rejectReasonForProtectedUrl(lastUrl);
-    if (!reached) return;
-    try { lastState = await loginCtx.storageState(); } catch (_) { return; }
-    if (lastState && !_autoCloseScheduled) {
-      _autoCloseScheduled = true;
-      setTimeout(() => { _closeLoginBrowser().catch(() => {}); }, 1500);
+    if (_autoCloseScheduled || _finalizing || lastState) return;
+    _finalizing = true;
+    try {
+      // AUTH-6: the human said so — an unconditional save, ahead of everything else below
+      // (bypasses judge/backup-agreement/even a currently-showing pause sign).
+      if (_checkHumanOverride(workspace_id)) {
+        decisionReason = "human_override";
+      } else {
+        const pages = _liveTabPages();
+        const nowMs = Date.now();
+        // This login's context is dedicated to it alone (never shared with a sibling app's login —
+        // see _waitForSessionLogin's comment on why that distinction matters), so ownPages/broadPages
+        // are the same set here.
+        const { paused } = await _sampleLookouts(lookoutState, { ownPages: pages, broadPages: pages }, { loginHost, protectedUrl }, nowMs);
+
+        // Judge: only once a lookout has fired, never while a previous probe is in flight, and
+        // never while paused — gentle with the website, never asked on a timer of its own.
+        const anyFired = Object.keys(lookoutState.firedAt).length > 0;
+        if (anyFired && judgeVerdict !== "yes" && !judging && !paused) {
+          judging = true;
+          _judgeLogin({ hostOwned, context: loginCtx, hostRunId }, entryUrl || protectedUrl, protectedUrl)
+            .then((v) => { judgeVerdict = v; })
+            .catch(() => {})
+            .finally(() => { judging = false; });
+        }
+
+        const verdict = loginSignals.ladderVerdict({
+          paused, judge: judgeVerdict, firedAt: lookoutState.firedAt, nowMs, agreeMs: LOGIN_BACKUP_AGREE_MS,
+        });
+        if (verdict.action !== "save") return;
+        decisionReason = verdict.reason;
+      }
+
+      const landedPage = () => {
+        const live = _liveTabPages();
+        return live.find((p) => { try { return protectedUrl && _reachedProtectedUrl(p.url(), protectedUrl); } catch (_) { return false; } })
+          || live[live.length - 1] || loginPage;
+      };
+      await _waitForTicketsCalm(loginCtx, landedPage);
+      const landed = landedPage();
+      try { if (landed) lastUrl = landed.url(); } catch (_) {}
+      try { lastState = await loginCtx.storageState(); } catch (_) { return; }
+      if (lastState) {
+        proveOk = await _proveSession(entryUrl || protectedUrl, protectedUrl,
+          { hostOwned, context: loginCtx, hostRunId, browser: loginBrowser, state: lastState });
+        if (logFn && !proveOk) logFn("warn", "login_prove_failed", { key: workspace_id });
+        accountName = await _probeAccountName(landed);
+        _autoCloseScheduled = true;
+        setTimeout(() => { _closeLoginBrowser().catch(() => {}); }, 1500);
+      }
+    } finally {
+      _finalizing = false;
     }
   };
 
@@ -841,16 +1141,19 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   // "a login window is already open".
   let timedOut = false;
   await new Promise(resolve => {
+    const humanPromptTimer = setTimeout(() => {
+      if (logFn) logFn("info", "login_signal_inconclusive", { key: workspace_id, waitedMs: LOGIN_HUMAN_PROMPT_MS });
+    }, LOGIN_HUMAN_PROMPT_MS);
     const interval = setInterval(() => {
       _captureIfAuthenticated().catch(() => {});
       // A host-owned login shares Execute's CDP connection, so closing just this tab never fires
       // "disconnected" — notice it here instead of waiting out the 10-minute deadline.
       // ponytail: gives up if the user closes the ORIGINAL page after signing in via an OAuth
       // popup; beginInteractiveAuth's one-shot reopen covers that.
-      if (hostOwned && loginPage.isClosed()) { clearInterval(interval); clearTimeout(deadline); resolve(); }
+      if (hostOwned && loginPage.isClosed()) { clearInterval(interval); clearTimeout(deadline); clearTimeout(humanPromptTimer); resolve(); }
     }, 1500);
-    const deadline = setTimeout(() => { timedOut = true; clearInterval(interval); resolve(); }, waitMs);
-    loginBrowser.on("disconnected", () => { clearInterval(interval); clearTimeout(deadline); resolve(); });
+    const deadline = setTimeout(() => { timedOut = true; clearInterval(interval); clearTimeout(humanPromptTimer); resolve(); }, waitMs);
+    loginBrowser.on("disconnected", () => { clearInterval(interval); clearTimeout(deadline); clearTimeout(humanPromptTimer); resolve(); });
   });
 
   // Last-resort fallback: try once more in case context is still accessible.
@@ -859,8 +1162,10 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   }
 
   await _closeLoginBrowser();
+  const _waitedMs = Date.now() - _waitStartMs;
 
   if (timedOut && !lastState) {
+    loginDecisionLog.record(workspace_id, "timeout", _waitedMs);
     throw Object.assign(
       new Error(`The login window for ${workspace_id} timed out before sign-in finished. Run the skill again to get a new one.`),
       { loginTimedOut: true },
@@ -868,9 +1173,13 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   }
 
   const rejectReason = _rejectReasonForProtectedUrl(lastUrl);
-  if (rejectReason) throw new Error(rejectReason);
-  if (!lastState) throw new Error(`Authentication session was not captured for ${workspace_id}. Please try again.`);
-  return { state: lastState, protectedUrl: lastUrl };
+  if (rejectReason) { loginDecisionLog.record(workspace_id, "rejected_url", _waitedMs); throw new Error(rejectReason); }
+  if (!lastState) {
+    loginDecisionLog.record(workspace_id, "abandoned", _waitedMs);
+    throw new Error(`Authentication session was not captured for ${workspace_id}. Please try again.`);
+  }
+  loginDecisionLog.record(workspace_id, decisionReason, _waitedMs);
+  return { state: lastState, protectedUrl: lastUrl, proveOk, accountName };
 }
 
 // _waitForInteractiveAuth for a sign-in TAB inside a session (see _openInteractiveAuthWindow).
@@ -883,8 +1192,9 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
 // Resolves { state, protectedUrl } — `state` is already sliced to this app (refreshAppState).
 async function _waitForSessionLogin(key, opened, opts = {}) {
   const { session, loginPage, hostTabId } = opened;
-  const { protectedUrl, waitMs = LOGIN_WAIT_MS, storedState, hosts = [], claimedElsewhere = null } = opts;
+  const { protectedUrl, waitMs = LOGIN_WAIT_MS, storedState, hosts = [], claimedElsewhere = null, entryUrl = "", logFn } = opts;
   const ctx = session.context;
+  const loginHost = _hostOf(entryUrl) || _hostOf(protectedUrl);
 
   const mine = new Set([loginPage]);
   const adopt = async (page) => {
@@ -898,44 +1208,102 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
   // one — every run's views live in it — so only pages this login created may count, or another
   // run's already-signed-in page would be mistaken for this sign-in and its session captured (EXEC-45).
   const candidates = () => (session.hostOwned ? [...mine] : ctx.pages());
-  const reached = () => candidates().find((p) => {
-    if (isClosed(p)) return false;
-    try { return protectedUrl ? _reachedProtectedUrl(p.url(), protectedUrl) : !_rejectReasonForProtectedUrl(p.url()); } catch (_) { return false; }
-  });
+  const livePages = () => candidates().filter((p) => !isClosed(p));
+  // Only the login tab and pages it opened — see _sampleLookouts's own comment on why the
+  // password-box/pause-sign/generic-journey signals must never read the shared context's OTHER
+  // pages: a sibling app's login sharing this same launched context (multiple apps missing at
+  // once) would otherwise get credited for this app's own arrival.
+  const myLivePages = () => [...mine].filter((p) => !isClosed(p));
+
+  const lookoutState = { hostsSeen: [], firedAt: {}, sawPasswordBox: false };
+  let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
+  let judging = false;
 
   let outcome = null;
+  let decisionReason = null; // AUTH-7: which ladder rung (or human_override) decided a "reached" outcome
+  const _waitStartMs = Date.now();
   await new Promise((resolve) => {
     let closedAt = 0;
+    let ticking = false;
     const finish = (o) => {
       if (outcome) return;
       outcome = o;
-      clearInterval(poll); clearTimeout(deadline);
+      clearInterval(poll); clearTimeout(deadline); clearTimeout(humanPromptTimer);
       try { session.browser.off("disconnected", onGone); } catch (_) {}
       resolve();
     };
     const onGone = () => finish("gone");
+    const humanPromptTimer = setTimeout(() => {
+      if (logFn) logFn("info", "login_signal_inconclusive", { key, waitedMs: LOGIN_HUMAN_PROMPT_MS });
+    }, LOGIN_HUMAN_PROMPT_MS);
     const poll = setInterval(() => {
-      if (reached()) return finish("reached");
-      // The login tab is closed and nothing else got there — but a page that closes itself right
-      // after a redirect can beat the poll, so give a success elsewhere a moment to show up.
-      if (isClosed(loginPage)) {
-        if (!closedAt) closedAt = Date.now();
-        else if (Date.now() - closedAt >= LOGIN_CLOSE_GRACE_MS) finish("closed");
-      }
+      if (outcome || ticking) return; // signal gathering is real async work — never overlap two ticks
+      ticking = true;
+      (async () => {
+        // AUTH-6: the human said so — an unconditional save, ahead of everything else below
+        // (bypasses judge/backup-agreement/even a currently-showing pause sign).
+        if (_checkHumanOverride(key)) { decisionReason = "human_override"; return finish("reached"); }
+
+        const pages = livePages();
+        const nowMs = Date.now();
+        const { paused } = await _sampleLookouts(lookoutState,
+          { ownPages: myLivePages(), broadPages: pages }, { loginHost, protectedUrl }, nowMs);
+
+        // Judge: only once a lookout has fired, never while a previous probe is in flight, and
+        // never while paused — gentle with the website, never asked on a timer of its own.
+        const anyFired = Object.keys(lookoutState.firedAt).length > 0;
+        if (anyFired && judgeVerdict !== "yes" && !judging && !paused) {
+          judging = true;
+          _judgeLogin(session, entryUrl || protectedUrl, protectedUrl)
+            .then((v) => { judgeVerdict = v; })
+            .catch(() => {})
+            .finally(() => { judging = false; });
+        }
+
+        const verdict = loginSignals.ladderVerdict({
+          paused, judge: judgeVerdict, firedAt: lookoutState.firedAt, nowMs, agreeMs: LOGIN_BACKUP_AGREE_MS,
+        });
+        if (verdict.action === "save") { decisionReason = verdict.reason; return finish("reached"); }
+
+        // The login tab is closed and nothing else got there — but a page that closes itself right
+        // after a redirect can beat the poll, so give a success elsewhere a moment to show up.
+        if (isClosed(loginPage)) {
+          if (!closedAt) closedAt = Date.now();
+          else if (Date.now() - closedAt >= LOGIN_CLOSE_GRACE_MS) finish("closed");
+        }
+      })().catch(() => {}).finally(() => { ticking = false; });
     }, LOGIN_POLL_MS);
     const deadline = setTimeout(() => finish("timeout"), waitMs);
     // A launched session's window/browser being closed; an Execute view closing is caught by the
     // login tab's own isClosed() above (the CDP connection is Execute's whole process).
     try { session.browser.on("disconnected", onGone); } catch (_) {}
   });
+  loginDecisionLog.record(key, outcome === "reached" ? decisionReason : outcome, Date.now() - _waitStartMs);
 
   let state = null;
   let landedUrl = "";
+  let proveOk = true;
+  let accountName = "";
   if (outcome === "reached") {
-    await new Promise((r) => setTimeout(r, LOGIN_SETTLE_MS)); // post-login JS writes its tokens late
-    const page = reached();
+    // Prefer the page that actually satisfies protectedUrl (this app's own landed page) as the
+    // timekeeper's representative page — never just "whatever's last in the broad set", which in
+    // a shared multi-app context could be a sibling app's tab (see _sampleLookouts's ownPages
+    // comment for why that distinction matters throughout this function).
+    const landedPage = () => {
+      const pages = livePages();
+      return pages.find((p) => { try { return protectedUrl && _reachedProtectedUrl(p.url(), protectedUrl); } catch (_) { return false; } })
+        || myLivePages()[myLivePages().length - 1] || loginPage;
+    };
+    await _waitForTicketsCalm(ctx, landedPage);
+    const page = landedPage();
     landedUrl = page ? page.url() : "";
     try { state = await ctx.storageState(); } catch (_) {}
+    if (state) {
+      proveOk = await _proveSession(entryUrl || protectedUrl, protectedUrl,
+        { hostOwned: session.hostOwned, context: ctx, hostRunId: session.hostRunId, browser: session.browser, state });
+      if (logFn && !proveOk) logFn("warn", "login_prove_failed", { key });
+      accountName = await _probeAccountName(page);
+    }
   }
 
   try { ctx.off("page", adopt); } catch (_) {}
@@ -946,7 +1314,7 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
 
   if (outcome === "reached") {
     if (!state) throw new Error(`Authentication session was not captured for ${key}. Please try again.`);
-    return { state: refreshAppState(storedState, state, hosts, claimedElsewhere), protectedUrl: landedUrl };
+    return { state: refreshAppState(storedState, state, hosts, claimedElsewhere), protectedUrl: landedUrl, proveOk, accountName };
   }
   if (outcome === "timeout") {
     throw Object.assign(
@@ -1002,8 +1370,8 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
     let currentlyOpen = opened;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const { state } =
-          await _waitForInteractiveAuth(workspace_id, currentlyOpen, { protectedUrl, storedState, hosts, claimedElsewhere });
+        const { state, proveOk, accountName } = await _waitForInteractiveAuth(workspace_id, currentlyOpen,
+          { protectedUrl, storedState, hosts, claimedElsewhere, entryUrl: targetUrl, logFn });
         await _persistSession(workspace_id, state, authManager, sessionsDir, logFn);
         // Just signed in inside the very context the run will use — nothing left to prove, so stamp
         // the validation cache instead of making the next pre-flight probe it again.
@@ -1015,6 +1383,16 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
         }
         handle.status = "done";
         handle.outcome = "captured";
+        // The Prover (see _proveSession) already ran inside the wait — a failure here doesn't
+        // block the save (docs/artifacts/login-desk.html's own "Login lost on save" scenario
+        // still saves), it just means the customer is told now instead of on their next run.
+        if (proveOk === false) {
+          handle.message = `Signed in to ${label || workspace_id}, but a fresh check couldn't confirm the saved sign-in actually works — ` +
+            `it may fail next time you run this skill. Try signing in again if it does.`;
+        }
+        // AUTH-8: best-effort, positive-only — never overrides a prove-failure warning above, and
+        // a miss (accountName === "") sets nothing rather than an empty string.
+        if (accountName) handle.accountName = accountName;
         settle();
         return;
       } catch (e) {
@@ -1052,10 +1430,10 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
 async function awaitInteractiveAuth(key, { timeoutMs = 180000 } = {}) {
   const h = _pendingAuth.get(key);
   if (!h) return { outcome: "none" };
-  if (h.status === "done") return { outcome: h.outcome, message: h.message };
+  if (h.status === "done") return { outcome: h.outcome, message: h.message, accountName: h.accountName };
   let timer;
   const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve({ outcome: "timeout" }), timeoutMs); });
-  const settled = h.settled.then(() => ({ outcome: h.outcome, message: h.message }));
+  const settled = h.settled.then(() => ({ outcome: h.outcome, message: h.message, accountName: h.accountName }));
   try { return await Promise.race([settled, timeout]); } finally { clearTimeout(timer); }
 }
 
@@ -1240,4 +1618,7 @@ module.exports = {
   _openInteractiveAuthWindow,
   _waitForInteractiveAuth,
   AUTH_VALIDATION_TTL_MS,
+  _checkHumanOverride,
+  _humanOverrideFile,
+  LOGIN_DONE_DIR,
 };

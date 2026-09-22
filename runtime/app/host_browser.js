@@ -95,10 +95,10 @@ async function _seedStorageState(context, page, storageState) {
 // already created — callers must use this instead of context.newPage(), which
 // Electron doesn't support) and `hostOwned: true` so teardownExecBrowser() knows to
 // disconnect rather than close.
-async function acquire({ runId, storageState, label, focus }) {
+async function acquire({ runId, storageState, label, focus, loginKey }) {
   const cdp = endpoint();
   if (!cdp) throw new Error("host_browser: CONXA_HOST_BROWSER_CDP not set");
-  const { markerUrl, tabId } = await _controlPost("new_view", { runId, label, focus });
+  const { markerUrl, tabId } = await _controlPost("new_view", { runId, label, focus, loginKey });
   const browser = await chromium.connectOverCDP(cdp);
   const context = browser.contexts()[0];
   if (!context) {
@@ -128,8 +128,8 @@ async function _findPageByMarker(context, markerUrl, runId) {
 // unsupported against Electron, so this is a control-channel round trip identical
 // in shape to acquire()'s first step, just without re-seeding storageState (the new
 // tab shares the run's existing context/cookies already).
-async function openTab({ context, runId, label, focus }) {
-  const { markerUrl, tabId } = await _controlPost("new_tab", { runId, label, focus });
+async function openTab({ context, runId, label, focus, loginKey }) {
+  const { markerUrl, tabId } = await _controlPost("new_tab", { runId, label, focus, loginKey });
   return { page: await _findPageByMarker(context, markerUrl, runId), tabId };
 }
 // The tabId is what a caller needs to close just this one view later (see release below) — a

@@ -85,6 +85,35 @@ if (process.argv[2] === "resume") {
   return;
 }
 
+// AUTH-6: `login-done <key>` is browser.js's `_checkHumanOverride`'s other file-drop signal — same
+// shape as `resume` above, but rooted at CONXA_DIR (envInfo.conxaDir), not CONXA_DATA_DIR: Conxa
+// Execute's own Electron process resolves and forwards CONXA_DIR (runtime_path.js + mcp_client.js)
+// but never learns CONXA_DATA_DIR, which only this runtime process computes — rooting the resume
+// dir there would leave Execute's own "I'm done" button unable to find the right directory.
+// `key` is the same `${workspace_id}__${appId}` string already surfaced in `authenticate`/
+// `execute_skill`'s `apps[].key` field, so a script, a support engineer, or a person driving
+// Claude Desktop directly can copy it straight from a tool response. Pure filesystem write, no
+// app layer needed — runs and exits here, same as `resume`.
+if (process.argv[2] === "login-done") {
+  const fs = require("fs");
+  const key = process.argv[3];
+  if (!key) {
+    process.stderr.write("Usage: conxa-runtime login-done <key>\n");
+    process.exitCode = 1;
+    return;
+  }
+  const loginDoneDir = path.join(envInfo.conxaDir, "login-done");
+  try {
+    fs.mkdirSync(loginDoneDir, { recursive: true });
+    fs.writeFileSync(path.join(loginDoneDir, `${key}.cmd`), "done");
+    process.stdout.write(`Sign-in confirmation sent for ${key}.\n`);
+  } catch (e) {
+    process.stderr.write(`Could not send sign-in confirmation: ${e.message}\n`);
+    process.exitCode = 1;
+  }
+  return;
+}
+
 const HOST_VERSION = require("../package.json").host_version || "host-v1.0.0";
 const CONXA_DIR    = process.env.CONXA_DIR; // set by env.apply() above
 // APP_ROOT is the component root (contains v1.0.0/, v1.1.0/, current/) — not the live dir itself.
