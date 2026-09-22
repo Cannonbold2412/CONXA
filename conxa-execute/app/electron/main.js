@@ -298,6 +298,15 @@ ipcMain.handle("panel:new-tab", (_e, payload) => {
   return { ok: true };
 });
 
+// AUTH-6: the renderer's "I'm done signing in" button. browser_panel.js looks up the tab's own
+// stored loginKey server-side — the renderer only ever knows a boolean (PanelTab.isLogin), never
+// the key itself.
+ipcMain.handle("panel:login-done", (_e, payload) => {
+  const { runId, tabId } = payload || {};
+  if (!runId || !tabId) return { ok: false };
+  return browserPanel.loginDone(runId, tabId);
+});
+
 const SYSTEM_PROMPT = `You are CONXA. You run recorded Conxa skills on this machine, but only when the user asks you to.
 
 Rules:

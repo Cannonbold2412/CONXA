@@ -249,6 +249,17 @@ export function BrowserPanel() {
               <button type="button" onClick={() => selectTab(t.id)} className="min-w-0 flex-1 truncate text-left" title={t.label}>
                 {t.label}
               </button>
+              {t.isLogin && (
+                <button
+                  type="button"
+                  aria-label={`I'm done signing in to ${t.label}`}
+                  title="I'm done signing in"
+                  onClick={() => activeRun && void window.conxaExecute.panel.loginDone({ runId: activeRun.runId, tabId: t.id })}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-bg-hover hover:text-fg"
+                >
+                  <Icon d={paths.check} size={12} />
+                </button>
+              )}
               <button
                 type="button"
                 aria-label={`Close ${t.label}`}

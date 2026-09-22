@@ -7,12 +7,16 @@
  * drive it blind, JSON in and out.
  *
  * Four ops, each mapping straight onto a browser_panel.js function:
- *   new_view   { runId, label?, focus? } -> { markerUrl, tabId }   first tab of a run (focus: a login
- *                                       — bring this run to the foreground even if another is selected)
- *   new_tab    { runId, label? }  -> { markerUrl, tabId }   a tab_open step's later tab
+ *   new_view   { runId, label?, focus?, loginKey? } -> { markerUrl, tabId }   first tab of a run
+ *                       (focus: a login — bring this run to the foreground even if another is selected)
+ *   new_tab    { runId, label?, loginKey? }  -> { markerUrl, tabId }   a tab_open step's later tab,
+ *                       or a sign-in tab of a session that already has a panel open
  *   close_view { runId, tabId }   -> { ok: true }           destroy ONE view (a finished login)
  *   run_end    { runId }          -> { ok: true }           destroy the run's views + partition
- * `label` names the tab in the panel's strip (a login tab carries its app name).
+ * `label` names the tab in the panel's strip (a login tab carries its app name). `loginKey`
+ * (AUTH-6) marks a tab as an actual sign-in tab — never set on a judge/prover probe tab — so the
+ * renderer can show an "I'm done signing in" action on it; the raw key never reaches the renderer,
+ * only a boolean (see browser_panel.js's _describeTab).
  */
 const http = require("http");
 const crypto = require("crypto");
@@ -59,11 +63,11 @@ function start() {
   });
 }
 
-async function _dispatch({ op, runId, tabId, label, focus }) {
+async function _dispatch({ op, runId, tabId, label, focus, loginKey }) {
   if (!runId) throw new Error("missing runId");
   switch (op) {
-    case "new_view":   return panel.newView(runId, { label, focus });
-    case "new_tab":    return panel.newTab(runId, { label, focus });
+    case "new_view":   return panel.newView(runId, { label, focus, loginKey });
+    case "new_tab":    return panel.newTab(runId, { label, focus, loginKey });
     case "close_view":
       if (!tabId) throw new Error("missing tabId");
       await panel.closeTab(runId, tabId);

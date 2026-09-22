@@ -5,6 +5,14 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const Module = require("module");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+
+// AUTH-6: loginDone writes a real file — point CONXA_DIR at a throwaway temp dir so this
+// test never touches a developer's actual ~/.conxa.
+const _tmpConxaDir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-execute-browser-panel-test-"));
+process.env.CONXA_DIR = _tmpConxaDir;
 
 const cleared = [];
 class FakeWebContents {
@@ -111,4 +119,23 @@ test("a tab added to a run for a login (new_tab) can ask the renderer to take fo
   assert.deepStrictEqual(last.meta, { focus: true });
   panel.newTab("run-tabfocus", { label: "quiet" });
   assert.strictEqual(last.meta, undefined, "an ordinary tab (or a probe) must not steal focus");
+});
+
+test("AUTH-6: a tab created with loginKey is described as isLogin; one without is not", () => {
+  const { tabId: loginTabId } = panel.newView("run-authkey", { label: "AppA", loginKey: "ws__app_a" });
+  assert.strictEqual(last.tabs.find((t) => t.id === loginTabId).isLogin, true);
+  const { tabId: probeTabId } = panel.newTab("run-authkey", { label: "verify", focus: false });
+  assert.strictEqual(last.tabs.find((t) => t.id === probeTabId).isLogin, false, "a probe tab (no loginKey) is never shown a Done action");
+});
+
+test("AUTH-6: loginDone writes the file-drop signal for a real login tab, and no-ops otherwise", () => {
+  const { tabId: loginTabId } = panel.newView("run-authdone", { label: "AppB", loginKey: "ws__app_b" });
+  const result = panel.loginDone("run-authdone", loginTabId);
+  assert.deepStrictEqual(result, { ok: true });
+  const file = path.join(_tmpConxaDir, "login-done", "ws__app_b.cmd");
+  assert.ok(fs.existsSync(file), "the signal file browser.js's _checkHumanOverride watches for must exist");
+
+  const { tabId: probeTabId } = panel.newTab("run-authdone", { label: "verify" });
+  assert.deepStrictEqual(panel.loginDone("run-authdone", probeTabId), { ok: false }, "never fires for a non-login tab");
+  assert.deepStrictEqual(panel.loginDone("run-authdone", "nope"), { ok: false }, "an unknown tab id is a no-op, not a throw");
 });

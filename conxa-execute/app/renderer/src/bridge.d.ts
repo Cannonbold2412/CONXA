@@ -37,6 +37,9 @@ export type PanelTab = {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
+  // AUTH-6: true only for an actual sign-in tab (never a judge/prover probe tab) — the UI hint
+  // for showing an "I'm done signing in" action; the real key stays server-side.
+  isLogin: boolean;
 };
 
 export type PanelNavAction = "back" | "forward" | "reload" | "stop" | "load";
@@ -89,6 +92,7 @@ export type Bridge = {
     closeTab: (p: { runId: string; tabId: string }) => Promise<{ ok: boolean }>;
     navigate: (p: { runId: string; tabId: string; action: PanelNavAction; url?: string }) => Promise<{ ok: boolean }>;
     newTab: (p: { runId: string }) => Promise<{ ok: boolean }>;
+    loginDone: (p: { runId: string; tabId: string }) => Promise<{ ok: boolean; error?: string }>;
     onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[]; focus?: boolean }) => void) => () => void;
   };
   windowControls: {

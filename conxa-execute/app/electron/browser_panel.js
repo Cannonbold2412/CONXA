@@ -15,6 +15,10 @@
  */
 const { session, WebContentsView } = require("electron");
 const crypto = require("crypto");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { resolveRuntimeCommand } = require("./runtime_path");
 
 // runId -> { partition, tabs: [{ id, view, markerUrl }], activeTabId }
 const _runs = new Map();
@@ -58,6 +62,9 @@ function _describeTab(run, t) {
     canGoBack: !wc.isDestroyed() && wc.navigationHistory.canGoBack(),
     canGoForward: !wc.isDestroyed() && wc.navigationHistory.canGoForward(),
     loading: !wc.isDestroyed() && wc.isLoading(),
+    // AUTH-6: a UI hint only — the raw key (below) never reaches the renderer, just whether
+    // this tab is an actual sign-in tab worth showing an "I'm done signing in" action on.
+    isLogin: Boolean(t.loginKey),
   };
 }
 
@@ -73,7 +80,7 @@ function _emitTabsChanged(runId, meta) {
 // becomes the active one and the renderer is told — this is the only place that happens, so a
 // window.open() popup (an OAuth "Sign in with Google" leg) is shown exactly like a tab the
 // runtime asked for, instead of sitting at 0x0 unannounced.
-function _createTab(run, runId, label, meta) {
+function _createTab(run, runId, label, meta, loginKey) {
   const tabId = crypto.randomBytes(4).toString("hex");
   const view = new WebContentsView({
     webPreferences: { partition: run.partition, sandbox: true },
@@ -93,7 +100,7 @@ function _createTab(run, runId, label, meta) {
   }
   view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // hidden until the renderer reports a rect
   view.webContents.loadURL(_markerUrl(runId, tabId)).catch(() => {});
-  run.tabs.push({ id: tabId, view, markerUrl: _markerUrl(runId, tabId), label: label || null });
+  run.tabs.push({ id: tabId, view, markerUrl: _markerUrl(runId, tabId), label: label || null, loginKey: loginKey || null });
   if (_win) _win.contentView.addChildView(view);
   run.activeTabId = tabId;
   _emitTabsChanged(runId, meta);
@@ -101,24 +108,51 @@ function _createTab(run, runId, label, meta) {
 }
 
 // Control-channel op: "new_view" — first tab of a run. Returns the marker URL the
-// runtime waits for (host_browser.js::_findPageByMarker).
-function newView(runId, { label, focus } = {}) {
+// runtime waits for (host_browser.js::_findPageByMarker). `loginKey` (AUTH-6) is set only for an
+// actual sign-in tab, never a judge/prover probe tab — see browser_control.js's op doc.
+function newView(runId, { label, focus, loginKey } = {}) {
   let run = _runs.get(runId);
   if (!run) {
     run = { partition: _partitionFor(runId), tabs: [], activeTabId: null };
     _runs.set(runId, run);
   }
-  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined);
+  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined, loginKey);
   return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
 }
 
 // Control-channel op: "new_tab" — a tab_open step's second (or later) tab, or a sign-in / probe tab
 // of a browser session, in a run that already has a panel open. `focus` is set for a sign-in.
-function newTab(runId, { label, focus } = {}) {
+function newTab(runId, { label, focus, loginKey } = {}) {
   const run = _runs.get(runId);
   if (!run) throw new Error(`browser_panel: no run ${runId} to add a tab to`);
-  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined);
+  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined, loginKey);
   return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
+}
+
+// AUTH-6: the renderer's "I'm done signing in" button, wired through panel:login-done in main.js.
+// Looks up the tab's own loginKey (never trusting the renderer to know or send it — see
+// _describeTab's isLogin comment) and writes the same file-drop signal the CLI subcommand and
+// browser.js's _checkHumanOverride agree on: <CONXA_DIR>/login-done/<key>.cmd, existence-only,
+// same accepted local-trust model as handover.js's own resume file. A no-op for any tab that
+// isn't a real sign-in tab.
+function _conxaDir() {
+  if (process.env.CONXA_DIR) return process.env.CONXA_DIR;
+  const cmd = resolveRuntimeCommand();
+  if (cmd && cmd.conxaDir) return cmd.conxaDir;
+  return path.join(os.homedir(), ".conxa");
+}
+function loginDone(runId, tabId) {
+  const run = _runs.get(runId);
+  const tab = run && run.tabs.find((t) => t.id === tabId);
+  if (!tab || !tab.loginKey) return { ok: false };
+  try {
+    const dir = path.join(_conxaDir(), "login-done");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${tab.loginKey}.cmd`), "done");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 // Close ONE view. A login finishing (or the user hitting ×) must not take its sibling
@@ -204,4 +238,4 @@ function setActiveBounds(runId, tabId, rect) {
   run.activeTabId = tabId;
 }
 
-module.exports = { init, newView, newTab, closeTab, navigate, runEnd, setActiveBounds };
+module.exports = { init, newView, newTab, closeTab, navigate, runEnd, setActiveBounds, loginDone };
