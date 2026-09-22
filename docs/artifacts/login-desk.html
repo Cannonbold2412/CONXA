@@ -1,0 +1,1115 @@
+<title>The Login Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --bg: #f4f6f8;
+  --surface: #ffffff;
+  --ink: #152029;
+  --ink-2: #4a5763;
+  --muted: #6f7b87;
+  --line: #d8dee4;
+  --accent: #1d4e89;
+  --accent-soft: #e3ecf7;
+  --good: #0f7a3d;
+  --good-soft: #e2f3e8;
+  --bad: #b3261e;
+  --bad-soft: #fbe6e4;
+  --warn: #8a5a00;
+  --warn-soft: #fbf0d9;
+  --s-journey: #2a78d6;
+  --s-pw: #eb6834;
+  --s-tickets: #1baf7a;
+  --s-judge: #4a3aa7;
+  --s-time: #008300;
+  --s-prove: #e87ba4;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161b; --surface: #182028; --ink: #e8edf2; --ink-2: #aab6c2; --muted: #85919d;
+    --line: #2a3540; --accent: #7fb0ec; --accent-soft: #1b2c42;
+    --good: #5cc98a; --good-soft: #15291e; --bad: #f08a82; --bad-soft: #33191a; --warn: #e8b85c; --warn-soft: #2e2512;
+    --s-journey: #3987e5; --s-pw: #d95926; --s-tickets: #199e70; --s-judge: #9085e9; --s-time: #008300; --s-prove: #d55181;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161b; --surface: #182028; --ink: #e8edf2; --ink-2: #aab6c2; --muted: #85919d;
+  --line: #2a3540; --accent: #7fb0ec; --accent-soft: #1b2c42;
+  --good: #5cc98a; --good-soft: #15291e; --bad: #f08a82; --bad-soft: #33191a; --warn: #e8b85c; --warn-soft: #2e2512;
+  --s-journey: #3987e5; --s-pw: #d95926; --s-tickets: #199e70; --s-judge: #9085e9; --s-time: #008300; --s-prove: #d55181;
+}
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 17px/1.6 var(--body); }
+.wrap { max-width: 940px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 80px; }
+h1, h2, h3 { font-family: var(--display); line-height: 1.15; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2.2rem, 6vw, 3.6rem); font-weight: 800; letter-spacing: -0.02em; }
+h2 { font-size: clamp(1.5rem, 3.4vw, 2rem); font-weight: 800; letter-spacing: -0.01em; }
+h3 { font-size: 1.15rem; font-weight: 600; }
+p { margin: 0; max-width: 65ch; }
+.eyebrow { font: 600 12px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.lede { font-size: 1.2rem; color: var(--ink-2); }
+section { display: grid; gap: 18px; padding-block: 44px; border-top: 1px solid var(--line); }
+header { display: grid; gap: 16px; padding-bottom: 36px; }
+.mono { font-family: var(--mono); font-size: .88em; }
+.muted { color: var(--muted); }
+.given { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.chip { font: 600 14px var(--mono); padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); }
+.chip.yes { border-color: var(--good); color: var(--good); background: var(--good-soft); }
+.chip.no { border-color: var(--line); color: var(--muted); text-decoration: line-through; }
+
+figure { margin: 0; display: grid; gap: 10px; }
+figcaption { font-size: .92rem; color: var(--ink-2); max-width: 70ch; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 12px; }
+.scroll svg { display: block; width: 100%; min-width: 660px; height: auto; color: var(--ink); }
+
+/* SVG diagram vocabulary */
+.box { fill: var(--surface); stroke: currentColor; stroke-width: 1.4; }
+.box-soft { fill: var(--bg); stroke: var(--muted); stroke-width: 1.4; stroke-dasharray: 5 4; }
+.box-save { fill: var(--good-soft); stroke: var(--good); stroke-width: 2; }
+.box-new { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+.box-warn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.6; }
+.box-bad { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 1.6; }
+.edge { stroke: currentColor; stroke-width: 1.5; fill: none; }
+.edge-dash { stroke: var(--muted); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+.t { fill: currentColor; font: 600 13px var(--body); }
+.t-sm { fill: var(--ink-2); font: 12px var(--body); }
+.t-lbl { fill: var(--ink-2); font: 600 11.5px var(--mono); }
+.t-row { fill: var(--accent); font: 600 12px var(--mono); letter-spacing: .08em; }
+.t-host { fill: currentColor; font: 600 13px var(--mono); }
+
+/* roles */
+.roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
+.role { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 8px; align-content: start; }
+.role .tag { font: 600 11px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.role ul { margin: 0; padding-left: 18px; color: var(--ink-2); font-size: .95rem; display: grid; gap: 4px; }
+.role p { font-size: .95rem; color: var(--ink-2); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; flex: none; }
+
+/* simulator */
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tabs button, .btn {
+  font: 600 14px var(--body); color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; cursor: pointer;
+}
+.tabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.sim-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.outcomes { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.outcome { border-radius: 10px; padding: 14px 16px; display: grid; gap: 4px; border: 1px solid; }
+.outcome .k { font: 600 11px/1 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.outcome.ok { background: var(--good-soft); border-color: var(--good); }
+.outcome.ok .k { color: var(--good); }
+.outcome.bad { background: var(--bad-soft); border-color: var(--bad); }
+.outcome.bad .k { color: var(--bad); }
+.outcome.warn { background: var(--warn-soft); border-color: var(--warn); }
+.outcome.warn .k { color: var(--warn); }
+.story { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.story li { display: grid; grid-template-columns: 58px 18px 1fr; gap: 8px; align-items: baseline; font-size: .95rem; padding: 6px 10px; border-radius: 8px; transition: opacity .25s; }
+.story li .time { font: 600 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.story li.future { opacity: .28; }
+.story li.now { background: var(--accent-soft); }
+.chart-event:focus { outline: none; }
+.chart-event:focus-visible .hit { stroke: var(--accent); stroke-width: 2; }
+.tip { position: fixed; pointer-events: none; z-index: 10; background: var(--ink); color: var(--bg); font-size: 13px; line-height: 1.4; padding: 8px 10px; border-radius: 8px; max-width: 280px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: .88rem; color: var(--ink-2); }
+.legend svg { vertical-align: -3px; margin-right: 6px; color: var(--ink); }
+
+/* coverage grid */
+.grid-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table.cov { border-collapse: collapse; width: 100%; min-width: 760px; font-size: .92rem; }
+.cov th, .cov td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: center; }
+.cov th { font: 600 11px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--muted); vertical-align: bottom; }
+.cov th .dot { display: block; margin: 0 auto 6px; }
+.cov td:first-child, .cov th:first-child { text-align: left; font: 600 14px var(--body); color: var(--ink); text-transform: none; letter-spacing: 0; padding-left: 14px; }
+.cov tr:last-child td { border-bottom: 0; }
+.cov td.cell { font-size: 17px; line-height: 1; color: var(--ink); cursor: default; }
+.cov td.cell.none { color: var(--line); }
+.cov td.sep { border-left: 1px solid var(--line); }
+.res { font: 600 12px var(--mono); padding: 3px 8px; border-radius: 999px; white-space: nowrap; }
+.res.ok { color: var(--good); background: var(--good-soft); }
+.res.bad { color: var(--bad); background: var(--bad-soft); }
+.res.warn { color: var(--warn); background: var(--warn-soft); }
+.cov td.cell:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+/* ladder + tester */
+.ladder { display: grid; gap: 10px; }
+.rung { display: grid; grid-template-columns: 130px 1fr; gap: 14px; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.rung .lvl { font: 600 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.rung.best .lvl { color: var(--good); }
+.rung.ok .lvl { color: var(--accent); }
+.rung.human .lvl { color: var(--warn); }
+.rung.no .lvl { color: var(--bad); }
+.tester { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 16px; }
+.tester fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 8px; }
+.tester legend { font-weight: 700; margin-bottom: 6px; padding: 0; }
+.checks { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.checks label { display: inline-flex; gap: 8px; align-items: center; cursor: pointer; }
+.checks input { width: 18px; height: 18px; accent-color: var(--accent); }
+.verdict { border-radius: 10px; padding: 14px 16px; font-size: 1.02rem; border: 1px solid var(--line); background: var(--bg); }
+.verdict strong { display: block; font-family: var(--display); font-size: 1.2rem; margin-bottom: 2px; }
+.verdict.good { border-color: var(--good); background: var(--good-soft); }
+.verdict.good strong { color: var(--good); }
+.verdict.wait { border-color: var(--accent); background: var(--accent-soft); }
+.verdict.wait strong { color: var(--accent); }
+.verdict.bad { border-color: var(--bad); background: var(--bad-soft); }
+.verdict.bad strong { color: var(--bad); }
+.verdict.warn { border-color: var(--warn); background: var(--warn-soft); }
+.verdict.warn strong { color: var(--warn); }
+
+/* tables */
+.tbl-wrap { overflow-x: auto; }
+table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; background: var(--surface); border: 1px solid var(--line); }
+.plain th, .plain td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.plain th { font: 600 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.plain tr:last-child td { border-bottom: 0; }
+.plain td:first-child { font-weight: 700; }
+
+.safety { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; }
+.safety > div { border-top: 1px solid var(--ink-2); padding-top: 12px; display: grid; gap: 4px; }
+.safety p { font-size: .95rem; color: var(--ink-2); }
+.phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; }
+.phase { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: grid; gap: 8px; align-content: start; }
+.phase ul { margin: 0; padding-left: 18px; color: var(--ink-2); display: grid; gap: 3px; }
+.pill { display: inline-block; justify-self: start; font: 600 12px var(--mono); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.pill.now { background: var(--good-soft); color: var(--good); }
+.pill.later { background: var(--accent-soft); color: var(--accent); }
+.oneline { font-family: var(--display); font-size: clamp(1.3rem, 3vw, 1.7rem); font-weight: 600; line-height: 1.35; max-width: 42ch; }
+
+@media (max-width: 520px) {
+  body { font-size: 16px; }
+  .rung { grid-template-columns: 1fr; gap: 4px; }
+  .story li { grid-template-columns: 50px 16px 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .story li { transition: none; } }
+</style>
+
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">Conxa · runtime sign-in</span>
+  <h1>The Login Desk</h1>
+  <p class="lede">When a customer signs in through Conxa, how do we <em>know</em> they're done, so we can save the login and close the window ourselves? And how do we do it when the only thing we're given is the login address?</p>
+  <div class="given" aria-label="What each app gives us">
+    <span class="muted">Each app gives us:</span>
+    <span class="chip yes">✓ login address</span>
+    <span class="chip no">target address</span>
+  </div>
+  <p class="muted">The target page is often a completely different website, changes over time, or depends on the account. So nothing on this page relies on it.</p>
+</header>
+
+<section aria-labelledby="today">
+  <span class="eyebrow">Where we are</span>
+  <h2 id="today">Today we guess from the address bar</h2>
+  <p>Every 1.5 seconds we look at the web address. Once it stops looking like a login page, we assume the sign-in worked, wait 1.5 seconds, save and close. It's like guessing someone checked in because you saw them walk past reception. Usually right, but pop-up logins, texted codes and slow sites all fool it.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 900 210" role="img" aria-label="Today: address stops looking like login, wait 1.5 seconds, save. New: lookouts give a hint, the website confirms by bouncing us off its own login page, wait for calm, then save and prove the saved login works.">
+        <defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+        <text class="t-row" x="20" y="30">TODAY</text>
+        <rect class="box" x="20" y="44" width="220" height="50" rx="8"/>
+        <text class="t" x="130" y="67" text-anchor="middle">Address stops looking</text>
+        <text class="t" x="130" y="84" text-anchor="middle">like a login page</text>
+        <line class="edge" x1="240" y1="69" x2="318" y2="69" marker-end="url(#a1)"/>
+        <text class="t-lbl" x="279" y="61" text-anchor="middle">guess</text>
+        <rect class="box" x="320" y="44" width="160" height="50" rx="8"/>
+        <text class="t" x="400" y="74" text-anchor="middle">Wait 1.5 s</text>
+        <line class="edge" x1="480" y1="69" x2="738" y2="69" marker-end="url(#a1)"/>
+        <rect class="box-save" x="740" y="44" width="140" height="50" rx="8"/>
+        <text class="t" x="810" y="74" text-anchor="middle">Save &amp; close</text>
+
+        <text class="t-row" x="20" y="130">NEW</text>
+        <rect class="box-new" x="20" y="144" width="160" height="50" rx="8"/>
+        <text class="t" x="100" y="167" text-anchor="middle">Lookouts</text>
+        <text class="t-sm" x="100" y="184" text-anchor="middle">something happened</text>
+        <line class="edge" x1="180" y1="169" x2="218" y2="169" marker-end="url(#a1)"/>
+        <rect class="box-new" x="220" y="144" width="220" height="50" rx="8"/>
+        <text class="t" x="330" y="167" text-anchor="middle">Website confirms</text>
+        <text class="t-sm" x="330" y="184" text-anchor="middle">bounces us off its login page</text>
+        <line class="edge" x1="440" y1="169" x2="478" y2="169" marker-end="url(#a1)"/>
+        <text class="t-lbl" x="459" y="161" text-anchor="middle">yes</text>
+        <rect class="box-new" x="480" y="144" width="140" height="50" rx="8"/>
+        <text class="t" x="550" y="174" text-anchor="middle">Wait for calm</text>
+        <line class="edge" x1="620" y1="169" x2="738" y2="169" marker-end="url(#a1)"/>
+        <rect class="box-save" x="740" y="144" width="140" height="50" rx="8"/>
+        <text class="t" x="810" y="167" text-anchor="middle">Save, prove</text>
+        <text class="t-sm" x="810" y="184" text-anchor="middle">&amp; close</text>
+      </svg>
+    </div>
+    <figcaption>Same start, same finish. The guess becomes a hint, the website itself confirms, and the save is proven before the window closes.</figcaption>
+  </figure>
+</section>
+
+<section aria-labelledby="trick">
+  <span class="eyebrow">The key trick</span>
+  <h2 id="trick">Ask for the login page again</h2>
+  <p>Most websites send a logged-in person straight past their own login page. Open <span class="mono">/login</span> while already signed in, and you get bounced to your dashboard. So we don't need to know where the app lives. We just ask for the login address twice, once before and once after, and compare.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 900 270" role="img" aria-label="Before sign-in, asking for the login address returns the login form. After sign-in, the same request bounces to the dashboard, which means logged in. A few sites show the form to everyone, so the answer is can't tell and the backup rule takes over.">
+        <defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+        <!-- column heads -->
+        <text class="t-lbl" x="110" y="18" text-anchor="middle">WE ASK</text>
+        <text class="t-lbl" x="450" y="18" text-anchor="middle">THE WEBSITE</text>
+        <text class="t-lbl" x="760" y="18" text-anchor="middle">WHAT WE LEARN</text>
+        <!-- row 1 -->
+        <text class="t-row" x="20" y="48">BEFORE SIGN-IN</text>
+        <rect class="box" x="20" y="58" width="180" height="46" rx="8"/>
+        <text class="t-host" x="110" y="86" text-anchor="middle">GET /login</text>
+        <line class="edge" x1="200" y1="81" x2="368" y2="81" marker-end="url(#a2)"/>
+        <text class="t-lbl" x="284" y="73" text-anchor="middle">no tickets yet</text>
+        <rect class="box" x="370" y="58" width="160" height="46" rx="8"/>
+        <text class="t" x="450" y="86" text-anchor="middle">shows login form</text>
+        <line class="edge" x1="530" y1="81" x2="648" y2="81" marker-end="url(#a2)"/>
+        <rect class="box-new" x="650" y="58" width="230" height="46" rx="8"/>
+        <text class="t" x="765" y="78" text-anchor="middle">"Logged out" snapshot</text>
+        <text class="t-sm" x="765" y="95" text-anchor="middle">noted for comparison</text>
+        <!-- row 2 -->
+        <text class="t-row" x="20" y="136">AFTER SIGN-IN</text>
+        <rect class="box" x="20" y="146" width="180" height="46" rx="8"/>
+        <text class="t-host" x="110" y="174" text-anchor="middle">GET /login</text>
+        <line class="edge" x1="200" y1="169" x2="368" y2="169" marker-end="url(#a2)"/>
+        <text class="t-lbl" x="284" y="161" text-anchor="middle">window's tickets</text>
+        <rect class="box" x="370" y="146" width="160" height="46" rx="8"/>
+        <text class="t" x="450" y="166" text-anchor="middle">bounces you to</text>
+        <text class="t-host" x="450" y="183" text-anchor="middle">/dashboard</text>
+        <line class="edge" x1="530" y1="169" x2="648" y2="169" marker-end="url(#a2)"/>
+        <text class="t-lbl" x="589" y="161" text-anchor="middle">different</text>
+        <rect class="box-save" x="650" y="146" width="230" height="46" rx="8"/>
+        <text class="t" x="765" y="174" text-anchor="middle">Yes, logged in</text>
+        <!-- row 3 -->
+        <text class="t-row" x="20" y="224">A FEW SITES</text>
+        <rect class="box" x="20" y="234" width="180" height="30" rx="8"/>
+        <text class="t-host" x="110" y="254" text-anchor="middle">GET /login</text>
+        <line class="edge-dash" x1="200" y1="249" x2="368" y2="249"/>
+        <rect class="box-soft" x="370" y="234" width="160" height="30" rx="8"/>
+        <text class="t-sm" x="450" y="254" text-anchor="middle">login form, always</text>
+        <line class="edge-dash" x1="530" y1="249" x2="648" y2="249"/>
+        <text class="t-lbl" x="589" y="241" text-anchor="middle">same</text>
+        <rect class="box-warn" x="650" y="234" width="230" height="30" rx="8"/>
+        <text class="t" x="765" y="254" text-anchor="middle">Can't tell → backup rule</text>
+      </svg>
+    </div>
+    <figcaption>The judge compares two answers from the website itself, using only the login address. The same trick checks an old login before each run.</figcaption>
+  </figure>
+</section>
+
+<section aria-labelledby="journey">
+  <span class="eyebrow">Finding the app without being told</span>
+  <h2 id="journey">Follow the journey, skip the sign-in services</h2>
+  <p>We record every website the login tab visits. Well-known sign-in services (Google, Microsoft, Okta, Auth0, Apple, GitHub's sign-in pages) never count as "arrived". The <strong>first stop after the login page and those services</strong> is the app, even if it's a completely different website from the login address.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 900 190" role="img" aria-label="Login journey: login.acme.com, then accounts.google.com which is a known sign-in service and is skipped, then app.acme-cloud.io which is the first stop after, so it's the app. It is remembered for pre-run checks.">
+        <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+        <rect class="box-new" x="20" y="40" width="220" height="56" rx="8"/>
+        <text class="t-host" x="130" y="64" text-anchor="middle">login.acme.com</text>
+        <text class="t-sm" x="130" y="83" text-anchor="middle">the address we're given</text>
+        <line class="edge" x1="240" y1="68" x2="328" y2="68" marker-end="url(#a3)"/>
+        <text class="t-lbl" x="284" y="58" text-anchor="middle">"Sign in</text>
+        <text class="t-lbl" x="284" y="88" text-anchor="middle">with Google"</text>
+        <rect class="box-soft" x="330" y="40" width="240" height="56" rx="8"/>
+        <text class="t-host" x="450" y="64" text-anchor="middle">accounts.google.com</text>
+        <text class="t-sm" x="450" y="83" text-anchor="middle">known sign-in service: skipped</text>
+        <line class="edge" x1="570" y1="68" x2="658" y2="68" marker-end="url(#a3)"/>
+        <text class="t-lbl" x="614" y="58" text-anchor="middle">approved</text>
+        <rect class="box-save" x="660" y="40" width="220" height="56" rx="8"/>
+        <text class="t-host" x="770" y="64" text-anchor="middle">app.acme-cloud.io</text>
+        <text class="t-sm" x="770" y="83" text-anchor="middle">first stop after: the app</text>
+        <line class="edge" x1="770" y1="96" x2="770" y2="138" marker-end="url(#a3)"/>
+        <text class="t-lbl" x="780" y="122">remembered</text>
+        <rect class="box" x="600" y="140" width="280" height="40" rx="8"/>
+        <text class="t" x="740" y="165" text-anchor="middle">Saved with the login for next time</text>
+      </svg>
+    </div>
+    <figcaption>The target address is learned from the customer's first real sign-in instead of being typed in.</figcaption>
+  </figure>
+</section>
+
+<section aria-labelledby="cast">
+  <span class="eyebrow">The cast</span>
+  <h2 id="cast">Who works at the desk</h2>
+  <p>Each part has exactly one job. Lookouts only raise their hand. Only the judge (or, as a last resort, the customer) can say "logged in". Only the timekeeper can save.</p>
+  <div class="roles">
+    <div class="role">
+      <span class="tag">Lookouts · "something happened"</span>
+      <ul>
+        <li><span class="dot" style="background:var(--s-journey)"></span><strong>Journey</strong>: left the login page and the sign-in services</li>
+        <li><span class="dot" style="background:var(--s-pw)"></span><strong>Password box</strong>: was on screen, now gone from every tab and frame</li>
+        <li><span class="dot" style="background:var(--s-tickets)"></span><strong>Tickets</strong>: new login cookies, or a new token in the page's memory</li>
+      </ul>
+      <p class="muted">All three work on any website, in any language, from day one.</p>
+    </div>
+    <div class="role">
+      <span class="tag">Pause sign · "not finished yet"</span>
+      <p>Spots screens that mean the sign-in is still going: a short box for a texted code, "choose an account", "approve on your phone", "trust this device?", a CAPTCHA. It reads how the page is built, not its words. While it's up, <strong>lookouts don't count</strong>.</p>
+    </div>
+    <div class="role">
+      <span class="tag"><span class="dot" style="background:var(--s-judge)"></span>Judge · "is this person logged in?"</span>
+      <p>Asks for the login address again in the background, with the window's tickets, and compares it with the "before" snapshot. Only asks when a lookout raises a hand, so the site doesn't get suspicious.</p>
+    </div>
+    <div class="role">
+      <span class="tag"><span class="dot" style="background:var(--s-time)"></span>Timekeeper · "is it calm?"</span>
+      <p>After a yes, checks every half second whether the tickets are still changing. Same twice in a row means save. Still changing after 5 seconds means save anyway, because some sites never go quiet.</p>
+    </div>
+    <div class="role">
+      <span class="tag"><span class="dot" style="background:var(--s-prove)"></span>Prover · "does the save work?"</span>
+      <p>Right after saving, tries the saved login in a fresh background check. If it doesn't work, the customer is told <em>now</em>, not on their next run.</p>
+    </div>
+    <div class="role">
+      <span class="tag">The customer · last resort</span>
+      <p>If the signals are still unclear after about 25 seconds, Conxa Execute's own panel shows an <strong>"I'm done signing in"</strong> button. It's never injected into the website, and nobody gets stuck.</p>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="record">
+  <span class="eyebrow">Step 1 of 2 · once</span>
+  <h2 id="record">What happens during recording</h2>
+  <p>Everything above runs on a customer's machine, every time. But it only has a login address to work with because someone typed one in first. That happens once, ahead of time, inside Build Studio — the tool the company (not the customer) uses to build the skill.</p>
+  <p>A person on the company's team opens the app's settings and fills in two boxes: a <strong>name</strong> (say, "Salesforce") and a <strong>login address</strong> — where the sign-in page lives. A third box, <strong>Success URL</strong>, is marked optional on purpose, because the page you land on after signing in is often unpredictable: a different website entirely, a page that depends on the account, or one that changes when the app is redesigned. Most teams leave it blank, which is exactly the situation this whole design is built to handle well.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 920 280" role="img" aria-label="Recording: Build Studio opens a real browser at the login address and the person signs in by hand. If a success address was given and reached, save. If none was given, saving instead once the browser leaves the login site's own website. If neither happens, save anyway once the window is closed by hand, with a warning flagged for the team to check. Every path ends with the login address stored on the app.">
+        <defs><marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+
+        <text class="t-row" x="20" y="20">SUCCESS ADDRESS GIVEN &amp; REACHED</text>
+        <rect class="box-new" x="20" y="30" width="150" height="50" rx="8"/>
+        <text class="t" x="95" y="52" text-anchor="middle">Add app</text>
+        <text class="t-sm" x="95" y="69" text-anchor="middle">name + login address</text>
+        <line class="edge" x1="170" y1="55" x2="208" y2="55" marker-end="url(#a5)"/>
+        <rect class="box" x="210" y="30" width="160" height="50" rx="8"/>
+        <text class="t" x="290" y="52" text-anchor="middle">Browser opens</text>
+        <text class="t-sm" x="290" y="69" text-anchor="middle">at the login address</text>
+        <line class="edge" x1="370" y1="55" x2="408" y2="55" marker-end="url(#a5)"/>
+        <rect class="box" x="410" y="30" width="140" height="50" rx="8"/>
+        <text class="t" x="480" y="59" text-anchor="middle">Person signs in</text>
+        <line class="edge" x1="550" y1="55" x2="608" y2="55" marker-end="url(#a5)"/>
+        <text class="t-lbl" x="579" y="47" text-anchor="middle">reaches it</text>
+        <rect class="box" x="610" y="30" width="180" height="50" rx="8"/>
+        <text class="t" x="700" y="52" text-anchor="middle">Success address seen</text>
+        <text class="t-sm" x="700" y="69" text-anchor="middle">the browser's own address matches</text>
+        <line class="edge" x1="790" y1="55" x2="808" y2="55" marker-end="url(#a5)"/>
+        <rect class="box-save" x="810" y="30" width="90" height="50" rx="8"/>
+        <text class="t" x="855" y="59" text-anchor="middle">Saved</text>
+
+        <text class="t-row" x="20" y="112">NO SUCCESS ADDRESS GIVEN</text>
+        <rect class="box-new" x="20" y="122" width="150" height="50" rx="8"/>
+        <text class="t" x="95" y="144" text-anchor="middle">Add app</text>
+        <text class="t-sm" x="95" y="161" text-anchor="middle">name + login address only</text>
+        <line class="edge" x1="170" y1="147" x2="208" y2="147" marker-end="url(#a5)"/>
+        <rect class="box" x="210" y="122" width="160" height="50" rx="8"/>
+        <text class="t" x="290" y="144" text-anchor="middle">Browser opens</text>
+        <text class="t-sm" x="290" y="161" text-anchor="middle">at the login address</text>
+        <line class="edge" x1="370" y1="147" x2="408" y2="147" marker-end="url(#a5)"/>
+        <rect class="box" x="410" y="122" width="140" height="50" rx="8"/>
+        <text class="t" x="480" y="151" text-anchor="middle">Person signs in</text>
+        <line class="edge" x1="550" y1="147" x2="608" y2="147" marker-end="url(#a5)"/>
+        <text class="t-lbl" x="579" y="139" text-anchor="middle">leaves</text>
+        <rect class="box" x="610" y="122" width="180" height="50" rx="8"/>
+        <text class="t" x="700" y="144" text-anchor="middle">Left the login site</text>
+        <text class="t-sm" x="700" y="161" text-anchor="middle">a simpler version of "journey"</text>
+        <line class="edge" x1="790" y1="147" x2="808" y2="147" marker-end="url(#a5)"/>
+        <rect class="box-save" x="810" y="122" width="90" height="50" rx="8"/>
+        <text class="t" x="855" y="151" text-anchor="middle">Saved</text>
+
+        <text class="t-row" x="20" y="204">NEITHER HAPPENS</text>
+        <rect class="box-new" x="20" y="214" width="150" height="50" rx="8"/>
+        <text class="t" x="95" y="236" text-anchor="middle">Add app</text>
+        <text class="t-sm" x="95" y="253" text-anchor="middle">name + login address</text>
+        <line class="edge" x1="170" y1="239" x2="208" y2="239" marker-end="url(#a5)"/>
+        <rect class="box" x="210" y="214" width="160" height="50" rx="8"/>
+        <text class="t" x="290" y="236" text-anchor="middle">Browser opens</text>
+        <text class="t-sm" x="290" y="253" text-anchor="middle">at the login address</text>
+        <line class="edge" x1="370" y1="239" x2="408" y2="239" marker-end="url(#a5)"/>
+        <rect class="box" x="410" y="214" width="140" height="50" rx="8"/>
+        <text class="t" x="480" y="243" text-anchor="middle">Person signs in</text>
+        <line class="edge" x1="550" y1="239" x2="608" y2="239" marker-end="url(#a5)"/>
+        <text class="t-lbl" x="579" y="231" text-anchor="middle">closes it</text>
+        <rect class="box-warn" x="610" y="214" width="180" height="50" rx="8"/>
+        <text class="t" x="700" y="236" text-anchor="middle">Window closed by hand</text>
+        <text class="t-sm" x="700" y="253" text-anchor="middle">⚠ flagged for the team to check</text>
+        <line class="edge" x1="790" y1="239" x2="808" y2="239" marker-end="url(#a5)"/>
+        <rect class="box-save" x="810" y="214" width="90" height="50" rx="8"/>
+        <text class="t" x="855" y="243" text-anchor="middle">Saved</text>
+      </svg>
+    </div>
+    <figcaption>Three ways a recording session can end. All three save the login — nothing is ever lost by mis-timing — but only the first two happen without a warning.</figcaption>
+  </figure>
+  <p>This is a lighter cousin of everything on this page: recording only needs two of the simplest checks, because a technical person is sitting right there and can notice if something looks wrong. Runtime can't lean on that — a customer isn't watching for a warning message, so it needs the fuller set of checks described below.</p>
+  <div class="tbl-wrap">
+    <table class="plain">
+      <thead><tr><th>What's typed in</th><th>Required?</th><th>What runtime does with it</th></tr></thead>
+      <tbody>
+        <tr><td>Login address</td><td>Yes</td><td>The one thing every customer's runtime is given. Everything on this page works from this alone.</td></tr>
+        <tr><td>Success address</td><td>No — optional</td><td>If present, it's one extra early hint (feeds the journey lookout). If blank, wrong, or unreachable, nothing breaks — runtime never depends on it.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section aria-labelledby="run">
+  <span class="eyebrow">Step 2 of 2 · every time</span>
+  <h2 id="run">What happens at runtime</h2>
+  <p>Every time a customer runs a skill that needs this app, their copy of Conxa reads back exactly one thing from the recording above: the login address. It has no idea what the destination page looks like, and it doesn't need to.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 920 140" role="img" aria-label="Runtime: from recording it receives the login address, required, and an optional success address as a hint. It opens the login address and runs the full five-part detection, detailed in the next section, ending in save and close.">
+        <defs><marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+        <rect class="box-new" x="20" y="30" width="220" height="60" rx="8"/>
+        <text class="t" x="130" y="54" text-anchor="middle">From recording</text>
+        <text class="t-sm" x="130" y="72" text-anchor="middle">login address (required)</text>
+        <text class="t-sm" x="130" y="86" text-anchor="middle">success address (optional hint)</text>
+        <line class="edge" x1="240" y1="60" x2="278" y2="60" marker-end="url(#a6)"/>
+        <text class="t-lbl" x="259" y="50" text-anchor="middle">every sign-in</text>
+        <rect class="box" x="280" y="35" width="180" height="50" rx="8"/>
+        <text class="t" x="370" y="57" text-anchor="middle">Opens the login</text>
+        <text class="t-sm" x="370" y="74" text-anchor="middle">address for the customer</text>
+        <line class="edge" x1="460" y1="60" x2="498" y2="60" marker-end="url(#a6)"/>
+        <rect class="box-new" x="500" y="30" width="260" height="60" rx="8"/>
+        <text class="t" x="630" y="52" text-anchor="middle">Five-part detection</text>
+        <text class="t-sm" x="630" y="69" text-anchor="middle">journey · password box · tickets</text>
+        <text class="t-sm" x="630" y="83" text-anchor="middle">judge · timekeeper · prove</text>
+        <line class="edge" x1="760" y1="60" x2="798" y2="60" marker-end="url(#a6)"/>
+        <text class="t-lbl" x="779" y="50" text-anchor="middle">detailed ↓</text>
+        <rect class="box-save" x="800" y="35" width="100" height="50" rx="8"/>
+        <text class="t" x="850" y="64" text-anchor="middle">Save &amp; close</text>
+      </svg>
+    </div>
+    <figcaption>The one fact recording hands to runtime, and the full detection runtime builds on top of it. The staff named "Five-part detection" here are described in full in "Who works at the desk" above and walked through step by step below.</figcaption>
+  </figure>
+  <p>In detail, moment by moment:</p>
+  <ol class="story" style="list-style:none">
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>1</span><span>Runtime quietly loads the login address in the background — the "before" snapshot. If it already bounces to somewhere that isn't a login form, an old saved login still works: it saves at once and the customer barely sees a window.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>2</span><span>Otherwise it opens a real, visible window at the login address, and the customer signs in exactly as they would anywhere else.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>3</span><span>The pause sign watches for a mid-sign-in screen (a texted code, "choose an account"). While it's up, nothing below counts yet.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>4</span><span>The three lookouts — journey, password box, tickets — watch for any sign the sign-in finished, on any website the sign-in leads to, not just the one typed in during recording.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>5</span><span>The judge asks the login address again in the background and compares it with step 1's snapshot. This is the one check that doesn't need a target address at all.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>6</span><span>The timekeeper waits for the tickets to stop changing, the prover checks the save actually works, and only then does the window close on its own.</span></li>
+  </ol>
+  <p class="muted">The full mechanism, with every branch and backup rule, is diagrammed next.</p>
+</section>
+
+<section aria-labelledby="flow">
+  <span class="eyebrow">The mechanism</span>
+  <h2 id="flow">How it all fits together</h2>
+  <p>Follow the arrows from the top. The only ways into "Save" are "the website said yes", "two lookouts agree and the website can't tell", or "the customer pressed I'm done". And every save is proven before the window closes.</p>
+  <figure>
+    <div class="scroll">
+      <svg viewBox="0 0 900 580" role="img" aria-label="Flow: window opens and the judge takes a before snapshot of the login address. If it already bounces, the old login still works: save at once. Otherwise lookouts watch, paused while a mid sign-in screen shows. Any lookout sends it to the judge. No returns to watching. Yes goes to the timekeeper, then save and prove. If proof works, close; if not, warn the customer now. If the judge can't tell, two lookouts agreeing for 10 seconds goes to the timekeeper; otherwise after 25 seconds the customer gets an I'm done button.">
+        <defs>
+          <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+          <marker id="a4m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#85919d"/></marker>
+        </defs>
+        <!-- top row -->
+        <rect class="box" x="20" y="40" width="150" height="50" rx="8"/>
+        <text class="t" x="95" y="70" text-anchor="middle">Window opens</text>
+        <line class="edge" x1="170" y1="65" x2="208" y2="65" marker-end="url(#a4)"/>
+        <rect x="210" y="40" width="180" height="50" rx="8" style="fill:var(--surface);stroke:var(--s-judge)" stroke-width="2"/>
+        <text class="t" x="300" y="62" text-anchor="middle">"Before" snapshot</text>
+        <text class="t-sm" x="300" y="79" text-anchor="middle">GET /login</text>
+        <line class="edge" x1="390" y1="65" x2="408" y2="65" marker-end="url(#a4)"/>
+        <polygon class="box" points="410,65 470,31 530,65 470,99"/>
+        <text class="t" x="470" y="62" text-anchor="middle">Already</text>
+        <text class="t" x="470" y="78" text-anchor="middle">bounces?</text>
+        <path class="edge" d="M530 65 H830 V323" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="680" y="56" text-anchor="middle">yes → old login still works, nothing to wait for</text>
+
+        <line class="edge" x1="470" y1="99" x2="470" y2="156" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="480" y="132">no</text>
+
+        <!-- pause sign -->
+        <rect class="box-warn" x="100" y="176" width="200" height="60" rx="8"/>
+        <text class="t" x="200" y="200" text-anchor="middle">Pause sign</text>
+        <text class="t-sm" x="200" y="219" text-anchor="middle">code box, account picker…</text>
+        <line class="edge-dash" x1="300" y1="206" x2="358" y2="206" marker-end="url(#a4m)"/>
+        <text class="t-lbl" x="329" y="198" text-anchor="middle">pauses</text>
+
+        <!-- lookouts -->
+        <rect class="box-new" x="360" y="158" width="220" height="100" rx="8"/>
+        <text class="t" x="470" y="180" text-anchor="middle">Lookouts watch</text>
+        <circle cx="386" cy="200" r="5" style="fill:var(--s-journey)"/><text class="t-sm" x="398" y="204">Journey</text>
+        <circle cx="386" cy="220" r="5" style="fill:var(--s-pw)"/><text class="t-sm" x="398" y="224">Password box gone</text>
+        <circle cx="386" cy="240" r="5" style="fill:var(--s-tickets)"/><text class="t-sm" x="398" y="244">New tickets</text>
+
+        <line class="edge" x1="470" y1="258" x2="470" y2="286" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="480" y="276">any one</text>
+
+        <!-- judge -->
+        <polygon points="390,340 470,288 550,340 470,392" style="fill:var(--surface);stroke:var(--s-judge)" stroke-width="2"/>
+        <text class="t" x="470" y="336" text-anchor="middle">Judge</text>
+        <text class="t-sm" x="470" y="353" text-anchor="middle">GET /login again</text>
+        <path class="edge-dash" d="M390 340 H330 V248 H358" marker-end="url(#a4m)"/>
+        <text class="t-lbl" x="322" y="300" text-anchor="end">no → keep watching</text>
+
+        <line class="edge" x1="550" y1="340" x2="598" y2="340" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="574" y="330" text-anchor="middle">yes</text>
+
+        <!-- timekeeper -->
+        <rect x="600" y="315" width="150" height="50" rx="8" style="fill:var(--surface);stroke:var(--s-time)" stroke-width="2"/>
+        <text class="t" x="675" y="337" text-anchor="middle">Timekeeper</text>
+        <text class="t-sm" x="675" y="354" text-anchor="middle">waits for calm</text>
+        <path class="edge" d="M650 315 C650 280 700 280 700 313" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="675" y="272" text-anchor="middle">still changing (max 5 s)</text>
+        <line class="edge" x1="750" y1="340" x2="778" y2="340" marker-end="url(#a4)"/>
+
+        <!-- save & prove -->
+        <rect x="780" y="325" width="100" height="50" rx="8" style="fill:var(--surface);stroke:var(--s-prove)" stroke-width="2"/>
+        <text class="t" x="830" y="347" text-anchor="middle">Save,</text>
+        <text class="t" x="830" y="364" text-anchor="middle">then prove</text>
+        <line class="edge" x1="830" y1="375" x2="830" y2="428" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="838" y="405">works</text>
+        <rect class="box-save" x="780" y="430" width="100" height="44" rx="8"/>
+        <text class="t" x="830" y="457" text-anchor="middle">Close ✓</text>
+        <path class="edge" d="M780 360 H760 V452 H732" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="752" y="410" text-anchor="end">fails</text>
+        <rect class="box-bad" x="600" y="430" width="130" height="44" rx="8"/>
+        <text class="t" x="665" y="449" text-anchor="middle">Tell customer</text>
+        <text class="t-sm" x="665" y="465" text-anchor="middle">now, clearly</text>
+
+        <!-- can't tell -->
+        <line class="edge-dash" x1="470" y1="392" x2="470" y2="428" marker-end="url(#a4m)"/>
+        <text class="t-lbl" x="480" y="414">can't tell</text>
+        <rect class="box" x="370" y="430" width="200" height="50" rx="8"/>
+        <text class="t" x="470" y="452" text-anchor="middle">2+ lookouts agree</text>
+        <text class="t" x="470" y="469" text-anchor="middle">for 10 s?</text>
+        <path class="edge" d="M570 440 H585 V380 H640 V367" marker-end="url(#a4)"/>
+        <text class="t-lbl" x="590" y="398">yes</text>
+        <line class="edge-dash" x1="470" y1="480" x2="470" y2="516" marker-end="url(#a4m)"/>
+        <text class="t-lbl" x="480" y="502">no, 25 s pass</text>
+        <rect class="box-warn" x="330" y="518" width="280" height="44" rx="8"/>
+        <text class="t" x="470" y="545" text-anchor="middle">Show "I'm done signing in" button</text>
+        <path class="edge" d="M585 518 V440"/>
+        <text class="t-lbl" x="592" y="508">clicked</text>
+        <text class="t-sm" x="20" y="560">The 10-minute limit still applies throughout.</text>
+      </svg>
+    </div>
+    <figcaption>Three doors into "Save": the website said yes, two lookouts agree when the website can't tell, or the customer said so. Every save is then proven.</figcaption>
+  </figure>
+</section>
+
+<section aria-labelledby="sim">
+  <span class="eyebrow">Try it</span>
+  <h2 id="sim">Watch seven real logins happen</h2>
+  <p>Pick a kind of login and press Play. Each mark is a moment one part of the desk noticed something. Hover or tab onto a mark for details. The shaded band is the pause sign. The bottom row is what today's method would have done.</p>
+  <div class="sim-head">
+    <div class="tabs" role="group" aria-label="Login scenario" id="tabs"></div>
+    <button class="btn primary" id="play" type="button">▶ Play</button>
+  </div>
+  <p id="blurb" class="muted"></p>
+  <figure>
+    <div class="scroll"><svg id="chart" viewBox="0 0 880 348" role="img" aria-label="Timeline of sign-in signals"></svg></div>
+    <div class="legend" aria-hidden="true">
+      <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2 2"/></svg>seen / noted</span>
+      <span><svg width="14" height="14"><circle cx="7" cy="7" r="5.5" fill="currentColor"/></svg>lookout fired</span>
+      <span><svg width="14" height="14"><path d="M7 1L13 7L7 13L1 7z" fill="currentColor"/></svg>yes</span>
+      <span><svg width="14" height="14"><path d="M7 1.5L12.5 7L7 12.5L1.5 7z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>no / can't tell</span>
+      <span><svg width="14" height="14"><line x1="7" y1="1" x2="7" y2="13" stroke="currentColor" stroke-width="2"/></svg>still changing</span>
+      <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>calm</span>
+      <span><svg width="14" height="14"><rect x="1.5" y="1.5" width="11" height="11" rx="2" fill="currentColor"/></svg>saved</span>
+      <span><svg width="14" height="14"><path d="M1 13L7 1L13 13z" fill="currentColor"/></svg>proof failed</span>
+    </div>
+    <figcaption>Seconds since the login window opened. Dashed lines are what the customer did.</figcaption>
+  </figure>
+  <div class="outcomes">
+    <div class="outcome" id="out-today"><span class="k">Today's method</span><span id="out-today-t"></span></div>
+    <div class="outcome" id="out-new"><span class="k">New design</span><span id="out-new-t"></span></div>
+  </div>
+  <h3>Step by step</h3>
+  <ol class="story" id="story"></ol>
+</section>
+
+<section aria-labelledby="cover">
+  <span class="eyebrow">Why combine them</span>
+  <h2 id="cover">No single signal catches everything. Together they do.</h2>
+  <p>Each row is a kind of login; each column is one part of the desk. Read across a row: wherever one part is fooled, another catches it. Hover or tab onto a mark for the reason.</p>
+  <div class="legend" aria-hidden="true">
+    <span>● gets it right</span><span>◐ partly</span><span>○ fooled or blind</span><span>· not involved</span>
+  </div>
+  <div class="grid-wrap"><table class="cov" id="cov"></table></div>
+</section>
+
+<section aria-labelledby="trust">
+  <span class="eyebrow">The deciding rule</span>
+  <h2 id="trust">Who do we believe?</h2>
+  <div class="ladder">
+    <div class="rung best"><span class="lvl">Best</span><span>The website bounces us off its login page: yes.</span></div>
+    <div class="rung ok"><span class="lvl">Good enough</span><span>The website can't tell, but two or more lookouts have agreed for 10 seconds.</span></div>
+    <div class="rung human"><span class="lvl">Ask a human</span><span>Still unclear after 25 seconds: the customer presses "I'm done signing in".</span></div>
+    <div class="rung no"><span class="lvl">Never enough</span><span>One lookout alone, or anything while the pause sign is up.</span></div>
+  </div>
+
+  <div class="tester" id="tester">
+    <h3>Test the rule yourself</h3>
+    <fieldset>
+      <legend>Which lookouts raised their hand?</legend>
+      <div class="checks">
+        <label><input type="checkbox" id="c-journey" checked> Journey</label>
+        <label><input type="checkbox" id="c-pw" checked> Password box gone</label>
+        <label><input type="checkbox" id="c-tickets"> New tickets</label>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>Is a "not finished yet" screen showing?</legend>
+      <div class="checks">
+        <label><input type="checkbox" id="c-pause"> Yes: code box, account picker, "approve on phone"…</label>
+      </div>
+    </fieldset>
+    <fieldset>
+      <legend>What did the website say when asked for the login page again?</legend>
+      <div class="checks">
+        <label><input type="radio" name="judge" id="j-yes" value="yes"> Bounced us away (yes)</label>
+        <label><input type="radio" name="judge" id="j-no" value="no" checked> Same login form (no)</label>
+        <label><input type="radio" name="judge" id="j-unsure" value="unsure"> Can't tell, 10 s passed</label>
+      </div>
+    </fieldset>
+    <div class="verdict" id="verdict" aria-live="polite"></div>
+  </div>
+</section>
+
+<section aria-labelledby="edges">
+  <span class="eyebrow">Edge cases</span>
+  <h2 id="edges">The awkward logins, and what handles each</h2>
+  <div class="tbl-wrap">
+    <table class="plain">
+      <thead><tr><th>Situation</th><th>What goes wrong</th><th>What handles it</th></tr></thead>
+      <tbody>
+        <tr><td>Login through Google / Microsoft</td><td>The customer ends up on a different website</td><td>Journey skips known sign-in services</td></tr>
+        <tr><td>Separate sign-in site (<span class="mono">login.acme.com</span> → <span class="mono">app.acme-cloud.io</span>)</td><td>Different website at the end</td><td>Journey: first stop after the login page</td></tr>
+        <tr><td>Email first, password on the next screen</td><td>No password box on the first screen</td><td>The password-box watch only counts once a box has appeared</td></tr>
+        <tr><td>Texted code, authenticator, "approve on phone"</td><td>Looks finished too early</td><td>Pause sign, and the judge says "not yet"</td></tr>
+        <tr><td>"Choose your workspace" after login</td><td>Logged in, but not at the app yet</td><td>The judge already says yes, so it's fine to save</td></tr>
+        <tr><td>Login in a pop-up window</td><td>The main tab's address never changes</td><td>Watch every tab this login opened; password box gone</td></tr>
+        <tr><td>Old login still works</td><td>A pointless window opens</td><td>"Before" snapshot already bounces: save at once</td></tr>
+        <tr><td>Site shows its login page even when logged in</td><td>The judge can't tell</td><td>Backup rule: two lookouts for 10 s</td></tr>
+        <tr><td>Login kept in memory that's wiped when the tab closes</td><td>The save looks fine, the next run fails</td><td>Prover catches it and tells the customer now</td></tr>
+        <tr><td>Password box inside an embedded frame or hidden page section</td><td>Box not found</td><td>Search every frame and hidden section</td></tr>
+        <tr><td>"Check your email for a link"</td><td>The link opens in their normal browser, not ours</td><td>Pause sign, plus a hint: paste the link into this window</td></tr>
+        <tr><td>Non-English website</td><td>Word-based checks fail</td><td>Every signal reads structure and redirects, never words</td></tr>
+        <tr><td>Bot protection / "browser not secure"</td><td>Sign-in blocked</td><td>Not a detection problem. Logged so it's not mistaken for "gave up"</td></tr>
+        <tr><td>Signed in to the wrong account</td><td>Can't be detected automatically</td><td>Later: show "Signed in as ___" when the page shows a name</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section aria-labelledby="safe">
+  <span class="eyebrow">Rules we keep</span>
+  <h2 id="safe">Safety</h2>
+  <div class="safety">
+    <div><h3>Secrets stay on the machine</h3><p>We only ever note ticket <em>names</em> and page shapes. Ticket values and passwords are never logged or sent anywhere.</p></div>
+    <div><h3>Gentle with the website</h3><p>The judge asks only when a lookout fires, never on a timer, so the site's bot protection isn't provoked.</p></div>
+    <div><h3>Only this login's tabs</h3><p>In Conxa Execute, lookouts watch only the tabs this login opened, never another app's login happening at the same time.</p></div>
+    <div><h3>We never touch the website</h3><p>The "I'm done" button lives in Conxa's own panel. Nothing is injected into the site's page.</p></div>
+  </div>
+</section>
+
+<section aria-labelledby="plan">
+  <span class="eyebrow">How we'd build it</span>
+  <h2 id="plan">Two phases</h2>
+  <div class="phases">
+    <div class="phase">
+      <span class="pill now">Phase 1 · runtime only</span>
+      <h3>Everything that needs only the login address</h3>
+      <ul>
+        <li>The judge: before/after login-page check</li>
+        <li>Journey tracking with the sign-in services list</li>
+        <li>Password-box watch across tabs and frames</li>
+        <li>Ticket watch: cookies and page memory</li>
+        <li>Pause sign for mid-sign-in screens</li>
+        <li>Timekeeper, then save, then prove</li>
+        <li>Instant close when an old login still works</li>
+        <li>Remember the landing address for pre-run checks</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <span class="pill later">Phase 2 · polish</span>
+      <h3>For the sites that still misbehave</h3>
+      <ul>
+        <li>"I'm done signing in" button in Conxa Execute</li>
+        <li>A log of which signal decided (never any values), to tune on real logins</li>
+        <li>"Signed in as ___" confirmation</li>
+        <li>Optional per-site fingerprint from the Build Studio, only if Phase 1 falls short</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="sum">
+  <span class="eyebrow">In one sentence</span>
+  <h2 id="sum" class="oneline">Lookouts notice, the website confirms by bouncing us off its own login page, we wait for calm, save, and prove the save works. All from nothing but the login address.</h2>
+</section>
+
+</div>
+
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(() => {
+  const LANES = [
+    { id: "journey", name: "Journey",      color: "var(--s-journey)" },
+    { id: "pw",      name: "Password box", color: "var(--s-pw)" },
+    { id: "tickets", name: "Tickets",      color: "var(--s-tickets)" },
+    { id: "judge",   name: "Judge",        color: "var(--s-judge)" },
+    { id: "time",    name: "Timekeeper",   color: "var(--s-time)" },
+    { id: "prove",   name: "Prover",       color: "var(--s-prove)" },
+    { id: "today",   name: "Today's method", color: "var(--ink)" },
+  ];
+  const SNAP = { lane: "judge", t: 0.6, kind: "seen", text: "\"Before\" snapshot: the login address shows a login form. Noted." };
+  const PWSEEN = { lane: "pw", t: 0.9, kind: "seen", text: "A password box is on screen. Now we watch for it to go." };
+  const SCENARIOS = [
+    {
+      id: "plain", name: "Plain login page",
+      blurb: "A normal login form on the app's own website.",
+      actions: [{ t: 3, label: "Password submitted" }],
+      events: [SNAP, PWSEEN,
+        { lane: "tickets", t: 3.2, kind: "fire", text: "A new login ticket appeared." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page for app.acme.com." },
+        { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone." },
+        { lane: "judge", t: 3.6, kind: "yes", text: "Asked for /login again: bounced to /dashboard. Yes." },
+        { lane: "time", t: 4.1, kind: "calm", text: "Nothing changed since the last look." },
+        { lane: "time", t: 4.6, kind: "save", text: "Calm twice in a row: saved." },
+        { lane: "prove", t: 4.9, kind: "yes", text: "The saved login works in a fresh check. Window closes." },
+        { lane: "today", t: 4.9, kind: "save", ok: true, text: "Today: address stopped looking like login at 3.4 s, saved at 4.9 s." },
+      ],
+      today: ["ok", "Saved at 4.9 s. Works."],
+      fresh: ["ok", "Confirmed by the website, proven, closed at 4.9 s."],
+    },
+    {
+      id: "google", name: "Google sign-in",
+      blurb: "The login address sends the customer to Google, then back to an app on a different website.",
+      actions: [{ t: 2, label: "Clicked \"Sign in with Google\"" }, { t: 6, label: "Approved on Google" }],
+      events: [SNAP,
+        { lane: "journey", t: 2.2, kind: "seen", text: "Now on accounts.google.com, a known sign-in service. Doesn't count." },
+        { lane: "pw", t: 2.6, kind: "seen", text: "Google's password box is on screen." },
+        { lane: "tickets", t: 6.2, kind: "fire", text: "New login ticket for app.acme-cloud.io." },
+        { lane: "journey", t: 6.4, kind: "fire", text: "First stop after Google: app.acme-cloud.io. That's the app, and it's remembered." },
+        { lane: "pw", t: 6.5, kind: "fire", text: "No password box on any tab." },
+        { lane: "judge", t: 6.6, kind: "yes", text: "Asked for the login address again: bounced into the app. Yes." },
+        { lane: "time", t: 7.1, kind: "calm", text: "Nothing changed since the last look." },
+        { lane: "time", t: 7.6, kind: "save", text: "Calm twice in a row: saved." },
+        { lane: "prove", t: 7.9, kind: "yes", text: "The saved login works. Window closes." },
+        { lane: "today", t: 7.9, kind: "save", ok: true, text: "Today: once the address stopped looking like a sign-in page, saved at 7.9 s." },
+      ],
+      today: ["ok", "Saved at 7.9 s. Works."],
+      fresh: ["ok", "Found the app on its own, confirmed, proven, closed at 7.9 s."],
+    },
+    {
+      id: "code", name: "Texted code",
+      blurb: "After the password, the site asks for a code sent by text, on its own website.",
+      actions: [{ t: 3, label: "Password submitted" }, { t: 10, label: "Code entered" }],
+      pause: [{ from: 3.5, to: 10, label: "Pause sign: code box showing" }],
+      events: [SNAP, PWSEEN,
+        { lane: "tickets", t: 3.2, kind: "fire", text: "A ticket appeared, but only a half-login one." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "Moved to /verify on the app's website." },
+        { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone (a code box replaced it)." },
+        { lane: "today", t: 4.9, kind: "save", ok: false, text: "Today: saved at 4.9 s, before the code. Half a login." },
+        { lane: "tickets", t: 10.2, kind: "fire", text: "The real login ticket appeared." },
+        { lane: "judge", t: 10.3, kind: "yes", text: "Pause sign is down. Asked for /login again: bounced. Yes." },
+        { lane: "time", t: 10.8, kind: "calm", text: "Nothing changed since the last look." },
+        { lane: "time", t: 11.3, kind: "save", text: "Calm twice in a row: saved." },
+        { lane: "prove", t: 11.6, kind: "yes", text: "The saved login works. Window closes." },
+      ],
+      today: ["bad", "Closed at 4.9 s, before the code was typed. Saved half a login."],
+      fresh: ["ok", "The pause sign held everyone back. Saved the full login at 11.3 s."],
+    },
+    {
+      id: "already", name: "Already signed in",
+      blurb: "The customer's old login still works; they don't need to do anything.",
+      actions: [],
+      events: [
+        { lane: "judge", t: 0.6, kind: "yes", text: "\"Before\" snapshot: /login already bounces to /dashboard. The old login works." },
+        { lane: "time", t: 0.8, kind: "save", text: "Nothing to wait for: saved at once." },
+        { lane: "prove", t: 1.0, kind: "yes", text: "Proven. Window closes after one second." },
+        { lane: "today", t: 2.1, kind: "save", ok: true, text: "Today: the page loads, the address isn't a login page, saved at 2.1 s." },
+      ],
+      today: ["ok", "Closes at 2.1 s."],
+      fresh: ["ok", "Closes at 1.0 s. The customer barely sees it."],
+    },
+    {
+      id: "late", name: "Late pass",
+      blurb: "The site keeps handing over pieces of the login for a couple of seconds after arriving.",
+      actions: [{ t: 3, label: "Password submitted" }, { t: 5.4, label: "Site writes its last piece" }],
+      events: [SNAP, PWSEEN,
+        { lane: "tickets", t: 3.2, kind: "fire", text: "A new login ticket appeared." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page." },
+        { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone." },
+        { lane: "judge", t: 3.6, kind: "yes", text: "Asked for /login again: bounced. Yes." },
+        { lane: "time", t: 4.1, kind: "change", text: "Tickets still changing: wait." },
+        { lane: "time", t: 4.6, kind: "change", text: "Still changing." },
+        { lane: "today", t: 4.9, kind: "save", ok: false, text: "Today: saved at 4.9 s. The last piece came at 5.4 s. Missed." },
+        { lane: "time", t: 5.1, kind: "change", text: "Still changing." },
+        { lane: "time", t: 5.6, kind: "change", text: "The last piece just arrived." },
+        { lane: "time", t: 6.1, kind: "calm", text: "Nothing changed since the last look." },
+        { lane: "time", t: 6.6, kind: "save", text: "Calm twice in a row: the complete login is saved." },
+        { lane: "prove", t: 6.9, kind: "yes", text: "The saved login works. Window closes." },
+      ],
+      today: ["bad", "Saved at 4.9 s, missing the last piece. Breaks on the next run."],
+      fresh: ["ok", "Waited for calm, saved the complete login at 6.6 s."],
+    },
+    {
+      id: "always", name: "Login page shown to all",
+      blurb: "This site shows its login form even to people who are already signed in.",
+      actions: [{ t: 3, label: "Password submitted" }, { t: 13.5, label: "Two lookouts agreed for 10 s" }],
+      events: [SNAP, PWSEEN,
+        { lane: "tickets", t: 3.2, kind: "fire", text: "A new login ticket appeared." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page." },
+        { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone. Three lookouts agree." },
+        { lane: "judge", t: 3.6, kind: "no", text: "Asked for /login again: same login form. This site can't tell us." },
+        { lane: "today", t: 4.9, kind: "save", ok: true, text: "Today: saved at 4.9 s. Works here." },
+        { lane: "time", t: 13.5, kind: "calm", text: "10 s of lookouts agreeing: trust them. Calm." },
+        { lane: "time", t: 14.0, kind: "save", text: "Calm twice in a row: saved." },
+        { lane: "prove", t: 14.3, kind: "no", text: "The proof can't tell either on this site. Kept, based on the lookouts." },
+      ],
+      today: ["ok", "Saved at 4.9 s. Works here."],
+      fresh: ["ok", "Slower on purpose: waited 10 s for backup evidence, saved at 14.0 s."],
+    },
+    {
+      id: "memory", name: "Login lost on save",
+      blurb: "The site keeps the login in page memory that's wiped when the tab closes, so it can't be saved.",
+      actions: [{ t: 3, label: "Password submitted" }, { t: 13.5, label: "Two lookouts agreed for 10 s" }],
+      events: [SNAP, PWSEEN,
+        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page." },
+        { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone." },
+        { lane: "tickets", t: 3.6, kind: "fire", text: "A new token in the page's memory." },
+        { lane: "judge", t: 3.7, kind: "no", text: "Can't tell: the background check can't carry page memory." },
+        { lane: "today", t: 4.9, kind: "save", ok: false, text: "Today: \"saved\" at 4.9 s, but the login wasn't really in it. Fails on the next run." },
+        { lane: "time", t: 13.5, kind: "calm", text: "10 s of lookouts agreeing: trust them. Calm." },
+        { lane: "time", t: 14.0, kind: "save", text: "Saved." },
+        { lane: "prove", t: 14.3, kind: "fail", text: "Proof failed: the saved login doesn't work. The customer is told now, clearly." },
+      ],
+      today: ["bad", "Looked fine, then failed on the next run with a confusing error."],
+      fresh: ["warn", "Caught at once: the customer is told right away instead of on the next run."],
+    },
+  ];
+
+  const W = 880, L = 130, R = 20, TOP = 36, ROW = 40, TMAX = 16;
+  const x = (t) => L + (t / TMAX) * (W - L - R);
+  const laneY = (id) => TOP + LANES.findIndex((l) => l.id === id) * ROW + ROW / 2;
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, parent) => {
+    const n = document.createElementNS(NS, tag);
+    if (attrs.style) n.setAttribute("style", attrs.style);
+    for (const k in attrs) {
+      if (k === "style") continue;
+      // SVG presentation attributes don't reliably resolve var(); route those through style.
+      if ((k === "fill" || k === "stroke") && String(attrs[k]).startsWith("var(")) n.style[k] = attrs[k];
+      else n.setAttribute(k, attrs[k]);
+    }
+    if (parent) parent.appendChild(n);
+    return n;
+  };
+
+  const chart = document.getElementById("chart");
+  const story = document.getElementById("story");
+  const tip = document.getElementById("tip");
+  const tabs = document.getElementById("tabs");
+  const playBtn = document.getElementById("play");
+  let current = SCENARIOS[0], anim = null;
+
+  function mark(g, ev, color) {
+    const cx = x(ev.t), cy = laneY(ev.lane);
+    const ring = { fill: "var(--surface)", stroke: color, "stroke-width": 2 };
+    switch (ev.kind) {
+      case "seen": el("circle", { cx, cy, r: 6, ...ring, "stroke-dasharray": "2 2" }, g); break;
+      case "fire": el("circle", { cx, cy, r: 6.5, fill: color, stroke: "var(--surface)", "stroke-width": 2 }, g); break;
+      case "yes": el("path", { d: `M${cx} ${cy - 9}L${cx + 9} ${cy}L${cx} ${cy + 9}L${cx - 9} ${cy}z`, fill: color, stroke: "var(--surface)", "stroke-width": 2 }, g); break;
+      case "no": el("path", { d: `M${cx} ${cy - 8}L${cx + 8} ${cy}L${cx} ${cy + 8}L${cx - 8} ${cy}z`, ...ring }, g); break;
+      case "change": el("line", { x1: cx, x2: cx, y1: cy - 8, y2: cy + 8, stroke: color, "stroke-width": 2.5, "stroke-linecap": "round" }, g); break;
+      case "calm": el("circle", { cx, cy, r: 6, ...ring }, g); break;
+      case "fail": el("path", { d: `M${cx - 8} ${cy + 7}L${cx} ${cy - 8}L${cx + 8} ${cy + 7}z`, fill: "var(--bad)" }, g); break;
+      case "save": el("rect", { x: cx - 7, y: cy - 7, width: 14, height: 14, rx: 2.5, fill: ev.lane === "today" ? (ev.ok ? "var(--good)" : "var(--bad)") : color }, g); break;
+    }
+    if (ev.lane === "today") {
+      el("text", { x: cx + 12, y: cy + 4, fill: ev.ok ? "var(--good)" : "var(--bad)", style: "font:600 12px var(--mono)" }, g).textContent = ev.ok ? "✓ ok" : "✕ wrong";
+    }
+    el("circle", { class: "hit", cx, cy, r: 13, fill: "transparent", stroke: "none" }, g);
+  }
+
+  function draw(s) {
+    chart.textContent = "";
+    chart.setAttribute("aria-label", `Timeline for "${s.name}". New design: ${s.fresh[1]} Today: ${s.today[1]}`);
+    const bottom = TOP + ROW * LANES.length;
+    const grid = el("g", {}, chart);
+    (s.pause || []).forEach((p) => {
+      el("rect", { x: x(p.from), y: TOP, width: x(p.to) - x(p.from), height: ROW * 3, fill: "var(--warn-soft)", stroke: "var(--warn)", "stroke-width": 1, "stroke-dasharray": "3 3" }, grid);
+      el("text", { x: (x(p.from) + x(p.to)) / 2, y: TOP + ROW * 1.5 + 4, "text-anchor": "middle", fill: "var(--warn)", style: "font:600 12px var(--mono)" }, grid).textContent = p.label;
+    });
+    for (let t = 0; t <= TMAX; t += 2) {
+      el("line", { x1: x(t), x2: x(t), y1: TOP - 4, y2: bottom, stroke: "var(--line)", "stroke-width": 1 }, grid);
+      el("text", { x: x(t), y: bottom + 18, "text-anchor": "middle", fill: "var(--muted)", style: "font:12px var(--mono)" }, grid).textContent = `${t} s`;
+    }
+    LANES.forEach((ln, i) => {
+      const y = TOP + i * ROW + ROW / 2;
+      if (ln.id === "today") el("line", { x1: 8, x2: W - R, y1: y - ROW / 2, y2: y - ROW / 2, stroke: "var(--ink-2)", "stroke-width": 1 }, grid);
+      el("line", { x1: L, x2: W - R, y1: y, y2: y, stroke: "var(--line)", "stroke-width": 1, "stroke-dasharray": "2 4" }, grid);
+      if (ln.id !== "today") el("circle", { cx: 14, cy: y, r: 5, fill: ln.color }, grid);
+      el("text", { x: ln.id === "today" ? 8 : 26, y: y + 4, fill: "var(--ink)", style: `font:${ln.id === "today" ? 700 : 600} 13px var(--body)` }, grid).textContent = ln.name;
+    });
+    s.actions.forEach((a, i) => {
+      el("line", { x1: x(a.t), x2: x(a.t), y1: TOP - 8, y2: TOP + ROW * (LANES.length - 1), stroke: "var(--ink-2)", "stroke-width": 1.2, "stroke-dasharray": "4 3" }, grid);
+      const right = x(a.t) > W - 200;
+      el("text", { x: x(a.t) + (right ? -4 : 4), y: TOP - 14, "text-anchor": right ? "end" : "start", fill: "var(--ink-2)", style: "font:600 11.5px var(--body)" }, grid).textContent = a.label;
+    });
+    s.events.forEach((ev, i) => {
+      const ln = LANES.find((l) => l.id === ev.lane);
+      const g = el("g", { class: "chart-event", tabindex: 0, "data-i": i, role: "img", "aria-label": `${ev.t} seconds, ${ln.name}: ${ev.text}` }, chart);
+      mark(g, ev, ln.color);
+      const show = (e) => showTip(e, `<b>${ev.t.toFixed(1)} s · ${ln.name}</b><br>${ev.text}`, g);
+      g.addEventListener("mouseenter", show); g.addEventListener("mousemove", show);
+      g.addEventListener("focus", show);
+      g.addEventListener("mouseleave", hideTip); g.addEventListener("blur", hideTip);
+    });
+    const ph = el("line", { id: "playhead", x1: x(0), x2: x(0), y1: TOP - 4, y2: bottom, stroke: "var(--accent)", "stroke-width": 2 }, chart);
+    ph.style.display = "none";
+
+    story.textContent = "";
+    const items = [
+      ...s.actions.map((a) => ({ t: a.t, text: a.label, act: true })),
+      ...(s.pause || []).map((p) => ({ t: p.from, text: `${p.label}: lookouts don't count until it's gone.`, pause: true })),
+      ...s.events.map((e) => ({ t: e.t, text: e.text, lane: e.lane })),
+    ].sort((a, b) => a.t - b.t);
+    items.forEach((it) => {
+      const li = document.createElement("li");
+      li.dataset.t = it.t;
+      const ln = it.lane && LANES.find((l) => l.id === it.lane);
+      const icon = it.act ? "👤" : it.pause ? "⏸" : `<span class="dot" style="background:${ln.color}"></span>`;
+      li.innerHTML = `<span class="time">${it.t.toFixed(1)} s</span><span>${icon}</span><span>${it.act ? `<strong>${it.text}</strong>` : it.text}</span>`;
+      story.appendChild(li);
+    });
+
+    document.getElementById("blurb").textContent = s.blurb;
+    const icon = { ok: "✓ ", bad: "✕ ", warn: "⚠ " };
+    const setOut = (id, [cls, text]) => { document.getElementById(id).className = "outcome " + cls; document.getElementById(id + "-t").textContent = icon[cls] + text; };
+    setOut("out-today", s.today); setOut("out-new", s.fresh);
+  }
+
+  function showTip(e, html, anchor) {
+    tip.innerHTML = html; tip.hidden = false;
+    let px, py;
+    if (e.type === "focus") { const r = anchor.getBoundingClientRect(); px = r.right; py = r.bottom; }
+    else { px = e.clientX; py = e.clientY; }
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = Math.max(8, Math.min(px + 14, window.innerWidth - tw - 8)) + "px";
+    tip.style.top = Math.max(8, Math.min(py + 14, window.innerHeight - th - 8)) + "px";
+  }
+  function hideTip() { tip.hidden = true; }
+
+  function setTime(t) {
+    const ph = document.getElementById("playhead");
+    if (t === null) {
+      ph.style.display = "none";
+      chart.querySelectorAll(".chart-event").forEach((g) => { g.style.opacity = 1; });
+      story.querySelectorAll("li").forEach((li) => li.classList.remove("future", "now"));
+      return;
+    }
+    ph.style.display = ""; ph.setAttribute("x1", x(t)); ph.setAttribute("x2", x(t));
+    chart.querySelectorAll(".chart-event").forEach((g) => { g.style.opacity = current.events[+g.dataset.i].t <= t ? 1 : 0.12; });
+    let lastPast = null;
+    story.querySelectorAll("li").forEach((li) => {
+      const past = +li.dataset.t <= t;
+      li.classList.toggle("future", !past); li.classList.remove("now");
+      if (past) lastPast = li;
+    });
+    if (lastPast) lastPast.classList.add("now");
+  }
+
+  function stop() { if (anim) cancelAnimationFrame(anim); anim = null; playBtn.textContent = "▶ Play"; }
+  playBtn.addEventListener("click", () => {
+    if (anim) { stop(); setTime(null); return; }
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) { setTime(null); return; }
+    playBtn.textContent = "■ Stop";
+    const dur = 10000, start = performance.now();
+    const step = (now) => {
+      const t = Math.min(TMAX, ((now - start) / dur) * TMAX);
+      setTime(t);
+      if (t < TMAX) anim = requestAnimationFrame(step);
+      else { anim = null; playBtn.textContent = "↻ Replay"; }
+    };
+    anim = requestAnimationFrame(step);
+  });
+
+  SCENARIOS.forEach((s, i) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = s.name; b.id = "tab-" + s.id;
+    b.setAttribute("aria-pressed", i === 0 ? "true" : "false");
+    b.addEventListener("click", () => {
+      stop(); current = s;
+      tabs.querySelectorAll("button").forEach((o) => o.setAttribute("aria-pressed", o === b ? "true" : "false"));
+      draw(s); setTime(null);
+    });
+    tabs.appendChild(b);
+  });
+  draw(current);
+
+  // coverage grid: ● right, ◐ partly, ○ fooled/blind, · not involved
+  const COLS = [
+    { id: "journey", name: "Journey", color: "var(--s-journey)" },
+    { id: "pw", name: "Password box", color: "var(--s-pw)" },
+    { id: "tickets", name: "Tickets", color: "var(--s-tickets)" },
+    { id: "pause", name: "Pause sign", color: "var(--warn)" },
+    { id: "judge", name: "Judge", color: "var(--s-judge)" },
+    { id: "time", name: "Timekeeper", color: "var(--s-time)" },
+    { id: "prove", name: "Prover", color: "var(--s-prove)" },
+  ];
+  const G = { y: "●", p: "◐", n: "○", x: "·" };
+  const WORD = { y: "gets it right", p: "partly", n: "fooled or blind", x: "not involved" };
+  const ROWS = [
+    ["Plain login page", "yyyxyxy", "ok", "ok", {}],
+    ["Google / Microsoft sign-in", "yyyxyxy", "ok", "ok", { journey: "Skips accounts.google.com and finds the app on its own." }],
+    ["Email first, password next", "pyyxyxy", "ok", "ok", { journey: "Both screens look like login, so it only helps at the end.", pw: "Only starts counting once the password box appears." }],
+    ["Pop-up login box", "nyyxyxy", "bad", "ok", { journey: "The address never changes, so it sees nothing.", pw: "The pop-up's password box disappears: caught." }],
+    ["Texted code", "nnpyyxy", "bad", "ok", { journey: "Fooled: the code page is on the app's own site.", pw: "Fooled: the password box is gone, but a code box replaced it.", tickets: "Sees a ticket, but only a half-login one.", pause: "Spots the code box and holds everyone back.", judge: "Says \"not yet\" until the code is in." }],
+    ["Already signed in", "xxxxyxy", "ok", "ok", { judge: "The \"before\" snapshot already bounces: saved at once." }],
+    ["Late pass", "yyyxyyy", "bad", "ok", { time: "Waits until the tickets stop changing." }],
+    ["Login page shown to all", "yyyxnxp", "ok", "ok", { judge: "Same login form before and after: can't tell.", prove: "Can't tell either. The backup rule decides." }],
+    ["Login lost on save", "yypxnxy", "bad", "warn", { tickets: "Sees the token in page memory.", judge: "Can't carry page memory: can't tell.", prove: "Catches that the save doesn't work, and tells the customer now." }],
+    ["\"Check your email\" link", "nxxpxxx", "bad", "warn", { journey: "The link opens in their normal browser, not ours.", pause: "Recognises the waiting page and shows a hint: paste the link into this window." }],
+  ];
+  const cov = document.getElementById("cov");
+  const RES = { ok: "✓ works", bad: "✕ fails", warn: "⚠ flagged" };
+  let html = "<thead><tr><th scope=\"col\">Kind of login</th>" +
+    COLS.map((c) => `<th scope="col"><span class="dot" style="background:${c.color}"></span>${c.name}</th>`).join("") +
+    "<th scope=\"col\" class=\"sep\">Today</th><th scope=\"col\">New</th></tr></thead><tbody>";
+  ROWS.forEach(([name, cells, today, fresh, why]) => {
+    html += `<tr><th scope="row">${name}</th>`;
+    [...cells].forEach((c, i) => {
+      const col = COLS[i];
+      const reason = why[col.id] || (c === "y" ? "Works as designed here." : c === "x" ? "Not needed for this login." : "");
+      const esc = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+      html += `<td class="cell${c === "x" ? " none" : ""}" tabindex="0" data-tip="${esc(`<b>${name} · ${col.name}</b><br>${WORD[c]}. ${reason}`)}" aria-label="${esc(`${col.name}: ${WORD[c]}. ${reason}`)}">${G[c]}</td>`;
+    });
+    html += `<td class="sep"><span class="res ${today}">${RES[today]}</span></td><td><span class="res ${fresh}">${RES[fresh]}</span></td></tr>`;
+  });
+  cov.innerHTML = html + "</tbody>";
+  cov.querySelectorAll("td.cell").forEach((td) => {
+    const show = (e) => showTip(e, td.dataset.tip, td);
+    td.addEventListener("mouseenter", show); td.addEventListener("mousemove", show); td.addEventListener("focus", show);
+    td.addEventListener("mouseleave", hideTip); td.addEventListener("blur", hideTip);
+  });
+
+  // rule tester
+  const verdict = document.getElementById("verdict");
+  function judge() {
+    const n = ["c-journey", "c-pw", "c-tickets"].filter((id) => document.getElementById(id).checked).length;
+    const paused = document.getElementById("c-pause").checked;
+    const j = document.querySelector('input[name="judge"]:checked').value;
+    let cls, head, body;
+    if (paused) { cls = "warn"; head = "Paused: not finished yet"; body = "A \"not finished\" screen is showing, so no lookout counts and the judge isn't asked. This is what stops the texted-code mistake."; }
+    else if (n === 0) { cls = "wait"; head = "Keep watching"; body = "No lookout has raised a hand, so the judge hasn't been asked yet."; }
+    else if (j === "yes") { cls = "good"; head = "Logged in: save, then prove"; body = "The website bounced us off its login page. The timekeeper waits for calm, saves, and the prover checks the save works."; }
+    else if (j === "no") { cls = "bad"; head = "False alarm: keep watching"; body = `${n} lookout${n > 1 ? "s" : ""} raised a hand, but the website still shows its login form. Nothing closes.`; }
+    else if (n >= 2) { cls = "good"; head = "Trust the lookouts: save, then prove"; body = `The website can't tell, but ${n} lookouts have agreed for 10 seconds. Save, and let the prover double-check.`; }
+    else { cls = "wait"; head = "Not enough: keep waiting"; body = "The website can't tell and only one lookout fired. After 25 seconds the customer gets the \"I'm done\" button."; }
+    verdict.className = "verdict " + cls;
+    verdict.innerHTML = `<strong>${head}</strong>${body}`;
+  }
+  document.getElementById("tester").addEventListener("change", judge);
+  judge();
+})();
+</script>

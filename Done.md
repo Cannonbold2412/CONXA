@@ -15,9 +15,9 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | MCP — MCP | 1 | MCP-4 |
 | TEST — Testing & Cleanup | 1 | TEST-6 |
 | REC — Recorder | 1 | REC-STALE-1 |
-| AUTH — Authentication | 5 | AUTH-1, 2, 3, 4, 5 |
+| AUTH — Authentication | 8 | AUTH-1, 2, 3, 4, 5, 6, 7, 8 |
 | DEAD — Tech debt | 1 | DEAD-1 |
-| **Total** | **74** | |
+| **Total** | **77** | |
 
 ---
 
@@ -1393,7 +1393,7 @@ question — that compile produced inputs named `sports` and `react_select_3_lis
 dropdown's enum is also frozen from the recording (picking a different State still offers the
 recorded State's cities). None of these block a run; all deserve their own item.
 
-## AUTH — Authentication (5 done)
+## AUTH — Authentication (8 done)
 
 ### AUTH-1 — Warn at pre-flight when a workflow visits a host that has no sign-in app configured
 **Resolved:** 2026-09-21
@@ -1430,6 +1430,27 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Category:** Runtime / Build Studio
 - **Description:** With `login_url` `accounts.google.com` and `success_url` `drive.google.com/{}`, the tab opened on Google's account page, Google's `continue=` pointed back at itself, sign-in ended on a host the watcher never checks, and the session was never captured nor the tab closed — every run parked on `awaiting_auth`. GitHub (same host) was unaffected.
 - **Complexity:** S.
+
+### AUTH-6 — Chrome-owned "I'm done signing in" control in Conxa Execute's panel
+**Resolved:** 2026-09-22
+- **Resolution:** Built the cheaper path found during planning instead of a new HTTP control channel: a plain file-drop signal, `<CONXA_DIR>/login-done/<key>.cmd` (existence-only, consumed on the way past — same accepted local-trust model as `handover.js`'s own resume file), checked once per poll tick in both `_waitForSessionLogin`/`_waitForInteractiveAuth` via `_checkHumanOverride`. A hit is an unconditional save, bypassing judge/backup-agreement/even a currently-showing pause sign. Rooted at `CONXA_DIR` (not `CONXA_DATA_DIR` like `handover.js`) because Conxa Execute's Electron process resolves and forwards `CONXA_DIR` but never learns `CONXA_DATA_DIR`. Three ways to trigger it, one signal: the `conxa-runtime login-done <key>` CLI subcommand (mirrors `resume`'s exact shape); and a real per-login-tab "Done" button in Conxa Execute's panel, wired end to end — `loginKey` threaded alongside `label` through every sign-in-tab creation call (`browser.js` → `host_browser.js` → `browser_control.js` → `browser_panel.js`, never set on a judge/prover probe tab), stored server-side on the tab record, exposed to the renderer only as a boolean (`isLogin`) so the raw key never crosses the IPC boundary; the button calls a new `panel:login-done` channel with just `{runId, tabId}`.
+- **Category:** Execution & Recovery / Authentication
+- **Description:** When the ladder can neither get a judge "yes" nor two lookouts agreeing for the backup window, there is still no way for the customer to say "I'm actually done" short of the 10-minute `LOGIN_WAIT_MS` ceiling (`LOGIN_HUMAN_PROMPT_MS`, 25s, only logged `login_signal_inconclusive`). The artifact's stated design is a button living in Conxa Execute's own panel chrome, never injected into the page.
+- **Complexity:** S (the file-drop signal + CLI) / M (the Execute button's IPC + tab-metadata threading) — both delivered.
+
+### AUTH-7 — Per-signal decision log for tuning the ladder against real logins
+**Resolved:** 2026-09-22
+- **Resolution:** New, dedicated `runtime/app/login_decision_log.js` (JSON Lines, size-capped single-generation rotation, modeled on `recovery_log.js`'s shape but a separate file — that module's reader filters by `slug` and feeds an agent-facing failure's `recovery_trail`, the wrong semantic home for a login-tuning log with no reader at all). One line per terminal outcome — `{ts, key, decision, waitedMs}` — where `decision` is `login_signals.js::ladderVerdict`'s own `reason` (previously computed and discarded), `human_override` (AUTH-6), or a wait's own non-ladder outcome (`timeout`/`closed`/`gone`/`abandoned`/`rejected_url`). Written at `<CONXA_DIR>/logs/login_signals.log`.
+- **Category:** Execution & Recovery / Authentication
+- **Description:** A durable, local log of which signal decided each sign-in, never any cookie/token value, so the ladder's timing constants (`CONXA_LOGIN_BACKUP_AGREE_MS`, `CONXA_LOGIN_TIMEKEEPER_BUDGET_MS`) can eventually be tuned from real data instead of guesswork.
+- **Complexity:** S.
+
+### AUTH-8 — "Signed in as ___" confirmation (per-site fingerprint escape hatch stays deferred)
+**Resolved:** 2026-09-22
+- **Resolution:** New `page_scripts.js::accountNameProbe` — deliberately text-reading, unlike every other probe in that file — looks for a short (2-60 char) label on or near a plausible account/profile marker, run once via `browser.js::_probeAccountName` right after the Prover succeeds. Best-effort and silent on a miss (never a warning). Surfaced through `handle.accountName` → `authenticate`'s additive `signed_in_as` field, kept separate from `login_warnings` since it's never a warning. The per-site fingerprint escape hatch was **not** built — stays scoped to "only if Phase 1 falls short," and nothing has demonstrated that yet.
+- **Category:** Execution & Recovery / Authentication
+- **Description:** Once a page shows a recognizable account/user name after landing, surface "Signed in as ___" back to the customer as a positive confirmation — helps the one case detection can never resolve on its own (signed in to the *wrong* account).
+- **Complexity:** S (built) for the confirmation; the fingerprint escape hatch (M, deferred) stays open only if a real site is shown to need it.
 
 ## DEAD — Tech debt (1 done)
 
