@@ -86,6 +86,7 @@ export function App() {
   const [streamingMsg, setStreamingMsg] = useState<{ content: string; thinking: string } | null>(null);
   const [pendingRun, setPendingRun] = useState<ConfirmRun | null>(null);
   const [chatInput, setChatInput] = useState("");
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
@@ -259,7 +260,10 @@ export function App() {
 
   const fields = useMemo(() => fieldList(schema), [schema]);
   const displayLog = useMemo(
-    () => chatLog.filter((m) => (m.role === "user" || m.role === "assistant") && m.content),
+    () =>
+      chatLog
+        .map((m, idx) => ({ m, idx }))
+        .filter(({ m }) => (m.role === "user" || m.role === "assistant") && m.content),
     [chatLog],
   );
   // Past the sign-in gate below, `signedIn` is always true — chat is ready
@@ -291,8 +295,10 @@ export function App() {
   async function sendChat() {
     const text = chatInput.trim();
     if (!text || busy || !sessionId) return;
+    const editIndex = editingIndex;
     setChatInput("");
-    setChatLog((prev) => [...prev, { role: "user", content: text }]);
+    setEditingIndex(null);
+    setChatLog((prev) => [...(editIndex !== null ? prev.slice(0, editIndex) : prev), { role: "user", content: text }]);
     setBusy(true);
     setStreamingMsg({ content: "", thinking: "" });
     const requestId = crypto.randomUUID();
@@ -306,7 +312,7 @@ export function App() {
       });
     });
     try {
-      const r = await api.chatSend({ text, sessionId, requestId });
+      const r = await api.chatSend({ text, sessionId, requestId, editIndex: editIndex ?? undefined });
       if (r.ok) {
         // Reload from the session store rather than hand-appending — main.js
         // may have pruned/compacted the transcript for this turn, and that's
@@ -362,12 +368,14 @@ export function App() {
     await refreshSessions();
     setSessionId(r.session.id);
     setChatLog([]);
+    setEditingIndex(null);
   }
 
   async function pickSession(s: SessionSummary) {
     setSelected(null);
     setMode("chat");
     setSessionId(s.id);
+    setEditingIndex(null);
     const loaded = await api.loadSession({ id: s.id });
     if (!loaded.ok) {
       setSidebarError(loaded.message || "Could not open that chat.");
@@ -400,6 +408,7 @@ export function App() {
         setSessionId(null);
         setChatLog([]);
       }
+      setEditingIndex(null);
     }
   }
 
@@ -427,6 +436,22 @@ export function App() {
   const composer = (
     <div className="mx-auto w-full max-w-[720px]">
       <div className="rounded-2xl border border-line bg-bg-elevated px-3 pb-2 pt-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] transition-shadow focus-within:border-brand/50 focus-within:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]">
+        {editingIndex !== null && (
+          <div className="mb-1.5 flex items-center justify-between rounded-lg bg-bg px-2 py-1 text-[12px] text-fg-dim">
+            <span>Editing message — sending will remove the replies after it</span>
+            <button
+              type="button"
+              className="rounded p-0.5 hover:text-fg"
+              aria-label="Cancel edit"
+              onClick={() => {
+                setEditingIndex(null);
+                setChatInput("");
+              }}
+            >
+              <Icon d={paths.x} size={12} />
+            </button>
+          </div>
+        )}
         <textarea
           className="theme-scroll max-h-[220px] min-h-[72px] w-full resize-none overflow-y-auto bg-transparent px-1 text-[15px] text-fg placeholder:text-fg-dim outline-none"
           rows={emptyChatHome ? 3 : 2}
@@ -646,16 +671,16 @@ export function App() {
               </p>
             )}
             <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
-              {displayLog.map((m, i) =>
+              {displayLog.map(({ m, idx }) =>
                 m.role === "user" ? (
-                  <div key={i} className="group mx-auto flex max-w-[720px] flex-col items-end">
+                  <div key={idx} className="group mx-auto flex max-w-[720px] flex-col items-end">
                     <div className="max-w-[70%] whitespace-pre-wrap rounded-2xl bg-bg-elevated px-4 py-2.5 text-[15px] leading-relaxed">
                       {m.content}
                     </div>
-                    <MsgActions className="mt-1" text={m.content} onEdit={busy ? undefined : () => setChatInput(m.content)} />
+                    <MsgActions className="mt-1" text={m.content} onEdit={busy ? undefined : () => { setChatInput(m.content); setEditingIndex(idx); }} />
                   </div>
                 ) : (
-                  <div key={i} className="group mx-auto max-w-[720px]">
+                  <div key={idx} className="group mx-auto max-w-[720px]">
                     <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
                     <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
                     <MsgActions className="mt-1" text={m.content} />

@@ -357,7 +357,11 @@ handle("chat:send", async (_e, payload) => {
   if (!sessionId) return fail("no_session");
   if (!resolveRuntimeCommand()) return fail("runtime_missing");
 
-  const priorMessages = (await sessionsStore.loadSession(sessionId)).messages;
+  const stored = (await sessionsStore.loadSession(sessionId)).messages;
+  const editIndex = Number.isInteger(payload.editIndex) && payload.editIndex >= 0 && payload.editIndex <= stored.length
+    ? payload.editIndex
+    : null;
+  const priorMessages = editIndex !== null ? stored.slice(0, editIndex) : stored;
   const nextMessages = compaction.pruneIfNeeded([
     ...priorMessages,
     { role: "user", content: String(payload.text || "") },

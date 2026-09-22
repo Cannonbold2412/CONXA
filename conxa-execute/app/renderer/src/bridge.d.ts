@@ -72,7 +72,7 @@ export type Bridge = {
     getVersion: () => Promise<string>;
     onStatus: (cb: (p: UpdateStatus) => void) => () => void;
   };
-  chatSend: (p: { text: string; sessionId: string; requestId?: string }) => Promise<{ ok: boolean; text?: string; message?: string }>;
+  chatSend: (p: { text: string; sessionId: string; requestId?: string; editIndex?: number }) => Promise<{ ok: boolean; text?: string; message?: string }>;
   onChatDelta: (cb: (p: ChatDelta) => void) => () => void;
   onConfirmRun: (cb: (p: ConfirmRun) => void) => () => void;
   confirmRunReply: (p: { id: string; approved: boolean }) => Promise<{ ok: boolean }>;
