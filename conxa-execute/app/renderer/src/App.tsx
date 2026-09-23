@@ -45,6 +45,18 @@ function shownInput(name: string, value: unknown) {
   return SECRET_NAME.test(name) ? "••••••" : String(value ?? "");
 }
 
+// CONXA's replies use plain **bold** markdown; render it instead of showing the literal asterisks.
+function renderBold(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") ? (
+      <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>
+    ) : (
+      part
+    )
+  );
+}
+
 function SkillPills({ skills, onPick, limit }: { skills: SkillRow[]; onPick: (s: SkillRow) => void; limit?: number }) {
   const list = limit ? skills.slice(0, limit) : skills;
   return (
@@ -434,7 +446,7 @@ export function App() {
   }
 
   const composer = (
-    <div className="mx-auto w-full max-w-[720px]">
+    <div className="mx-auto w-full max-w-[900px]">
       <div className="rounded-2xl border border-line bg-bg-elevated px-3 pb-2 pt-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] transition-shadow focus-within:border-brand/50 focus-within:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]">
         {editingIndex !== null && (
           <div className="mb-1.5 flex items-center justify-between rounded-lg bg-bg px-2 py-1 text-[12px] text-fg-dim">
@@ -666,29 +678,29 @@ export function App() {
         {mode === "chat" && !emptyChatHome && (
           <div className="flex min-h-0 flex-1 flex-col">
             {!chatReady && (
-              <p className="mx-auto mt-4 max-w-[720px] rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
+              <p className="mx-auto mt-4 max-w-[900px] rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
                 Waiting for Execute access — the form still runs skills without chat.
               </p>
             )}
-            <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-8 py-8">
+            <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-4 py-8">
               {displayLog.map(({ m, idx }) =>
                 m.role === "user" ? (
-                  <div key={idx} className="group mx-auto flex max-w-[720px] flex-col items-end">
+                  <div key={idx} className="group mx-auto flex max-w-[900px] flex-col items-end">
                     <div className="max-w-[70%] whitespace-pre-wrap rounded-2xl bg-bg-elevated px-4 py-2.5 text-[15px] leading-relaxed">
                       {m.content}
                     </div>
                     <MsgActions className="mt-1" text={m.content} onEdit={busy ? undefined : () => { setChatInput(m.content); setEditingIndex(idx); }} />
                   </div>
                 ) : (
-                  <div key={idx} className="group mx-auto max-w-[720px]">
+                  <div key={idx} className="group mx-auto max-w-[900px]">
                     <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
-                    <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{m.content}</div>
+                    <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{renderBold(m.content)}</div>
                     <MsgActions className="mt-1" text={m.content} />
                   </div>
                 )
               )}
               {pendingRun && (
-                <div className="mx-auto max-w-[720px] rounded-xl border border-line bg-bg-elevated px-4 py-3">
+                <div className="mx-auto max-w-[900px] rounded-xl border border-line bg-bg-elevated px-4 py-3">
                   <div className="mb-1 text-[11px] text-fg-dim">Run this skill?</div>
                   <div className="text-[15px] font-medium">{pendingRun.skill || "Unnamed skill"}</div>
                   {Object.keys(pendingRun.inputs).length > 0 && (
@@ -708,18 +720,18 @@ export function App() {
                 </div>
               )}
               {streamingMsg && (
-                <div className="mx-auto max-w-[720px]">
+                <div className="mx-auto max-w-[900px]">
                   <div className="mb-1 text-[11px] text-fg-dim">CONXA</div>
                   {streamingMsg.thinking && (
                     <pre className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-dim">{streamingMsg.thinking}</pre>
                   )}
                   {streamingMsg.content && (
-                    <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{streamingMsg.content}</div>
+                    <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{renderBold(streamingMsg.content)}</div>
                   )}
                 </div>
               )}
             </div>
-            <div className="px-6 pb-6">{composer}</div>
+            <div className="px-4 pb-6">{composer}</div>
           </div>
         )}
       </main>
