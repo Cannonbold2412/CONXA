@@ -239,12 +239,17 @@ export function GroupAuthWizard({
     // status poll itself failing — a poll that starts erroring while `retry: false` is set
     // freezes `recStatusQ.data` at its last good value forever, which used to leave the card
     // stuck on "Sign in — this closes on its own" with nothing to break out of it.
+    // Deliberately NOT keyed on `auth_captured`: that flag just means "a storage-state save
+    // succeeded while the window was still open" — it also fires on the login page's own
+    // first redirect (e.g. www.github.com/login -> github.com/login), which would auto-finish
+    // the wizard before the user had signed in at all. Only reached_wait_url (a configured
+    // success_url actually matched) or the browser closing count as real completion.
     if (recStatusQ.isError) {
       finishMut.mutate()
       return
     }
     if (!recStatusQ.data) return
-    if (recStatusQ.data.reached_wait_url || recStatusQ.data.auth_captured || recStatusQ.data.browser_open === false) {
+    if (recStatusQ.data.reached_wait_url || recStatusQ.data.browser_open === false) {
       finishMut.mutate()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -253,7 +258,6 @@ export function GroupAuthWizard({
     finishMut.isPending,
     recStatusQ.isError,
     recStatusQ.data?.reached_wait_url,
-    recStatusQ.data?.auth_captured,
     recStatusQ.data?.browser_open,
   ])
 
@@ -405,7 +409,11 @@ export function GroupAuthWizard({
             <div className="pl-10">
               <p className="break-all font-mono text-[11px] text-zinc-500">{app.login_url}</p>
               {isActive && appState === 'waiting' && (
-                <p className="mt-0.5 text-[11px] text-sky-300">Sign in — this closes on its own once you're done, or click Done.</p>
+                <p className="mt-0.5 text-[11px] text-sky-300">
+                  {app.success_url
+                    ? "Sign in — this closes on its own once you're done, or click Done."
+                    : 'Sign in, then click Done or close the window.'}
+                </p>
               )}
               {isFailed && (
                 <p className="mt-0.5 text-[11px] text-red-300">{error || app.last_error || 'Login failed.'}</p>

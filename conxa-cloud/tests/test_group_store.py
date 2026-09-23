@@ -131,6 +131,21 @@ def test_apps_for_workflow_ignores_urls_disguised_as_hosts(tmp_groups_dir):
     assert matched == []
 
 
+def test_apps_for_workflow_matches_same_site_not_just_exact_hostname(tmp_groups_dir):
+    """A workflow that visits drive.google.com must match an app whose login_url is
+    accounts.google.com (same site) — not just an app whose login_url is exactly
+    drive.google.com. Regression: Github-to-Drive skills built with required_apps=[]
+    even though a Google app existed in the group, because the old exact-hostname
+    match disagreed with unclaimed_hosts' same-site rule (which raised no warning)."""
+    group = group_store.create_group("Enterprise")
+    group = group_store.add_app(group.id, "Google", "https://accounts.google.com", "")
+    group = group_store.add_app(group.id, "Github", "https://www.github.com/login", "")
+    group = group_store.add_app(group.id, "Render", "https://dashboard.render.com/login", "https://dashboard.render.com")
+
+    matched = group_store.apps_for_workflow(group.apps, "drive.google.com", "github.com")
+    assert {a.name for a in matched} == {"Google", "Github"}
+
+
 def test_unclaimed_hosts_warns_only_for_hosts_no_app_covers(tmp_groups_dir):
     group = group_store.create_group("Sales")
     group = group_store.add_app(group.id, "Render", "https://dashboard.render.com/login", "https://dashboard.render.com")

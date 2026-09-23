@@ -67,7 +67,13 @@ def _url_hostname(value: str) -> str:
 
 def apps_for_workflow(apps: list[GroupApp], *urls: str) -> list[GroupApp]:
     """Narrow a group's apps down to the ones a specific workflow actually
-    touches, matched by hostname against each app's login_url/success_url.
+    touches, matched by SITE (not exact hostname) against each app's
+    login_url/success_url — a workflow visiting drive.google.com matches an
+    app whose login_url is accounts.google.com, since that's the same
+    sign-in as far as a customer configuring the group is concerned. Same
+    site rule unclaimed_hosts below already used, so the two agree on what
+    counts as "covered" instead of one gating on an app the other calls
+    unclaimed for the identical host.
 
     `urls` accepts both full URLs (target_url/protected_url) and bare
     hostnames (SkillMeta.visited_hosts) — _url_hostname normalizes either.
@@ -77,12 +83,12 @@ def apps_for_workflow(apps: list[GroupApp], *urls: str) -> list[GroupApp]:
     this workflow need" can't drift between record-time and build-time — a
     workflow that never navigates to a given app is never gated on it.
     """
-    wf_hosts = {_url_hostname(u) for u in urls} - {""}
-    if not wf_hosts:
+    wf_sites = {_site(h) for h in (_url_hostname(u) for u in urls) if h}
+    if not wf_sites:
         return []
     return [
         a for a in apps
-        if _url_hostname(a.login_url) in wf_hosts or _url_hostname(a.success_url) in wf_hosts
+        if _site(_url_hostname(a.login_url)) in wf_sites or _site(_url_hostname(a.success_url)) in wf_sites
     ]
 
 
