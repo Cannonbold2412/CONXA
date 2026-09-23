@@ -64,12 +64,15 @@ function CompileCreditsSummary() {
   )
 }
 
-/** What's actually in the folder — a preview of the published workflows. */
+/** What's actually in the folder — a preview of the published workflows.
+ * Archived workflows are left out: they're no longer live for customers, so
+ * showing them here would overstate what this folder actually deploys. */
 function FolderContents({ group }: { group: Group }) {
-  const preview = group.workflows.slice(0, 4)
-  const hidden = group.workflows.length - preview.length
+  const visible = group.workflows.filter((w) => !w.archived)
+  const preview = visible.slice(0, 4)
+  const hidden = visible.length - preview.length
 
-  if (group.workflows.length === 0) {
+  if (visible.length === 0) {
     return (
       <p className="text-xs text-zinc-600">
         Empty — publish a workflow from Build Studio to fill this folder.
@@ -105,11 +108,9 @@ function FolderContents({ group }: { group: Group }) {
  * itself (see `.folder-card` in index.css), not drawn on top of a rectangle.
  * Mirrors the Workflows page folder cards in Build Studio. */
 function FolderCard({ group }: { group: Group }) {
-  const released = group.workflows.filter((w) => w.has_ready_version).length
-  const summary =
-    group.workflows.length === 0
-      ? 'No workflows yet'
-      : `${released} of ${group.workflows.length} published`
+  const visible = group.workflows.filter((w) => !w.archived)
+  const released = visible.filter((w) => w.has_ready_version).length
+  const summary = visible.length === 0 ? 'No workflows yet' : `${released} of ${visible.length} published`
 
   return (
     <Link
@@ -135,7 +136,7 @@ function FolderCard({ group }: { group: Group }) {
         />
 
         <span className="absolute left-4 top-0 flex h-[26px] max-w-[150px] items-center truncate text-[0.6875rem] font-medium text-zinc-400">
-          {group.workflows.length} workflow{group.workflows.length === 1 ? '' : 's'}
+          {visible.length} workflow{visible.length === 1 ? '' : 's'}
         </span>
 
         <div className="folder-body relative flex h-full flex-col gap-4 px-4 pb-4">

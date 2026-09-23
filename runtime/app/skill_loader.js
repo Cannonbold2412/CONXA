@@ -52,15 +52,34 @@ function loadSkillRegistry(skillPacksDir, cacheDir) {
   return index;
 }
 
-// Load from cache (instant) — falls back to full scan if cache missing
+// Load from cache (instant) — falls back to full scan if cache missing.
+// The cache can be stale relative to each workspace's pack.json (e.g. a skill
+// archived on the server since the cache was written) — drop any cached entry
+// whose slug isn't currently in that workspace's pack.skills before returning,
+// the same filter loadSkillRegistry applies when it builds the index fresh.
 function loadSkillRegistryFromCache(skillPacksDir, cacheDir) {
   const cachePath = path.join(cacheDir, "manifests.json");
+  let cached = null;
   if (fs.existsSync(cachePath)) {
     try {
-      return JSON.parse(fs.readFileSync(cachePath, "utf8"));
+      cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
     } catch (_) {}
   }
-  return loadSkillRegistry(skillPacksDir, cacheDir);
+  if (!cached) return loadSkillRegistry(skillPacksDir, cacheDir);
+
+  const packsByWorkspace = {};
+  const index = {};
+  for (const [key, entry] of Object.entries(cached)) {
+    if (!entry || !entry.workspace_id || !entry.slug) continue;
+    if (!(entry.workspace_id in packsByWorkspace)) {
+      const packPath = path.join(skillPacksDir, entry.workspace_id, "pack.json");
+      try { packsByWorkspace[entry.workspace_id] = JSON.parse(fs.readFileSync(packPath, "utf8")); }
+      catch (_) { packsByWorkspace[entry.workspace_id] = null; }
+    }
+    const pack = packsByWorkspace[entry.workspace_id];
+    if (pack && (pack.skills || []).includes(entry.slug)) index[key] = entry;
+  }
+  return index;
 }
 
 // Verify SHA-256 checksums declared in manifest.json
@@ -84,10 +103,17 @@ function verifySkillIntegrity(skillDir, manifest, label) {
 function hotReloadSkill(workspace_id, slug, skillPacksDir, index) {
   const packPath = path.join(skillPacksDir, workspace_id, "pack.json");
   const pack     = fs.existsSync(packPath) ? JSON.parse(fs.readFileSync(packPath, "utf8")) : {};
+  const key      = `${workspace_id}:${slug}`;
+  // A skill no longer in pack.skills (archived server-side, or never synced)
+  // must not be reloaded from disk even though its files are still there —
+  // same rule loadSkillRegistry applies when building the index fresh.
+  if (!(pack.skills || []).includes(slug)) {
+    delete index[key];
+    return;
+  }
   const group    = (pack.skill_groups || {})[slug] || "_default";
   const skillDir     = _skillCurrentDir(path.join(skillPacksDir, workspace_id), group, slug);
   const manifestPath = path.join(skillDir, "manifest.json");
-  const key          = `${workspace_id}:${slug}`;
   if (!fs.existsSync(manifestPath)) {
     delete index[key];
     return;

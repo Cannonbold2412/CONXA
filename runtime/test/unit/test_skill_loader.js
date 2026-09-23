@@ -171,6 +171,44 @@ test("ensureSkillIntegrity: a real checksum mismatch still throws after reload",
   );
 });
 
+test("hotReloadSkill: does not re-add a skill removed from pack.skills (archived) even though its files are still on disk", () => {
+  const root = tmp();
+  stageSkill(root, { slug: "demo", manifest: { name: "v1" } });
+  writePack(root, "co1", ["demo"]);
+  const index = {};
+  hotReloadSkill("co1", "demo", root, index);
+  assert.ok(index["co1:demo"], "present while still in pack.skills");
+
+  // Archive: server-side removal drops the slug from pack.skills, files untouched.
+  writePack(root, "co1", []);
+  hotReloadSkill("co1", "demo", root, index);
+  assert.ok(!("co1:demo" in index), "archived skill is dropped from the live index");
+  assert.ok(fs.existsSync(path.join(root, "co1", "_default", "demo", "current", "manifest.json")), "files remain on disk");
+});
+
+test("loadSkillRegistry: a skill on disk but not in pack.skills is not indexed", () => {
+  const root = tmp();
+  stageSkill(root, { slug: "demo", manifest: { name: "Demo" } });
+  writePack(root, "co1", []); // archived before or without ever appearing in pack.skills
+  const idx = loadSkillRegistry(root, null);
+  assert.deepStrictEqual(idx, {}, "skill absent from pack.skills is never indexed even though its files exist");
+});
+
+test("loadSkillRegistryFromCache: filters out a cached skill removed from pack.skills since the cache was written", () => {
+  const root = tmp();
+  stageSkill(root, { slug: "a", manifest: { name: "A" } });
+  stageSkill(root, { slug: "b", manifest: { name: "B" } });
+  writePack(root, "co1", ["a", "b"]);
+  const cacheDir = path.join(root, "_cache");
+  loadSkillRegistry(root, cacheDir); // populate cache with both skills
+
+  // Server archives "b": next sync rewrites pack.skills without it, cache is now stale.
+  writePack(root, "co1", ["a"]);
+  const idx = loadSkillRegistryFromCache(root, cacheDir);
+  assert.ok(idx["co1:a"], "still-listed skill served from cache");
+  assert.ok(!("co1:b" in idx), "archived skill filtered out of the stale cache");
+});
+
 test("loadSkillRegistryFromCache: serves cache instantly, rebuilds when absent/corrupt", () => {
   const root = tmp();
   stageSkill(root, { slug: "demo", manifest: { name: "Real" } });

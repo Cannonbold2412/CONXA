@@ -19,6 +19,7 @@ export function ReleaseHistoryTable({
   versions,
   currentStableVersion,
   isLoading,
+  archived = false,
   onReleased,
   onRolledBack,
   onSelectVersion,
@@ -27,6 +28,10 @@ export function ReleaseHistoryTable({
   versions: SkillPackVersion[]
   currentStableVersion: string | null
   isLoading: boolean
+  /** While true, hides Release/Rollback — the server rejects both with
+   * skill_archived anyway; this just keeps the UI from offering an action
+   * that would fail, without an admin having to try it first. */
+  archived?: boolean
   onReleased: (result: ReleaseResult) => void
   onRolledBack: (result: RollbackResult) => void
   onSelectVersion: (version: string) => void
@@ -96,7 +101,7 @@ export function ReleaseHistoryTable({
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {canReleaseTo(v) && (
+                  {!archived && canReleaseTo(v) && (
                     <ReleaseDialog
                       skillSlug={skillSlug}
                       version={v.version}
@@ -104,7 +109,7 @@ export function ReleaseHistoryTable({
                       onReleased={onReleased}
                     />
                   )}
-                  {canRollbackTo(v, currentStableVersion) && (
+                  {!archived && canRollbackTo(v, currentStableVersion) && (
                     <RollbackDialog
                       skillSlug={skillSlug}
                       version={v.version}

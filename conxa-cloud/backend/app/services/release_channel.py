@@ -39,6 +39,11 @@ EVT_ROLLBACK_COMPLETED = "rollback_completed"
 EVT_RELEASE_STARTED = "release_started"
 EVT_RELEASE_SUCCEEDED = "release_succeeded"
 EVT_RELEASE_FAILED = "release_failed"
+# A skill pulled out of pack.json's skills/skill_groups union so installed
+# runtimes stop seeing it on their next sync, without touching any file
+# already on those runtimes' disks. See release_routes.post_skill_archive.
+EVT_SKILL_ARCHIVED = "skill_archived"
+EVT_SKILL_UNARCHIVED = "skill_unarchived"
 
 
 def _channel_row_key(slug: str, skill_slug: str) -> str:

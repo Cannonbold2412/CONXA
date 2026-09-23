@@ -699,6 +699,7 @@ export type GroupWorkflowSummary = {
   current_stable_version: string | null
   has_ready_version: boolean
   ready_version: string | null
+  archived: boolean
 }
 
 export type Group = { group_id: string; group_name: string; workflows: GroupWorkflowSummary[] }
@@ -709,4 +710,22 @@ export function fetchGroups(): Promise<GroupsResponse> {
   return apiFetch(`/workflows/${RELEASE_GENERATION}/groups`).then((r) =>
     json<GroupsResponse>(r),
   )
+}
+
+export type ArchiveResult = { slug: string; skill_slug: string; archived: boolean; restored?: boolean }
+
+/** Pull a workflow out of every installed runtime's next sync — its files and
+ * version history stay put, so restoring it is a single unarchiveSkill call. */
+export function archiveSkill(skillSlug: string): Promise<ArchiveResult> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/skills/archive?skill_slug=${encodeURIComponent(skillSlug)}`,
+    { method: 'POST' },
+  ).then((r) => json<ArchiveResult>(r))
+}
+
+export function unarchiveSkill(skillSlug: string): Promise<ArchiveResult> {
+  return apiFetch(
+    `/workflows/${RELEASE_GENERATION}/skills/unarchive?skill_slug=${encodeURIComponent(skillSlug)}`,
+    { method: 'POST' },
+  ).then((r) => json<ArchiveResult>(r))
 }

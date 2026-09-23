@@ -31,6 +31,7 @@ from app.api.skillpack_storage import (
     read_pack_json_mirror,
     read_release_snapshot,
     record_known_group,
+    skillpack_known_skills_ns,
     skillpack_versions_ns,
     write_mutable_mirror_files,
     write_pack_json_mirror,
@@ -93,6 +94,20 @@ def _artifact_sha256(files: dict[str, bytes]) -> str:
 def _version_row(slug: str, skill_slug: str, version: str) -> dict[str, Any] | None:
     row = db_get(skillpack_versions_ns(slug, skill_slug), version)
     return row if isinstance(row, dict) else None
+
+
+def _known_skill_row(slug: str, skill_slug: str) -> dict[str, Any] | None:
+    row = db_get(skillpack_known_skills_ns(), f"{slug}:{skill_slug}")
+    return row if isinstance(row, dict) else None
+
+
+def _require_not_archived(slug: str, skill_slug: str) -> None:
+    """Release and rollback both move a skill back onto customers' machines —
+    reject either while the skill is archived, so an admin can't silently
+    un-archive a skill by releasing a new version onto it."""
+    row = _known_skill_row(slug, skill_slug)
+    if row is not None and row.get("archived"):
+        raise HTTPException(status_code=409, detail="skill_archived")
 
 
 @router.post("/{installer_version}/releases/preview")
@@ -251,6 +266,7 @@ def post_release_rollback(
     skill_slug = str(skill_slug or "").strip()
     if not skill_slug:
         raise HTTPException(status_code=400, detail="skill_slug_required")
+    _require_not_archived(slug, skill_slug)
 
     target_row = _version_row(slug, skill_slug, version)
     if target_row is None:
@@ -347,6 +363,7 @@ def post_release_release(
     skill_slug = str(skill_slug or "").strip()
     if not skill_slug:
         raise HTTPException(status_code=400, detail="skill_slug_required")
+    _require_not_archived(slug, skill_slug)
 
     target_row = _version_row(slug, skill_slug, version)
     if target_row is None:
@@ -438,6 +455,77 @@ def post_release_release(
     return {"slug": slug, "skill_slug": skill_slug, "released": version, "previous_stable": current_stable_version}
 
 
+@router.post("/{installer_version}/skills/archive")
+def post_skill_archive(installer_version: str, skill_slug: str, request: Request) -> dict[str, Any]:
+    """Take a published skill out of pack.json's skills/skill_groups union so
+    every installed runtime drops it from list_skills on its next sync —
+    without deleting anything already on disk on those machines. Version
+    history, snapshots, component_versions and the stable channel are all left
+    untouched, which is what makes unarchive a one-step restore."""
+    validate_installer_version(installer_version)
+    principal, slug = _require_owned_slug(request)
+    skill_slug = str(skill_slug or "").strip()
+    if not skill_slug:
+        raise HTTPException(status_code=400, detail="skill_slug_required")
+
+    row = _known_skill_row(slug, skill_slug)
+    if row is None:
+        raise HTTPException(status_code=404, detail="skill_not_found")
+    if row.get("archived"):
+        raise HTTPException(status_code=400, detail="already_archived")
+
+    row["archived"] = True
+    row["archived_at"] = time.time()
+    db_set(skillpack_known_skills_ns(), f"{slug}:{skill_slug}", row)
+
+    existing_pack = read_pack_json_mirror(slug)
+    remaining_skills = [s for s in (existing_pack.get("skills") or []) if isinstance(s, str) and s != skill_slug]
+    remaining_groups = {k: v for k, v in dict(existing_pack.get("skill_groups") or {}).items() if k != skill_slug}
+    write_pack_json_mirror(slug, {"skills": remaining_skills, "skill_groups": remaining_groups})
+
+    release_channel.record_release_event(principal, slug, skill_slug, release_channel.EVT_SKILL_ARCHIVED)
+    return {"slug": slug, "skill_slug": skill_slug, "archived": True}
+
+
+@router.post("/{installer_version}/skills/unarchive")
+def post_skill_unarchive(installer_version: str, skill_slug: str, request: Request) -> dict[str, Any]:
+    """Restore an archived skill. If it has a stable release, folds it back
+    into pack.json's skills/skill_groups union — the same union-membership
+    logic post_release_release uses — so runtimes pick it back up on their
+    next sync. A skill that was archived before ever being released stays out
+    of pack.json (there's nothing to restore) but is no longer flagged."""
+    validate_installer_version(installer_version)
+    principal, slug = _require_owned_slug(request)
+    skill_slug = str(skill_slug or "").strip()
+    if not skill_slug:
+        raise HTTPException(status_code=400, detail="skill_slug_required")
+
+    row = _known_skill_row(slug, skill_slug)
+    if row is None:
+        raise HTTPException(status_code=404, detail="skill_not_found")
+    if not row.get("archived"):
+        raise HTTPException(status_code=400, detail="not_archived")
+
+    row["archived"] = False
+    row.pop("archived_at", None)
+    db_set(skillpack_known_skills_ns(), f"{slug}:{skill_slug}", row)
+
+    stable_version = release_channel.get_stable_version(slug, skill_slug)
+    if stable_version:
+        existing_pack = read_pack_json_mirror(slug)
+        existing_skills = [s for s in (existing_pack.get("skills") or []) if isinstance(s, str)]
+        if skill_slug not in existing_skills:
+            existing_skills.append(skill_slug)
+        existing_skill_groups = dict(existing_pack.get("skill_groups") or {})
+        group_id = str(row.get("group_id") or "")
+        if group_id:
+            existing_skill_groups[skill_slug] = group_id
+        write_pack_json_mirror(slug, {"skills": existing_skills, "skill_groups": existing_skill_groups})
+
+    release_channel.record_release_event(principal, slug, skill_slug, release_channel.EVT_SKILL_UNARCHIVED)
+    return {"slug": slug, "skill_slug": skill_slug, "archived": False, "restored": bool(stable_version)}
+
+
 @router.put("/{installer_version}/groups/{group_id}")
 def put_group(
     installer_version: str, group_id: str, body: UpsertGroupBody, request: Request
@@ -494,6 +582,7 @@ def get_groups(installer_version: str, request: Request) -> dict[str, Any]:
                 "current_stable_version": current_stable_version,
                 "has_ready_version": ready_row is not None,
                 "ready_version": ready_row.get("version") if ready_row else None,
+                "archived": bool(row.get("archived")),
             }
         )
 

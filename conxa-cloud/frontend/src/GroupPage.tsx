@@ -64,40 +64,50 @@ export function GroupPage({ groupId }: { groupId: string }) {
           </Card>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {group.workflows.map((w) => (
-              <Link
-                key={w.skill_slug}
-                href={`/packages/groups/${encodeURIComponent(groupId)}/workflows/${encodeURIComponent(w.skill_slug)}`}
-                className="group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
-              >
-                <Card
-                  size="sm"
-                  className="h-full gap-0 border-white/8 bg-white/[0.035] py-3 shadow-none transition-colors group-hover:border-white/15 group-hover:bg-white/[0.05]"
+            {[...group.workflows]
+              .sort((a, b) => Number(a.archived) - Number(b.archived))
+              .map((w) => (
+                <Link
+                  key={w.skill_slug}
+                  href={`/packages/groups/${encodeURIComponent(groupId)}/workflows/${encodeURIComponent(w.skill_slug)}`}
+                  className={`group block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 ${
+                    w.archived ? 'opacity-50' : ''
+                  }`}
                 >
-                  <CardHeader className="pb-2">
-                    <div className="flex items-start justify-between gap-2">
-                      <CardTitle className="truncate text-sm font-medium text-white">{w.workflow_name}</CardTitle>
-                      {w.has_ready_version && (
-                        <Badge variant="outline" className="h-5 shrink-0 border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">
-                          Ready for Release
-                        </Badge>
-                      )}
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
-                      <span className="font-mono">
-                        {w.current_stable_version ? `v${w.current_stable_version}` : 'Not released'}
-                      </span>
-                      <span className="inline-flex items-center gap-1 text-zinc-400 transition-colors group-hover:text-white">
-                        Open
-                        <ChevronRight className="size-3.5" />
-                      </span>
-                    </div>
-                  </CardContent>
-                </Card>
-              </Link>
-            ))}
+                  <Card
+                    size="sm"
+                    className="h-full gap-0 border-white/8 bg-white/[0.035] py-3 shadow-none transition-colors group-hover:border-white/15 group-hover:bg-white/[0.05]"
+                  >
+                    <CardHeader className="pb-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <CardTitle className="truncate text-sm font-medium text-white">{w.workflow_name}</CardTitle>
+                        {w.archived ? (
+                          <Badge variant="outline" className="h-5 shrink-0 border-white/15 bg-white/[0.06] text-[10px] text-zinc-400">
+                            Archived
+                          </Badge>
+                        ) : (
+                          w.has_ready_version && (
+                            <Badge variant="outline" className="h-5 shrink-0 border-sky-500/30 bg-sky-500/10 text-[10px] text-sky-300">
+                              Ready for Release
+                            </Badge>
+                          )
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                      <div className="flex items-center justify-between gap-2 text-xs text-zinc-500">
+                        <span className="font-mono">
+                          {w.current_stable_version ? `v${w.current_stable_version}` : 'Not released'}
+                        </span>
+                        <span className="inline-flex items-center gap-1 text-zinc-400 transition-colors group-hover:text-white">
+                          Open
+                          <ChevronRight className="size-3.5" />
+                        </span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </Link>
+              ))}
           </div>
         )}
       </main>

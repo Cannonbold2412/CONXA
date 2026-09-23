@@ -589,3 +589,140 @@ def test_get_groups_still_includes_skills_never_synced_as_a_group():
     groups = client.get("/api/v1/workflows/v2/groups").json()["groups"]
     match = next(g for g in groups if g["group_id"] == "legacy-grp")
     assert [w["skill_slug"] for w in match["workflows"]] == ["orphan"]
+
+
+# ---------------------------------------------------------------------------
+# Archive / unarchive — pull a skill out of runtime visibility without
+# deleting anything (version history, snapshots, stable channel all untouched)
+# ---------------------------------------------------------------------------
+
+def _archive(skill_slug: str):
+    return client.post(f"/api/v1/workflows/v2/skills/archive?skill_slug={skill_slug}")
+
+
+def _unarchive(skill_slug: str):
+    return client.post(f"/api/v1/workflows/v2/skills/unarchive?skill_slug={skill_slug}")
+
+
+def test_archive_drops_skill_from_delta_and_pack_json_but_keeps_its_history():
+    _publish_and_release("wrk_local", "deploy", "1.0.0", "v1")
+    delta = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D").json()
+    assert any(s["name"] == "deploy" for s in delta["skills"])
+
+    r = _archive("deploy")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"slug": "wrk_local", "skill_slug": "deploy", "archived": True}
+
+    delta_after = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D").json()
+    assert next((s for s in delta_after["skills"] if s["name"] == "deploy"), None) is None
+
+    # Nothing about its own history moved.
+    assert release_channel.get_stable_version("wrk_local", "deploy") == "1.0.0"
+    row = db_get(publish_routes.skillpack_versions_ns("wrk_local", "deploy"), "1.0.0")
+    assert row["status"] == "published"
+
+
+def test_archived_skill_still_shows_in_groups_flagged():
+    _publish_and_release("wrk_local", "deploy", "1.0.0", "v1")
+    _archive("deploy")
+    groups = client.get("/api/v1/workflows/v2/groups").json()["groups"]
+    workflow = next(w for g in groups for w in g["workflows"] if w["skill_slug"] == "deploy")
+    assert workflow["archived"] is True
+
+
+def test_unarchive_restores_the_stable_release_to_the_delta():
+    _publish_and_release("wrk_local", "deploy", "1.0.0", "v1")
+    _archive("deploy")
+
+    r = _unarchive("deploy")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"slug": "wrk_local", "skill_slug": "deploy", "archived": False, "restored": True}
+
+    delta = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D").json()
+    assert any(s["name"] == "deploy" for s in delta["skills"])
+
+    groups = client.get("/api/v1/workflows/v2/groups").json()["groups"]
+    workflow = next(w for g in groups for w in g["workflows"] if w["skill_slug"] == "deploy")
+    assert workflow["archived"] is False
+
+
+def test_unarchive_a_skill_that_was_never_released_does_not_add_it_to_pack_json():
+    _publish("wrk_local", "deploy", "1.0.0", "v1")  # ready, never released
+    _archive("deploy")  # nothing to remove from pack.json, still flags the row
+
+    r = _unarchive("deploy")
+    assert r.status_code == 200, r.text
+    assert r.json()["restored"] is False
+
+    delta = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D").json()
+    assert next((s for s in delta["skills"] if s["name"] == "deploy"), None) is None
+
+
+def test_release_and_rollback_reject_an_archived_skill():
+    _publish_and_release("wrk_local", "deploy", "1.0.0", "v1")
+    _publish("wrk_local", "deploy", "1.1.0", "v2")
+    _archive("deploy")
+
+    r = _release("wrk_local", "deploy", "1.1.0")
+    assert r.status_code == 409
+    assert r.json()["detail"] == "skill_archived"
+
+    r2 = client.post("/api/v1/workflows/v2/releases/1.0.0/rollback?skill_slug=deploy")
+    assert r2.status_code == 409
+    assert r2.json()["detail"] == "skill_archived"
+
+
+def test_archive_twice_and_unarchive_twice_are_rejected():
+    _publish_and_release("wrk_local", "deploy", "1.0.0", "v1")
+    assert _archive("deploy").status_code == 200
+    r = _archive("deploy")
+    assert r.status_code == 400
+    assert r.json()["detail"] == "already_archived"
+
+    assert _unarchive("deploy").status_code == 200
+    r2 = _unarchive("deploy")
+    assert r2.status_code == 400
+    assert r2.json()["detail"] == "not_archived"
+
+
+def test_archive_unknown_skill_is_404():
+    r = _archive("never-published")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "skill_not_found"
+
+
+def test_archiving_one_skill_never_touches_a_siblings_visibility():
+    _publish_and_release("wrk_local", "skill-a", "1.0.0", "a-v1")
+    _publish_and_release("wrk_local", "skill-b", "1.0.0", "b-v1")
+    _archive("skill-a")
+
+    delta = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D").json()
+    names = {s["name"] for s in delta["skills"]}
+    assert "skill-a" not in names
+    assert "skill-b" in names
+
+
+def test_unauthorized_user_cannot_archive(monkeypatch):
+    _publish_and_release("wrk_local", "deploy", "1.0.0", "v1")
+    monkeypatch.setattr(settings, "api_proxy_shared_secret", "proxy-secret")
+    r = client.post(
+        "/api/v1/workflows/v2/skills/archive?skill_slug=deploy",
+        headers={
+            "x-conxa-proxy-secret": "proxy-secret",
+            "x-conxa-user-id": "user_norole",
+            "x-conxa-org-id": "org_norole",
+        },
+    )
+    assert r.status_code == 403
+    delta = client.get("/api/v1/skill-packs/wrk_local/delta?since=%7B%7D").json()
+    assert any(s["name"] == "deploy" for s in delta["skills"])  # unaffected
+
+
+def test_archive_and_unarchive_record_release_events():
+    _publish_and_release("wrk_local", "deploy", "1.0.0", "v1")
+    _archive("deploy")
+    _unarchive("deploy")
+    events = client.get("/api/v1/workflows/v2/releases/events?skill_slug=deploy").json()["events"]
+    actions = [e["action"] for e in events]
+    assert "skill_archived" in actions
+    assert "skill_unarchived" in actions

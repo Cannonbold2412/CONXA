@@ -19,6 +19,7 @@ import { ReleaseHistoryTable } from '@/components/release/ReleaseHistoryTable'
 import { DeploymentPanel } from '@/components/release/DeploymentPanel'
 import { ReleaseAuditLog } from '@/components/release/ReleaseAuditLog'
 import { ReleaseDialog } from '@/components/release/ReleaseDialog'
+import { ArchiveSkillDialog } from '@/components/release/ArchiveSkillDialog'
 import { ChevronLeft, PackageCheck } from 'lucide-react'
 import { queryKeys } from '@/lib/queryKeys'
 
@@ -49,7 +50,9 @@ export function WorkflowReleasePage({
   const groupsQ = useQuery({ queryKey: queryKeys.groups, queryFn: fetchGroups, staleTime: 15_000 })
   const groups = groupsQ.data?.groups ?? []
   const group = groups.find((g) => g.group_id === groupId)
-  const workflowName = group?.workflows.find((w) => w.skill_slug === skillSlug)?.workflow_name ?? skillSlug
+  const workflow = group?.workflows.find((w) => w.skill_slug === skillSlug)
+  const workflowName = workflow?.workflow_name ?? skillSlug
+  const isArchived = workflow?.archived ?? false
 
   const versionsQ = useQuery({
     queryKey: queryKeys.skillPackVersions(skillSlug),
@@ -99,17 +102,20 @@ export function WorkflowReleasePage({
       <PageHeader
         title={workflowName}
         actions={
-          <Button
-            asChild
-            variant="outline"
-            size="sm"
-            className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
-          >
-            <Link href={`/packages/groups/${encodeURIComponent(groupId)}`}>
-              <ChevronLeft className="size-3.5" />
-              Back
-            </Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            {workflow && <ArchiveSkillDialog skillSlug={skillSlug} archived={isArchived} onChanged={refreshReleaseData} />}
+            <Button
+              asChild
+              variant="outline"
+              size="sm"
+              className="border-white/10 bg-white/[0.04] text-zinc-200 hover:bg-white/[0.08] hover:text-white"
+            >
+              <Link href={`/packages/groups/${encodeURIComponent(groupId)}`}>
+                <ChevronLeft className="size-3.5" />
+                Back
+              </Link>
+            </Button>
+          </div>
         }
       />
 
@@ -160,7 +166,7 @@ export function WorkflowReleasePage({
                           </button>
                         ))}
                       </div>
-                      {selectedReady && (
+                      {selectedReady && !isArchived && (
                         <ReleaseDialog
                           skillSlug={skillSlug}
                           version={selectedReady}
@@ -215,6 +221,7 @@ export function WorkflowReleasePage({
                   versions={versions}
                   currentStableVersion={currentStableVersion}
                   isLoading={false}
+                  archived={isArchived}
                   onReleased={refreshReleaseData}
                   onRolledBack={refreshReleaseData}
                   onSelectVersion={() => {}}
