@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import {
+  Bug,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
@@ -47,6 +48,7 @@ const manageNavGroup = {
     { to: '/team', label: 'Team', icon: Users },
     { to: '/billing', label: 'Billing', icon: CreditCard },
     { to: '/settings', label: 'Settings', icon: Settings },
+    { to: '/report-bug', label: 'Report a bug', icon: Bug },
   ],
 } as const
 

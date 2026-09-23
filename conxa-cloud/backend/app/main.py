@@ -19,6 +19,7 @@ from conxa_core.db import healthcheck, init_db, using_database
 from conxa_core.storage.selector_cache import cleanup_expired_entries
 from conxa_core.storage.snapshots_gc import cleanup_old_snapshots
 
+from app.api.bug_report_routes import router as bug_report_router
 from app.api.byok_routes import router as byok_router
 from app.api.entitlement_routes import router as entitlement_router
 from app.api.errors import http_error_handler, unhandled_error_handler
@@ -175,6 +176,7 @@ app.add_exception_handler(Exception, unhandled_error_handler)
 # of these paths are permanent and cannot be renamed to avoid the collision.
 app.include_router(job_router, prefix="/api/v1")
 app.include_router(byok_router, prefix="/api/v1")
+app.include_router(bug_report_router, prefix="/api/v1")
 app.include_router(entitlement_router, prefix="/api/v1")
 app.include_router(product_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")

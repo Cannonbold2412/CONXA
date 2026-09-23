@@ -65,6 +65,13 @@ BUILD_ARTIFACT_UPLOAD_PATHS = (
     "/skill-packs/upload",
 )
 
+# The dashboard's "Report a bug" page posts straight to the backend (bypassing the
+# Vercel proxy's ~4.5MB request cap) with base64 attachments up to
+# settings.bug_report_max_bytes (25MB raw); base64 adds ~33% overhead, so give it
+# headroom over the default JSON cap without reusing the much larger build-artifact one.
+BUG_REPORT_UPLOAD_PATH = "/api/v1/bug-reports"
+BUG_REPORT_UPLOAD_MAX_BYTES = 35 * 1024 * 1024
+
 
 def _request_id(request: Request) -> str:
     rid = request.headers.get("x-request-id", "").strip()
@@ -99,6 +106,8 @@ def _body_limit_for_path(path: str, request: Request | None = None) -> int:
     normalized = path.rstrip("/") or "/"
     if normalized.endswith(BUILD_ARTIFACT_UPLOAD_PATHS) or normalized == "/api/v1/workflows/publish":
         return settings.build_artifact_upload_max_bytes
+    if normalized == BUG_REPORT_UPLOAD_PATH:
+        return BUG_REPORT_UPLOAD_MAX_BYTES
     if normalized == "/api/v1/llm/proxy/vision":
         return settings.llm_vision_proxy_max_bytes
     if normalized in _EXECUTE_CHAT_PROXY_PATHS and request is not None:
