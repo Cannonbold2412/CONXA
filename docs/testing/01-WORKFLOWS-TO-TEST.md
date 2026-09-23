@@ -940,6 +940,457 @@ safety bug, same severity class as WF-8's B-8.
 
 ---
 
+## WF-16 — Intelligent Compiler: how a recording turns into a reliable skill
+
+**Sites:** S3 (demoqa.com — forms, date picker, dynamic properties) + S10 (datatables.net — identical
+rows) + S16 (github.com public repo folder, for a single download→upload pair) · **Tabs:** 1 ·
+**Tools:** the compile report panel in Build Studio (opens automatically after compiling; also
+reachable from a skill's detail page)
+
+This is not a new feature test — it is a guided tour of what "the compiler is smart" actually
+means in practice, broken into small, checkable pieces a non-engineer can verify by eye. Every
+piece below is something the compiler does automatically, with **zero manual selector-writing**;
+your job is to record something ordinary and confirm the compiler produced something trustworthy.
+
+Plain-language explainer before you start: when you record actions in a browser, all the compiler
+first sees is "the user clicked something." A website's buttons can be renamed, moved, or have
+their invisible ID numbers change between when you record and when the skill runs again weeks
+later. The "intelligent compiler" is the part that looks at everything it can see about the
+element you clicked — its visible label, its role (button vs. link vs. checkbox), nearby text,
+its position relative to other elements — and bundles all of that into one "identity" for the
+element, instead of betting everything on one fragile detail. It also reads the whole recording
+once it's done and adds a layer of *meaning* on top: what is this workflow trying to do, which
+typed values should become fill-in-the-blank inputs instead of frozen text, and which steps look
+like they didn't matter. None of this second layer is allowed to touch how an element gets found
+on the page — that job stays with the identity bundle alone.
+
+### Segment A — Multi-signal identity (does the compiler use more than one clue?)
+
+1. Record on `demoqa.com/text-box`: click **Full Name**, type `Test User` → click **Email**, type
+   `test@example.com` → click **Submit**. Stop recording, compile.
+2. Open the compile report. For the Full Name step, find its identity information (labelled
+   "Identity Bundle" or similar in the report / skill JSON). Confirm you can see **more than one**
+   signal recorded for that single element — for example its accessible role (`textbox`), a
+   test-id if the site has one, and nearby label text (`Full Name`) — not just one raw CSS
+   selector string.
+3. Confirm nowhere in that identity information does a signal look like it was **invented** —
+   every value should trace back to something actually visible/inspectable on the real page (no
+   selector that looks like a guessed sentence, no placeholder text that wasn't on the page).
+4. Confirm the step's confidence score (shown in the compile report) is reasonably high for this
+   simple, stable form — a low score here with no obvious reason is worth flagging.
+
+**What this proves:** the compiler is building identity from several independent clues about the
+same element, the way a person would recognize a button by more than just its exact pixel
+position — this is what lets a later step survive small site changes without any human rewriting
+a selector (see WF-7 for what happens when it has to actually recover from a change).
+
+### Segment B — The meaning-layer pass writes intent, never addresses
+
+1. Re-open the Full Name / Email recording from Segment A (or record a fresh short one). Before
+   compiling, note the literal values you typed (`Test User`, `test@example.com`).
+2. Compile. Open the compile report and look at the compiled step's **value** field for the Full
+   Name step.
+3. Expect: the value is now a fill-in-the-blank token like `{{full_name}}`, not the literal text
+   `Test User` you typed — the compiler recognized this as a piece of information that should be
+   supplied fresh on every run, not frozen from the one time you recorded it. Same check for the
+   email field → `{{email}}`.
+4. Look for a short plain-English description attached to each step (a "semantic description" —
+   something like "Fill in the full name field"). Confirm it reads like a person wrote it, not a
+   raw technical log line.
+5. **What must NOT have changed:** the step's underlying element-finding information (its identity
+   bundle / selectors) from Segment A. This meaning-layer pass is only allowed to add plain-English
+   labels and turn typed text into placeholders — it is never allowed to change *how* the compiler
+   finds the element on the page. If you can compare a "before this pass" and "after" version of
+   the same step's selector data and they differ, that is a serious bug — log it immediately, same
+   severity as WF-8's B-8.
+
+**What this proves:** the compiler adds a helpful "what does this step mean" layer without ever
+touching the "how do I find this element" layer — meaning and addressing are kept strictly apart.
+
+### Segment C — A step the compiler decides didn't matter gets archived, not deleted
+
+1. Record a short flow on `demoqa.com/dynamic-properties`: click somewhere that visibly does
+   nothing (e.g. click blank page whitespace, or a disabled-looking control) as an extra step in
+   the middle of an otherwise normal 4–5 step recording. Stop, compile.
+2. Open the compile report's list of archived/removed steps (look for a section like "archived
+   steps" or "steps removed as no-ops"). Confirm the no-op click you added shows up there —
+   **not silently gone**, but visible with a reason.
+3. Confirm the rest of the workflow (the steps that DID matter) compiled normally and the archived
+   step is genuinely absent from the steps that will run at replay time.
+4. Confirm you can still see, in the archive, what the original recorded step looked like — this
+   is the audit trail proving nothing was silently thrown away.
+
+**What this proves:** when the compiler decides a step is noise, it says so out loud and keeps a
+record, rather than quietly making the workflow shorter with no trace.
+
+### Segment D — A suggested check is advisory, never a hard gate
+
+1. Using any of the recordings above, look at the compiled step right after a "commit" action
+   (e.g. right after Submit on the demoqa form). Check whether the compile report added a
+   suggested extra check (an "assertion") — something like "the page text changes" or "the URL
+   changes" after that step.
+2. If one was added, confirm its type is a plain text/URL/page-state check — **never** a check
+   that says "a specific element selector must exist/not exist," since that kind of check would
+   effectively be the compiler writing a selector by another name.
+3. Confirm the suggested check is marked **optional/advisory** (not required to pass) — deliberately
+   run the workflow once on a version of the page where that check would fail (e.g. block the
+   network right after Submit) and confirm the run still reports success rather than failing on
+   the suggested check alone.
+
+**What this proves:** the compiler is allowed to suggest "here's a way to double-check this step
+worked," but a wrong suggestion can never fail an otherwise-successful run.
+
+### Segment E — Custom date pickers collapse into one clean step
+
+1. Record on `demoqa.com` (a page with a calendar-style date picker, e.g. the Date of Birth field
+   on the practice form): click to open the picker, navigate a month if needed, click a specific
+   day. This is usually 3–5 separate recorded clicks (open, maybe navigate, pick day).
+2. Compile. Open the compile report's step list and count how many steps represent that date pick.
+3. Expect: **one** step, not three-to-five — the compiler recognized the whole "open → navigate →
+   pick" sequence as one date-picking action and collapsed it, remembering which exact day you
+   picked as a reusable value rather than a frozen click sequence.
+4. Replay the skill and, if the skill takes a date as an input, replay it with a **different**
+   date than the one you recorded (e.g. a different month entirely, requiring several
+   month-navigation clicks the picker will do on its own). Confirm it correctly lands on the new
+   date, not the recorded one — proving it's driving the widget live, not replaying frozen clicks.
+
+**What this proves:** the compiler recognizes a whole interaction pattern (not just individual
+clicks) and turns it into something that can be re-parameterized, the same idea as Segment B but
+for a much fussier kind of control.
+
+### Segment F — Loop suggestions: "you did this once, want it for a list?"
+
+1. Record on S16 (a public GitHub repo folder): download one file, then upload that exact same
+   file back somewhere that accepts uploads (e.g. `demoqa.com/upload-download`) — a simple
+   download→upload pair, one file only.
+2. Compile. Open the compile report and look for a "loop suggestion" (may be labeled "turn this
+   into a loop" or similar) in the editor/Human Edit view.
+3. Expect a suggestion proposing to generalize this single file's name into a list your workflow
+   could loop over (a `for_each`), **not automatically applied** — it should require you to click
+   Accept in the editor before anything changes.
+4. Accept it, save, and confirm the compiled workflow now has one loop step instead of the two
+   fixed download/upload steps, and that it still runs correctly for the single file (a loop of
+   one is a valid loop).
+5. Reject-path check: repeat with a fresh recording, and this time do NOT accept the suggestion.
+   Confirm the workflow compiles and runs exactly as it would have with no suggestion feature at
+   all — declining a suggestion must never change behavior.
+
+**What this proves:** the compiler notices a repeatable pattern and offers to generalize it, but
+never rewrites your workflow without an explicit human click — same governance model as every
+other "the AI proposes, a person disposes" feature in this file (WF-6's branches, WF-14's AI
+Review, WF-17 below).
+
+### Segment G — Compile determinism (recompiling shouldn't reshuffle anything)
+
+This is the same check as WF-3 Leg C — if you've already run it there, you don't need to repeat
+it here. If not: recompile the SAME recorded session twice (`conxa-cloud/scripts/recompile_session.py
+<session_id>` run twice) and diff the two compiled outputs' selectors/identity bundles. Identical =
+PASS. Any difference between two compiles of the exact same recording means something in the
+compiler is non-deterministic, which would make even the "same recording, same day" case unreliable.
+
+**Where failures go:** `TODO.md` under the `IdentityBundle`/`selector_grammar` items for Segment A;
+BUILD-25 (second-opinion / meaning-layer) items for Segments B–D — a Segment B selector-mismatch
+finding is PROD-3-severity, log it as such; date-picker items for Segment E; loop-suggestion items
+for Segment F.
+
+---
+
+## WF-17 — Conxa Copilot: the "why did this fail" chat assistant in Human Edit
+
+**Sites:** local [`fixtures/recovery-fixture.html`](fixtures/recovery-fixture.html) (easiest way to
+force a clean, repeatable failure — see WF-7's setup) · **Tabs:** 1 · **Where:** Build Studio →
+open a workflow in Human Edit → the floating chat launcher (bottom corner of the editor, not the
+Tools-rail dialog)
+
+Plain-language explainer: Conxa Copilot is a chat window that lives inside the workflow editor.
+When a test run fails, instead of you staring at a stack trace, you can ask the Copilot "why did
+this fail?" and it looks at the same evidence a person would — a screenshot of the page at the
+moment it broke, what the compiler originally believed about that step, and the actual error — and
+explains it in plain English. It can also **suggest** small fixes (like "type a plain description
+into this field" or "call this value {{customer_name}} instead of freezing the text you typed"),
+but it never applies anything by itself and it is never allowed to touch how an element gets found
+on the page (see WF-16 Segment B — this is the same boundary, enforced the same way).
+
+### Stage 1 — Force a failure to diagnose
+
+1. Serve the recovery fixture (`python -m http.server 8099 --directory docs\testing\fixtures`).
+   Record a minimal skill against `http://localhost:8099/recovery-fixture.html?v=gone` (a variant
+   where the button truly isn't there) — click "Buy Now", stop, compile.
+2. Run **Studio Run Test**. Expect it to fail cleanly (this variant is designed to be unrecoverable
+   — see WF-7 R4). You now have a real failed run to diagnose.
+
+### Stage 2 — Open Copilot and ask about the failure
+
+1. In Human Edit, click the Copilot launcher (bottom-corner floating button, not a tab inside the
+   Tools rail). A chat panel should open without hiding the step list behind it.
+2. Type: `Why did this step fail?` and send.
+3. Expect: the reply streams in live (text appears progressively, like a typing effect — not a
+   long pause followed by the whole answer at once) and references the ACTUAL failure — e.g.
+   mentions the button/element that was expected and that it could not be found — not a generic
+   "something went wrong" non-answer. If a failure screenshot exists, the reply should reflect
+   what's actually visible on that screenshot (describe it back to Copilot yourself and confirm it
+   matches what the panel is discussing).
+4. Confirm a "thinking" indicator shows immediately after you send the message (before any text
+   streams in), so the panel never looks frozen/unresponsive during the gap before the first word
+   arrives.
+
+### Stage 3 — A proposal is a suggestion, not an edit
+
+1. Continue the conversation: ask `Can you suggest a fix?` (or similar). If the failure is a
+   genuinely unrecoverable missing-element case (which `?v=gone` is, by design), Copilot may
+   correctly say there's nothing it can safely propose — that's a valid, honest answer, not a bug.
+   To actually exercise a proposal, use a workflow where the meaningful fix is something Copilot
+   CAN legally touch — e.g. record a form with a value that should have been a variable but was
+   compiled as frozen text (see WF-16 Segment B), and ask Copilot to review it.
+2. When a proposal card appears, confirm it shows a clear before/after diff (what would change)
+   and two explicit buttons — Accept and Reject. Confirm the proposal's *type* is limited to things
+   like the field's value, its input-binding token, its intent/description, or an advisory
+   assertion — **never** anything that looks like a selector or element-identity data. If you ever
+   see a proposal that would change how an element is found, that is a hard safety-rule violation —
+   log it immediately, same severity as WF-8's B-8.
+3. Click **Accept** on a legitimate proposal. Confirm: the editor's step actually updates to match
+   the diff you saw; the change goes through the same "Undo" system as a manual edit (test Undo —
+   it should revert the Copilot's change exactly like it would a manual one); the workflow still
+   compiles cleanly afterward.
+4. On a different proposal (or a fresh one), click **Reject** instead. Confirm the step is
+   genuinely unchanged. There's no user-visible proof the rejection was "logged" (that's an
+   internal record for improving future suggestions), but confirm at minimum that rejecting one
+   proposal doesn't block you from asking Copilot a follow-up question or getting a new proposal
+   later in the same conversation.
+
+### Stage 4 — Conversation mechanics
+
+1. **Edit and resend:** scroll back to your first message in the conversation, edit it to ask
+   something different, and send. Confirm the conversation after that point is replaced (the old
+   replies after your edited message disappear) and a fresh reply comes back for the new question
+   — not the old replies plus a duplicate new one.
+2. **New session:** click "new conversation" / start fresh. Confirm the chat visibly clears. Then
+   navigate away from Human Edit and back (or restart Studio) — confirm your previous conversation
+   isn't silently lost forever; it should be archived somewhere retrievable (even if there's no UI
+   to browse old sessions yet, the underlying file should exist — ask an engineer to confirm the
+   session-archive file grew if you want hard proof).
+
+### Stage 5 — Honest about missing evidence
+
+1. Pick a skill that has **never** been test-run in this Studio install (a freshly compiled one you
+   haven't clicked "Run Test" on yet). Open Copilot and ask `Why did this fail?` anyway.
+2. Expect: Copilot should say, in effect, that there's no failed run on record for this skill / it
+   has nothing to inspect — **not** invent a plausible-sounding but fabricated diagnosis. This is
+   the most important honesty check in this workflow: an AI assistant that confidently explains a
+   failure it never actually saw is worse than one that admits it can't help yet.
+
+**What this proves on pass:** the Copilot reasons from real evidence (or admits it has none),
+proposes only within its legal boundary (meaning, never selectors), never applies anything without
+an explicit Accept click, and a rejection is a real dead end that changes nothing.
+**Where failures go:** `TODO.md` BUILD-26; a proposal that touches selector/identity data →
+PROD-3-severity, log immediately; a fabricated diagnosis with no real evidence → log as an
+overconfidence/hallucination bug against `llm/copilot.py`.
+
+---
+
+## WF-18 — Authentication: signing in to every part of Conxa
+
+**Sites:** none required for Legs A/B/D (Conxa's own login screens) · S1 (the-internet.herokuapp.com
+`/login`) for Leg C · **Tools:** a clean-ish browser profile helps for the first-run checks
+
+Conxa has **four separate places** someone signs in, and they don't share tokens with each other
+on purpose — mixing them up is a real risk, so this workflow tests each one on its own and then
+checks the boundaries between them.
+
+| Leg | Who is signing in | Into what | Proves |
+|---|---|---|---|
+| A | You, the SaaS vendor / developer | Build Studio → Conxa Cloud | Clerk login works, persists, refreshes silently |
+| B | Any caller | Conxa Cloud's own API | Protected routes actually reject bad tokens |
+| C | The end customer's own login on THEIR target website | Runtime, while a skill runs | The runtime can sign into a real site and remember it safely |
+| D | A person using the Conxa Execute desktop app | Conxa Execute → Conxa Cloud | Execute's login is independent of Studio's, and workspace access resolves correctly |
+
+### Leg A — Build Studio login (Clerk)
+
+1. Launch Build Studio fully signed out (or click Sign Out first if already logged in). Click
+   **Sign in**.
+2. Expect: your default browser opens to a Conxa/Clerk login page (not an embedded webview inside
+   Studio itself). Log in with a real account.
+3. Expect: after logging in in the browser, Build Studio itself — not the browser — shows you as
+   signed in within a few seconds, with no copy-pasting of a code required. If it hangs for more
+   than ~15 seconds, that's a fail — check the app didn't fail to catch the browser's redirect.
+4. Fully quit and relaunch Build Studio. Expect: **still signed in**, no second login prompt — the
+   session was saved to your OS's secure credential store, not just kept in memory.
+5. Leave Studio open and idle for longer than the access token's short lifetime (or, faster: ask an
+   engineer to artificially expire it) — then trigger any action that calls the cloud (e.g. compile
+   a workflow). Expect: it just works, with no visible re-login prompt — the expired token should
+   refresh itself silently in the background.
+6. Click **Sign Out**. Relaunch Studio. Expect: genuinely signed out, login screen shown again —
+   confirm the credential was actually removed from the OS credential store, not just hidden in the
+   UI (ask an engineer to check, or try signing in as a DIFFERENT account and confirm no leftover
+   identity from the first account appears anywhere).
+
+### Leg B — Cloud API rejects what it should
+
+Using a REST tool (curl/Postman) against the cloud backend directly (see WF-11's setup for how to
+point at a local or deployed backend):
+
+1. Call any protected endpoint (e.g. the entitlements endpoint from WF-11) with **no**
+   Authorization header at all. Expect a clean `401`, never a `500` or a page of stack trace.
+2. Call the same endpoint with a garbage/made-up bearer token. Expect `401` again.
+3. Call it with a real, valid token that belongs to a DIFFERENT company/workspace than the data
+   you're trying to read. Expect either `401`/`403` or an empty/scoped result — never another
+   company's data (this is the cross-company leakage check also listed in WF-12 Phase 9; if you've
+   already proven it there, you don't need to repeat it here).
+4. If your environment has an admin token configured, call an admin-only route with it and confirm
+   it works; call the SAME admin route with an ordinary user's token and confirm it's refused —
+   the admin bypass should only ever widen access for the literal admin secret, never for a regular
+   logged-in user.
+
+### Leg C — Runtime signing into a target website, and remembering it safely
+
+This is the "someone else's site, not Conxa's own login" case — the thing an end customer's skill
+actually automates.
+
+1. Record and compile a tiny skill against S1's `/login` page (username `tomsmith`, password
+   `SuperSecretPassword!`) with no credentials pre-filled — Build Studio should treat this as a
+   normal login form step, same as any other form.
+2. Install/sync the pack, run it via Claude Desktop's `execute_skill` for the very first time on a
+   machine that has never signed into this site before. Expect: a real, visible sign-in browser
+   window opens automatically, pre-navigated to the right login page — you don't have to find it
+   yourself.
+3. Sign in by hand in that window. Expect: the window closes itself shortly after you land on the
+   post-login page (not instantly on the very first click — give it a couple of seconds) and the
+   run continues/completes on its own from there.
+4. **Session is remembered:** run `execute_skill` again for the same skill. Expect: **no** sign-in
+   window this time — it reuses the saved session and goes straight through.
+5. **Session is encrypted, not plaintext:** open the file Conxa saved the session into (path under
+   `~/.conxa/data/sessions/` — see `docs/Auth-and-Updater.md` §"Per-company session-encryption
+   key"). Confirm it is NOT readable text (cookies, tokens, etc. in the clear) — it should look
+   like random encrypted bytes/base64 gibberish, never a plain cookie jar you could copy to another
+   machine and use.
+6. **Multi-signal login detection — the "don't save mid-MFA" check (added 2026-09-22, worth
+   testing now that it just shipped).** If you have access to any test site with a two-step login
+   (password, then a texted/emailed code), record and run a skill against it. Trigger a fresh
+   sign-in window. After entering just the password (before entering the code), watch that the
+   runtime does **not** prematurely treat this as "signed in" — it should keep waiting through the
+   code-entry screen and only close/save once you're truly past it. If you don't have a real 2-step
+   site handy, at minimum confirm on the S1 single-step login that the window closes only after the
+   post-login flash message is visible, not the instant the URL merely changes.
+7. **Session expiry / mid-run re-login:** if you can force the target site to invalidate the
+   session (log out from a different browser using the same account, or wait out its natural
+   expiry), run the skill again. Expect: the runtime detects the failed/redirected state mid-run
+   (not by simply seeing ANY navigate to a login-shaped URL — a workflow that legitimately records
+   its OWN visit to a login page as a normal step must not falsely trigger this) and opens a fresh
+   sign-in window automatically rather than failing the whole run outright.
+8. **Two apps, one workflow (if you have a multi-app skill / workflow group set up):** confirm each
+   app's session is tracked and re-validated independently — signing out of one app's session
+   shouldn't force a re-login on the other app's steps.
+
+### Leg D — Conxa Execute's own login
+
+1. Launch the Conxa Execute desktop app fully signed out. Sign in the same way as Leg A (browser
+   PKCE flow).
+2. **Confirm it's genuinely independent of Build Studio:** with Build Studio ALSO open and signed
+   in (or signed out — either way) on the same machine, sign into Execute. Expect no interference
+   between the two — each app should open its own browser tab/callback and neither should
+   accidentally grab the other's redirect (they listen on different local ports internally, so
+   this should just work — the test is confirming it actually does, not just that it's supposed
+   to).
+3. Open Execute's workspace/context picker (Settings). Confirm it lists: your personal workspace,
+   any real Clerk organizations you belong to, and any team workspace where someone granted you an
+   Execute-only seat (see Leg D-continued below). Switch between two of them and confirm the app
+   remembers your choice across a restart.
+4. **Seat-grant claim (if you have access to grant one):** as a workspace admin in the Cloud
+   Dashboard's Team screen, grant an Execute seat to an email address that is NOT already a member
+   of that workspace. Then sign into Execute as that exact email for the first time. Expect: the
+   grant is automatically recognized (no invite code to paste) and that workspace now appears in
+   the picker without any extra step.
+
+**Where failures go:** Leg A → `docs/Auth-and-Updater.md` §1.1 owners; Leg B → `app/api/security.py`;
+Leg C → `runtime/auth_manager.js` / `browser.js` (session), `login_signals.js` (multi-signal
+detection — this shipped 2026-09-22, treat any regression here as high priority); Leg D → §1.1a /
+§13.4c (Execute auth + seat grants). Any session file found readable in plaintext, or any
+cross-company/cross-account data leak in Leg B/D → stop and log immediately as a security issue,
+same severity as WF-12's hard blockers.
+
+---
+
+## WF-19 — Conxa Execute: the desktop chat app and its in-app browser
+
+**Sites:** any packaged skill for the browser-panel legs (WF-1's or WF-4's known-good skills work
+well) · **Tools:** the Conxa Execute desktop app, signed in per WF-18 Leg D
+
+Plain-language explainer: Conxa Execute is a separate small desktop chat app — think "a chat
+window with Conxa's automated skills wired in as tools it can call," plus a live browser view so
+you can actually watch what's happening on screen while a skill runs, instead of a headless
+browser working invisibly in the background. It has no login system of its own for billing and no
+"bring your own API key" mode — everything routes through the same Conxa Cloud account and the same
+plan your workspace already pays for.
+
+### Stage 1 — Basic chat + tool use
+
+1. Open Execute, make sure you're signed in (WF-18 Leg D) and a workspace is selected.
+2. Ask it something that requires it to look at your available skills, e.g. `What skills do I have
+   available?` Expect a normal streamed reply — text appears progressively, not all at once — that
+   correctly lists real skills from your account (cross-check against Build Studio's skill list).
+3. Ask it to actually run one: `Run <skill name>` for a simple, known-good skill (e.g. WF-4 Leg B's
+   saucedemo checkout, or anything short). Expect it to recognize this as a tool call, not just
+   describe what it WOULD do — confirm a real browser action actually starts (see Stage 3 for
+   watching it happen live).
+4. If the model you're routed to is a "reasoning" model, watch for a distinct "Thinking…" block
+   that appears and updates BEFORE the final answer text starts, then gets replaced by the real
+   streamed answer. If your account isn't routed to a reasoning-capable model this may never
+   appear — that's fine, not a bug; just confirm the plain answer still streams normally either way.
+
+### Stage 2 — Personal vs. team workspace billing
+
+1. With the personal workspace selected (Settings → workspace picker), send a chat message that
+   costs at least a small amount of usage. Note any usage/credits indicator if visible.
+2. Switch to a team workspace (one you're a real member of, or hold a seat grant for). Send another
+   message. Confirm the app clearly shows which workspace is active (so you never accidentally
+   spend a client's team credits while meaning to test on your own personal account, or vice
+   versa).
+3. If you have access to the Cloud Dashboard's usage/billing view for that team workspace, confirm
+   the team's usage number went up after your Stage-2-step-2 message — proving the spend actually
+   landed on the workspace you had selected, not always your personal one regardless of the picker.
+
+### Stage 3 — The in-app browser panel
+
+1. Trigger a skill run that needs a real browser (Stage 1 step 3, or any packaged skill with
+   several visible steps). While it runs, watch Execute's own browser panel (not a separate
+   Chromium window popping up outside the app).
+2. Expect: you can SEE the actual page the skill is interacting with, live, inside the app's own
+   panel — this is the runtime lending its own browser view to Execute rather than launching a
+   second, separate browser. Confirm only ONE browser process is actually doing the work (check
+   `Get-Process chrome,node` — you should not see two independent Chromium instances for one run).
+3. **Login signals in the panel (shipped this week — 2026-09-22/23, worth extra attention right
+   now):** run a skill whose target site needs a sign-in the runtime hasn't cached yet (same setup
+   as WF-18 Leg C). While the sign-in window is open, check whether Execute's panel surfaces any
+   indication of sign-in state (e.g. a "waiting for sign-in" / "signed in" signal, or an
+   OTP-pending pause state) rather than the panel just sitting there with no feedback. Confirm the
+   signal updates and clears once you actually finish signing in — a stuck "still waiting" state
+   after you've clearly finished signing in is a bug, log it with the exact timing (this is the
+   exact area the last few commits touched, so a fresh regression here is high-value to catch).
+4. Close the panel or navigate away mid-run, then come back to it (if the UI allows switching away
+   and back). Confirm the live view resumes/reconnects rather than showing a frozen last frame.
+
+### Stage 4 — Local-only session storage
+
+1. Have a real chat conversation with a few back-and-forth turns. Fully quit Execute and relaunch
+   it. Expect: the conversation history is still there (saved locally on this machine).
+2. If you have a second machine also signed into the same account, confirm the conversation from
+   Stage 4 step 1 does **NOT** appear there — chat history is local-only by design, not synced
+   across devices. This is expected behavior, not a bug — just confirm it matches the doc rather
+   than silently drifting into an unexpected sync.
+
+**What this proves on pass:** Execute's chat and tool-calling work end-to-end against real skills;
+billing correctly follows whichever workspace is selected; the in-app browser panel shows the
+REAL runtime browser (not a duplicate) and correctly reflects sign-in state as it changes; chat
+history survives a restart but never leaves the machine.
+**Where failures go:** Stage 1 → `conxa-execute/app/vendor/opencode/loop/run_turn.js` /
+`execute_client.js`; Stage 2 → §13.4c (Execute seat/workspace billing); Stage 3 →
+`runtime/app/host_browser.js` (server side) / `conxa-execute/app/electron/browser_panel.js` +
+`browser_control.js` (client side) — a duplicate/second browser process is a hard blocker, log
+immediately; login-signal regressions → the same `login_signals.js` owners as WF-18 Leg C;
+Stage 4 → `conxa-execute/app/vendor/opencode/storage/storage.js`.
+
+---
+
 ## What to watch for across ALL workflows (known gaps these tests exercise)
 
 - **Tab-landing correctness** — next action after any switch lands in the expected tab (EXEC-5 #43).

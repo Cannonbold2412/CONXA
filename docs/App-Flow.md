@@ -505,10 +505,22 @@ under Skill Packages → Group → Workflow, never in Build Studio:
   for the selected skill, attributed to the user who did it — a durable,
   unbounded per-skill event log (mirrored into the global audit ring buffer
   the rest of the dashboard already uses).
+- **Archive / Restore**: this is "delete a workflow" in Skill Packages, and it
+  is deliberately non-destructive. An admin/owner archives a workflow from its
+  page header; the workflow drops out of every installed customer's AI
+  assistant (`list_skills`) at their next sync, but nothing already on a
+  customer's machine is deleted, and the workflow's version history and
+  release stay exactly as they were. Restore reverses it in one click — no
+  republish needed. While archived, Release and Rollback are unavailable for
+  that workflow (the server rejects both), and the workflow shows dimmed with
+  an "Archived" badge instead of its usual status everywhere it's listed.
 
 Runtimes pick up a Release or a Rollback at their next regular delta-sync —
 the sync mechanism itself doesn't know the difference between the two, only
-that the stable channel moved.
+that the stable channel moved. Archiving works the same way: the workflow
+simply stops appearing in what the server reports, and the runtime's regular
+sync brings its own list back in line — no separate "delete" message is ever
+sent to installed machines.
 
 ### 8.2 Build Installer (Secondary, Optional)
 

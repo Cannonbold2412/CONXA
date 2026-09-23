@@ -549,6 +549,8 @@ with a muted dash instead of a cyan tick — a tick beside a negative statement 
 - No drill-down from run summary to individual step events.
 - No time range filter.
 
+**Archive / Restore (shipped 2026-09-24, per-workflow page header):** an Archive button (Restore once archived) next to Back, backed by `POST .../skills/archive` / `.../unarchive`. Archiving is Cloud's "delete a workflow" action — it pulls the workflow out of every installed customer's next sync (`list_skills` stops showing it) while leaving its files on their machines and its version history/release intact, so Restore brings it straight back. While archived, the Release and Rollback buttons are hidden on this page, and the workflow's card on the Group page (§ groups grid) sorts to the end, dims, and shows an "Archived" badge instead of "Ready for Release". Archived workflows are also left out of the folder preview and workflow counts on the Skill Packages page (§3.3).
+
 ---
 
 ### 3.5 Compile Page (Cloud) — removed
@@ -601,6 +603,16 @@ next time that email signs into Conxa Execute. The old "Copy link" action and th
 **Status:** Implemented as a read-oriented settings page backed by `/me`; real mutations remain in Team, Billing, and Audit instead of being implied by inactive settings controls.
 
 **Bring Your Own LLM Key panel (shipped 2026-08-22):** a card at the bottom of the page surfaces the Enterprise BYOK configuration (`PUT/GET/DELETE /api/v1/workspace/llm-key`, `docs/TRD.md` §13.5). Owner/admin only — members see a note instead of the controls. Shows provider/endpoint/deployment/API-version when configured (the key itself is never returned), with a form to set or replace the Azure OpenAI key and a confirm-guarded remove that falls compiles back to the shared managed pool.
+
+---
+
+### 3.8a Report a Bug Page (`app/(protected)/report-bug/page.tsx`, shipped 2026-09-24)
+
+**Purpose:** Let any workspace member send a bug report — description, the page it happened on, a contact email, and file attachments (screenshots, a screen recording, logs) — straight to the team's inbox, without leaving the dashboard.
+**Inputs:** A free-text description (required), an optional page URL, a contact email (prefilled from `/me`, editable), and up to 5 files (client-enforced 25MB combined size cap; the picker accepts images, video, `.log/.txt/.har/.json/.pdf/.zip`).
+**Outputs:** `POST /api/v1/bug-reports` (`docs/Backend-Schema.md` §5.9b) sent directly to the backend (bypassing the dashboard's own `/api/v1/*` proxy, whose request-size limit is far too small for a screen recording). A success toast clears the form; a failed or oversized submission shows the error inline via the existing toast/error styling.
+**User goal:** Report a problem with enough detail and evidence (a recording beats a description) without opening email or a separate tool.
+**Status:** Implemented. Sidebar entry sits in the **Manage** group, directly below Settings. No stored ticket or inbox in the dashboard — this is a stateless mailer; see TODO.md for a possible future in-app report list.
 
 ---
 

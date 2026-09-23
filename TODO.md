@@ -45,8 +45,8 @@ Counts are of still-open items only. Resolved items live in [`Done.md`](Done.md)
 | P1 — Blocking / Foundational | 3 |
 | P2 — High Value, Do Soon (incl. Discovered Items) | 35 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 20 |
-| P4 — Low Urgency, Opportunistic | 28 |
-| **Total** | **101** |
+| P4 — Low Urgency, Opportunistic | 29 |
+| **Total** | **102** |
 
 ---
 
@@ -1438,7 +1438,7 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 
 ---
 
-## P4 — Low Urgency, Opportunistic (28 remaining)
+## P4 — Low Urgency, Opportunistic (29 remaining)
 
 ### PROD-7 — Connector graduation path
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1538,6 +1538,17 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 - **Suggested order:** revisit when installer sizes or DB storage costs actually approach a limit, or when EXEC-2's design calls for asynchronous job processing — not urgent before either trigger.
 - **Complexity:** M/L — wiring `blob_read_write_token` to a real object-storage backend is more contained than standing up a full durable queue from scratch.
 - **Success criteria:** installer/skill-pack blobs above a defined size threshold are served from object storage/CDN rather than Postgres; a real job queue exists if/when something in the platform needs asynchronous processing.
+
+### CLOUD-23 — Verify a Resend sending domain for bug report emails (shipped 2026-09-24)
+- **Category:** Cloud
+- **Description:** The new dashboard "Report a bug" page (`docs/Backend-Schema.md` §5.9b) sends via Resend, using the default `onboarding@resend.dev` sender. That address only delivers to the Resend account owner's own inbox — fine for one internal `bug_report_to_email`, but it will silently start failing (or need a different from-address) the moment reports should reach a shared team inbox or a different domain.
+- **Why required:** avoids reports quietly not arriving once the team inbox changes from the Resend account owner's address.
+- **Business value:** keeps a customer-facing feedback channel actually working.
+- **Technical value:** small — verify a domain in Resend, set `SKILL_BUG_REPORT_FROM_EMAIL` to an address on it.
+- **Dependencies:** none.
+- **Suggested order:** before `SKILL_BUG_REPORT_TO_EMAIL` is set to anything other than the Resend account's own address.
+- **Complexity:** S.
+- **Success criteria:** bug report emails deliver reliably to the real team inbox, not just the Resend account owner's address.
 
 ### MCP-2 — Skill discovery manifests + Cloud discovery endpoint
 - **Category:** MCP
