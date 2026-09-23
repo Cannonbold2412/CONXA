@@ -49,7 +49,12 @@ Six kinds (BUILD-25's six problem families):
   - flag_noise (stage d) — a step the recorder itself observed to have no
     effect (post_condition.classified_effect == "none"), never the model's
     own opinion alone. Applied as an archive, not a silent delete: see
-    compiler/second_opinion.py::archive_flagged_steps.
+    compiler/second_opinion.py::archive_flagged_steps. One exception to the
+    "recorder observed no effect" gate: a `navigate` step may be flagged
+    duplicate_action when the step immediately before it is also a navigate
+    to the identical url on the identical tab_id — two navigates land on the
+    exact same URL, so there is no post_condition_effect signal to read, but
+    the immediate-predecessor match is itself the rule-checked evidence.
 
 Findings are keyed on step_key (compiler/step_key.py), never step_index — an
 inserted step renumbers everything after it (BUILD-22/BUILD-23).
@@ -139,6 +144,12 @@ def _validate_findings(
     }
     existing_bindings = _valid_bindings(steps_context)
     steps_by_key = {str(s.get("key") or ""): s for s in steps_context}
+    # steps_context is in step order (build.py::_review_inputs) — this is the flag_noise
+    # navigate path's only source of "what came immediately before", never step_index.
+    prev_by_key = {
+        str(s.get("key") or ""): steps_context[i - 1] if i > 0 else None
+        for i, s in enumerate(steps_context)
+    }
     seen_new_names: set[str] = set()
     out: list[dict[str, Any]] = []
 
@@ -187,18 +198,38 @@ def _validate_findings(
             step_ctx = steps_by_key.get(step_key)
             if not step_ctx:
                 continue
-            if step_ctx.get("action") not in _NOISE_SAFE_ACTIONS:
-                continue
-            if step_ctx.get("post_condition_effect") != "none":
-                continue
             if step_ctx.get("has_required_assertion") or step_ctx.get("input_binding"):
                 continue
-            # A click whose only job is to start a download or open a file picker is
-            # SUPPOSED to leave post_condition_effect at "none" — the page itself doesn't
-            # visibly react. build.py::_review_inputs sets "causes" for exactly these
-            # steps; never let a noise flag land on one no matter what the model said.
-            if step_ctx.get("causes"):
-                continue
+            if step_ctx.get("action") == "navigate":
+                # No post_condition_effect signal exists for a navigate (the recorder's
+                # "no effect" evidence is click/hover/scroll/focus-only), so this path is
+                # gated on a different, equally rule-checked fact instead: the step
+                # immediately before it is a navigate to the identical url on the
+                # identical tab. That match — never the model's own say-so — is the
+                # evidence. See docstring above.
+                if proposed != "duplicate_action":
+                    continue
+                prev = prev_by_key.get(step_key)
+                url = str(step_ctx.get("url") or "").strip()
+                if not prev or not url:
+                    continue
+                if prev.get("action") != "navigate":
+                    continue
+                if str(prev.get("url") or "").strip() != url:
+                    continue
+                if str(prev.get("tab_id") or "") != str(step_ctx.get("tab_id") or ""):
+                    continue
+            else:
+                if step_ctx.get("action") not in _NOISE_SAFE_ACTIONS:
+                    continue
+                if step_ctx.get("post_condition_effect") != "none":
+                    continue
+                # A click whose only job is to start a download or open a file picker is
+                # SUPPOSED to leave post_condition_effect at "none" — the page itself doesn't
+                # visibly react. build.py::_review_inputs sets "causes" for exactly these
+                # steps; never let a noise flag land on one no matter what the model said.
+                if step_ctx.get("causes"):
+                    continue
         out.append({
             "step_key": step_key,
             "kind": kind,

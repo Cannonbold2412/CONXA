@@ -2105,6 +2105,9 @@ def _review_inputs(
             "action": action_name,
             "target_text": (step.identity_bundle.fingerprint.inner_text or "")[:120],
             "url": step.url,
+            # Compared by flag_noise's navigate path to confirm two navigates are truly the
+            # same replay location, not just the same URL string on different tabs.
+            "tab_id": str((step.tab or {}).get("id") or ""),
             "intent": step.intent,
             "input_binding": step.input_binding,
             "value": value,

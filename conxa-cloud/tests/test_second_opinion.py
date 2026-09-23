@@ -725,3 +725,70 @@ class ValidateFindingsTests(unittest.TestCase):
             ),
             [],
         )
+
+    # flag_noise's navigate exception: no post_condition_effect signal exists for a
+    # navigate, so this path is gated instead on the immediately-previous step being a
+    # navigate to the identical url on the identical tab — see workflow_semantics.py.
+
+    def _nav_step(self, key: str, **overrides: Any) -> dict[str, Any]:
+        base = {
+            "key": key, "action": "navigate", "url": "https://drive.google.com/drive/?pli=1",
+            "tab_id": "tab_1", "has_required_assertion": False, "input_binding": None,
+        }
+        base.update(overrides)
+        return base
+
+    def test_flag_noise_navigate_duplicate_of_previous_survives(self) -> None:
+        ctx = [self._nav_step("k1"), self._nav_step("k2")]
+        out = self._validate_custom(
+            [{"step_key": "k2", "kind": "flag_noise", "proposed": "duplicate_action"}], ctx
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["step_key"], "k2")
+
+    def test_flag_noise_navigate_different_url_dropped(self) -> None:
+        ctx = [self._nav_step("k1"), self._nav_step("k2", url="https://drive.google.com/other")]
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k2", "kind": "flag_noise", "proposed": "duplicate_action"}], ctx
+            ),
+            [],
+        )
+
+    def test_flag_noise_navigate_different_tab_dropped(self) -> None:
+        ctx = [self._nav_step("k1"), self._nav_step("k2", tab_id="tab_2")]
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k2", "kind": "flag_noise", "proposed": "duplicate_action"}], ctx
+            ),
+            [],
+        )
+
+    def test_flag_noise_navigate_previous_not_a_navigate_dropped(self) -> None:
+        ctx = [self._noise_step(key="k1"), self._nav_step("k2")]
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k2", "kind": "flag_noise", "proposed": "duplicate_action"}], ctx
+            ),
+            [],
+        )
+
+    def test_flag_noise_navigate_no_op_category_dropped(self) -> None:
+        """The navigate exception only ever accepts duplicate_action — it has no
+        post_condition_effect evidence to support no_op_action or orphaned_hover."""
+        ctx = [self._nav_step("k1"), self._nav_step("k2")]
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k2", "kind": "flag_noise", "proposed": "no_op_action"}], ctx
+            ),
+            [],
+        )
+
+    def test_flag_noise_navigate_first_step_no_previous_dropped(self) -> None:
+        ctx = [self._nav_step("k1")]
+        self.assertEqual(
+            self._validate_custom(
+                [{"step_key": "k1", "kind": "flag_noise", "proposed": "duplicate_action"}], ctx
+            ),
+            [],
+        )
