@@ -9,7 +9,7 @@ resolution (llm_all_providers_failed: "endpoint not openai-compatible").
 
 from __future__ import annotations
 
-from conxa_core.llm.client import _is_openai_compatible_endpoint
+from conxa_core.llm.client import _chat_completions_url, _is_openai_compatible_endpoint
 
 
 def test_pooled_provider_endpoints_are_recognized() -> None:
@@ -29,3 +29,19 @@ def test_prebuilt_chat_completions_url_is_recognized() -> None:
 
 def test_unrecognized_shape_is_rejected() -> None:
     assert not _is_openai_compatible_endpoint("https://api.anthropic.com")
+
+
+def test_anthropic_openai_compat_endpoint_is_recognized() -> None:
+    """Pro's pool (docs/cost_model.md "LLM Provider Strategy") routes direct to
+    Anthropic via its own OpenAI-compatible endpoint — Bearer auth, same
+    request/response shape as every other pooled provider — rather than a new
+    auth style or request/response translation layer. This locks in that
+    assumption: unlike the bare-domain case above (no path at all), the real
+    configured endpoint (with its /v1 path) must be recognized and must resolve
+    to Anthropic's actual compat path.
+    """
+    assert _is_openai_compatible_endpoint("https://api.anthropic.com/v1")
+    assert (
+        _chat_completions_url("https://api.anthropic.com/v1")
+        == "https://api.anthropic.com/v1/chat/completions"
+    )

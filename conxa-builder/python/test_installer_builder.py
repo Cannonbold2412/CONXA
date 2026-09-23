@@ -15,8 +15,7 @@ for path in (ROOT, CORE_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-os.environ.setdefault("SKILL_GROQ_ENABLED", "true")
-os.environ.setdefault("SKILL_GROQ_API_KEYS", "test-key")
+os.environ.setdefault("SKILL_LLM_FREE_API_KEYS", "test-key")
 
 from conxa_compile import installer_builder  # noqa: E402
 from services import installer_builder as studio_installer_builder  # noqa: E402

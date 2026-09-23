@@ -1,7 +1,9 @@
 # Conxa Cost & Revenue Model
 
-**Last Updated:** September 2, 2026
+**Last Updated:** September 24, 2026
 **Status:** Living document — iterate as assumptions change
+
+**Contents:** [What Conxa Actually Does](#what-conxa-actually-does) · [Cost Structure](#cost-structure) (what Conxa pays for) · [Revenue Model](#revenue-model) (what customers pay, pricing tiers, value proposition, Conxa's cost per tier) · [Unit Economics](#unit-economics) · [Growth Milestones](#growth-milestones) · [Future Horizons](#future-horizons--revenue-projections--cost-posture) · [Cost Levers](#cost-levers) · [Risks](#risks) · [What to Measure](#what-to-measure) · [Next Steps](#next-steps)
 
 ---
 
@@ -63,90 +65,79 @@ Selector strings are generated deterministically by `IdentityBundle` + `selector
 
 #### Corrected Cost Per Workflow Compilation
 
-#### LLM Provider Strategy — Two Separate Pools
+#### LLM Provider Strategy — Three Tiered Pools (revised 2026-09-23)
 
-**Free plan and paid plans use different LLM provider pools.**
+**Every plan, including Free, now routes through a real, billed provider pool — the free-tier key-rotation strategy (Groq/Google AI Studio/NVIDIA NIM) is retired.** Free is no longer $0 real cost to Conxa; it now runs on cheap-but-paid OpenRouter models, priced deliberately low enough to keep the trial's COGS negligible without needing rate-limit gymnastics. Pro runs entirely on Anthropic directly — Claude Sonnet 5 for text, Claude Opus 5.5 for vision and Execute chat — one provider, one bill. Enterprise stays BYOK/negotiated, priced per contract to hit the net-profit floor below — see "Planning Enterprise to the margin target."
 
-| Plan | Provider Pool | Rationale |
-|------|--------------|-----------|
-| **Free** | Groq + Google AI Studio + NVIDIA NIM (free-tier key rotation) | Zero LLM cost; rate limits acceptable at low volume |
-| **Starter / Pro** | **GPT-5.4-mini + Gemma 4 31B** | Fast, low-cost paid compilation with enough burst capacity for active teams |
-| **Enterprise** | **GPT-5.4 + Claude Sonnet 4.6 Vision** | Highest-quality compilation and vision handling for complex customer workflows |
+| Plan | Text / intent model | Vision (compile-time anchor) model | Execute multimodal model | Routing |
+|------|---------------------|-------------------------------------|---------------------------|---------|
+| **Free** | GLM 5.3 Flash | Qwen3 VL 235B A22B Instruct | GLM 5.3 Flash (same as text) | OpenRouter |
+| **Starter** | Kimi K3 | Qwen3 VL 235B A22B Instruct | Kimi K3 (same as text) | OpenRouter |
+| **Pro** | Claude Sonnet 5 | Claude Opus 5.5 | Claude Opus 5.5 | Direct (Anthropic) |
+| **Enterprise** | Whatever the company requires (BYOK or negotiated) | Same | Same | Direct or BYOK, contract-priced |
 
-**Why separate paid pools:**
-Companies compile in bursts — not a constant drip all day. When someone hits compile, the job should finish in seconds. Free-tier providers have tight rate limits that cause queuing under burst load:
+**Why this mix:** Free/Starter move to OpenRouter's cheapest usable text + vision models — this trades the old free-tier rate-limit ceiling for a small but real per-compile COGS, which is the deliberate tradeoff (no more burst queuing, no more "Flash-only or it fails" constraint). Pro moves to top-of-market models on both sides (Sonnet 5 for text, Opus 5.5 for vision and Execute chat) because Pro is the highest self-serve tier and where distribution-quality compiles matter most — this is also the most expensive pool by a wide margin (see below), so it's the tier to watch for margin compression.
 
-| Free-tier provider | Confirmed limits (Aug 2026) | Note |
-|---|---|---|
-| Groq | 30 req/min, 6,000 TPM, 14,400 req/day (org-level — extra API keys don't add capacity) | No per-token charge on the free tier, just rate gates; a card-verified "Developer Tier" (no spend required) lifts this to ~10x plus a 25% token discount if the free tier proves too tight |
-| Google AI Studio | 5–15 req/min, up to 1,000 req/day | **Changed April 1, 2026:** Pro-family Gemini models were pulled from the free tier — only Flash and Flash-Lite remain free. The vision-anchor free-pool call must target a Flash-family model; a Pro-family request will fail or bill, not silently degrade |
-| NVIDIA NIM | ~40 req/min, 1,000 free credits, no card required | Forever-free developer plan; credits function as a soft usage cap rather than a hard rate limit |
+**OpenRouter platform fee:** OpenRouter's pay-as-you-go plan adds a 5.5% fee on top of list price. All Free/Starter figures below already include it. Direct Anthropic calls (Pro) carry no such fee.
 
-Sources: [Groq pricing/limits](https://www.cloudzero.com/blog/groq-pricing/), [Google AI Studio free tier](https://www.nocode.mba/articles/google-ai-studio-pricing), [NVIDIA NIM free tier](https://decodethefuture.org/en/nvidia-nim-api-pricing-limits-guide/).
-
-- **Starter / Pro**: GPT-5.4-mini handles vision anchors and selector generation; Gemma 4 31B handles intent and text fallback work.
-- **Enterprise**: GPT-5.4 handles the core compilation path; Claude Sonnet 4.6 Vision is reserved for the most complex screenshot and visual-anchor cases.
-
-Paid plans still avoid free-tier queueing. Starter and Pro optimize for cost and speed; Enterprise optimizes for maximum reliability and visual reasoning quality.
-
-**How it routes in the existing code:**  
-`router.py` builds a `PoolEntry` per key. The Build Studio backend reads the workspace billing tier from the cloud API and passes `paid_tier=True` to select the appropriate pool at compile time. No router rewrite needed — just two separate pool configs loaded from env.
+**How it routes in the existing code:**
+`router.py` builds a `PoolEntry` per key. The Build Studio backend reads the workspace billing tier from the cloud API and passes `paid_tier`/pool selection to route Free/Starter/Pro to their respective pools at compile time. Three pool configs loaded from env, up from two.
 
 ---
 
 #### Current Provider Prices Used
 
-Pricing re-checked against provider docs on August 9, 2026 — **unchanged since the last check (June 3, 2026)** for every model already in the pool:
+Pricing checked against provider/OpenRouter docs on September 23, 2026:
 
-| Provider / model | Input | Output | Relevant limit / note | Source |
-|------------------|-------|--------|-----------------------|--------|
-| GPT-5.4-mini | $0.75 / 1M tokens | $4.50 / 1M tokens | Tier 4: 10M TPM; Tier 5: 180M TPM | [OpenAI GPT-5.4-mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini), [OpenAI pricing](https://developers.openai.com/api/docs/pricing) |
-| GPT-5.4 (<272K context) | $2.50 / 1M tokens | $15.00 / 1M tokens | Tier 4: 4M TPM; Tier 5: 40M TPM | [OpenAI GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4), [OpenAI pricing](https://developers.openai.com/api/docs/pricing) |
-| Together AI Gemma 4 31B | $0.39 / 1M tokens | $0.97 / 1M tokens | Serverless limits are dynamic; use dedicated endpoints for predictable bursts | [Together pricing](https://www.together.ai/pricing), [Together rate limits](https://docs.together.ai/docs/serverless/rate-limits) |
-| Claude Sonnet 4.6 Vision | $3.00 / 1M tokens | $15.00 / 1M tokens | Use Priority Tier or custom Enterprise limits for bursty vision work | [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing), [Anthropic rate limits](https://platform.claude.com/docs/en/api/rate-limits) |
-| Claude Opus 4.8 / Opus 5 | $5.00 / 1M tokens | $25.00 / 1M tokens | Quality upgrade path only — materially more expensive than Sonnet | [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
+| Provider / model | Input | Output | Note | Source |
+|------------------|-------|--------|------|--------|
+| GLM 5.3 Flash (OpenRouter) | $0.15 / 1M tokens | $0.50 / 1M tokens | List price — the 50% launch promo ended Sept 9, 2026. +5.5% OpenRouter fee applies | [OpenRouter GLM 5.3 Flash](https://openrouter.ai/z-ai/glm-5.3-flash) |
+| Qwen3 VL 235B A22B Instruct (OpenRouter) | $0.20 / 1M tokens | $0.88 / 1M tokens | 262K context, 5 upstream hosts on OpenRouter (DeepInfra, Venice, Parasail, Alibaba Cloud Int., NovitaAI); +5.5% OpenRouter fee applies | [OpenRouter Qwen3 VL 235B A22B Instruct](https://openrouter.ai/qwen/qwen3-vl-235b-a22b-instruct) |
+| Kimi K3 (OpenRouter) | $1.50 / 1M tokens | $7.50 / 1M tokens | Some sources report $3.00/$15.00 instead — re-verify before locking Starter pricing; +5.5% OpenRouter fee applies either way | [OpenRouter Kimi K3](https://openrouter.ai/moonshotai/kimi-k3) |
+| Claude Sonnet 5 | $2.00 / 1M tokens | $10.00 / 1M tokens | Confirmed permanent (2026-09-23 correction, above) — not an introductory rate | [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
+| Claude Opus 5.5 | $4.00 / 1M tokens | $20.00 / 1M tokens | Batch API half price ($2/$10), Fast mode double ($8/$40); cache reads $0.20 / 1M. Replaces GPT-6 Astra and GPT-5.6 Sol on Pro (2026-09-24) | [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing) |
 
-Claude Opus (currently Opus 4.8 or Opus 5, both priced identically at $5/$25 per MTok) is a quality upgrade path, not the default Enterprise cost model — it should only be used when Sonnet 4.6 Vision cannot resolve the workflow.
-
-**New since the last check — Claude Sonnet 5:** Anthropic shipped Claude Sonnet 5 with *introductory* pricing of $2.00 / $10.00 per MTok through **August 31, 2026**, reverting to standard $3.00 / $15.00 (identical to Sonnet 4.6) on September 1, 2026. That's a real ~33% discount vs. Sonnet 4.6 Vision for the next three weeks, but it converges to the same price the day after, so it is not worth a router migration for this pricing window alone — re-evaluate only if Sonnet 5's vision quality is materially better than 4.6's, independent of the temporary discount. [Anthropic pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+**Opus 5.5 vision is now the single biggest cost lever in Pro's mix.** At $4/$20 per MTok it is 2.5x cheaper than the retired GPT-6 Astra ($10/$50), but vision-anchor calls are 15K-token-input-heavy, so it is still ~20x the per-step cost of Qwen3 VL on Free/Starter. If Pro's build-heavy-month margin ever gets tight, the levers to pull before touching price are (1) the Batch API (half price) for non-urgent recompiles and (2) moving Pro's vision-anchor calls to Claude Sonnet 5 ($2/$10, half of Opus 5.5) — same provider, no new relationship.
 
 #### Cost Per Compilation by Plan
 
-**Free plan (free-tier providers):**
+Same token-shape assumptions as before (~200 input + 50 output for intent, ~15K input + 500 output for vision anchor; selectors remain deterministic at $0 regardless of plan).
 
-Token costs at Groq (text) + Google AI Studio (vision) — **actually billed to Conxa: $0**, both are free-tier key rotation; the figures below are a notional shadow price (what the same calls would cost at each provider's cheapest paid rate) used only to compare against the paid pools:
-- Intent: ~200 tokens → **~$0.00001 notional** (negligible)
-- Vision anchor: ~15K tokens at $0.10/1M (Gemini Flash-Lite input rate — the only free-tier-eligible Gemini family since Google pulled Pro models from the free tier on April 1, 2026) → **~$0.002/step notional**
-- Selectors: **$0** (deterministic — no LLM)
-- **Total/step: ~$0.002 notional | Per compilation (15 steps): ~$0.03 notional (real cost: $0)**
+**Free (GLM 5.3 Flash + Qwen3 VL 235B A22B Instruct, via OpenRouter, +5.5% fee):**
+- Intent (GLM 5.3 Flash): **~$0.000058/step**
+- Vision anchor (Qwen3 VL 235B A22B Instruct): **~$0.00363/step**
+- Selectors: **$0**
+- **Total/step: ~$0.00369 | Fresh 15-step workflow: ~$0.055**
+- **Cached recompilation (3 changed steps): ~$0.011**
+- **Blended monthly average (20% fresh, 80% cached): ~$0.020/compilation** — real cost, billed to Conxa (no longer $0; the free-tier-rotation strategy that made Free genuinely free is retired)
 
-**Starter / Pro paid plans (GPT-5.4-mini + Together AI Gemma 4 31B):**
+**Starter (Kimi K3 + Qwen3 VL 235B A22B Instruct, via OpenRouter, +5.5% fee):**
+- Intent (Kimi K3): **~$0.00071/step**
+- Vision anchor (Qwen3 VL 235B A22B Instruct): **~$0.00363/step**
+- Selectors: **$0**
+- **Total/step: ~$0.00434 | Fresh 15-step workflow: ~$0.065**
+- **Cached recompilation (3 changed steps): ~$0.013**
+- **Blended monthly average (20% fresh, 80% cached): ~$0.023/compilation** — down ~3.2x from the old GPT-5.4-mini/Gemma pool (~$0.075)
 
-- Intent (Gemma 4 31B, 200 input + 50 output): **~$0.00013/step**
-- Vision anchor (GPT-5.4-mini, 15K input + 500 output): **~$0.0135/step**
-- Selectors: **$0** (deterministic — no LLM)
-- **Total/step: ~$0.014 | Fresh 15-step workflow: ~$0.21**
-- **Cached recompilation (3 changed steps): ~$0.042**
-- **Blended monthly average (20% fresh, 80% cached): ~$0.075/compilation**
+**Pro (Claude Sonnet 5 + Claude Opus 5.5, direct):**
+- Intent (Claude Sonnet 5): **~$0.0009/step**
+- Vision anchor (Claude Opus 5.5): **~$0.07/step**
+- Selectors: **$0**
+- **Total/step: ~$0.071 | Fresh 15-step workflow: ~$1.06**
+- **Cached recompilation (3 changed steps): ~$0.21**
+- **Blended monthly average (20% fresh, 80% cached): ~$0.38/compilation** — ~1.3x the old GPT-5.4/Sonnet-4.6-Vision pool (~$0.292), driven by Opus 5.5's vision price; 2.5x cheaper than the GPT-6 Astra mix this replaced (~$0.95, one day earlier)
 
-**Enterprise paid plans (GPT-5.4 + Claude Sonnet 4.6 Vision):**
+**Enterprise:** cost-per-compilation is whatever the contracted model mix bills at — see "Planning Enterprise to the margin target" below.
 
-- Intent (GPT-5.4, 200 input + 50 output): **~$0.001/step**
-- Vision anchor (Claude Sonnet 4.6 Vision, 15K input + 500 output): **~$0.053/step**
-- Selectors: **$0** (deterministic — no LLM)
-- **Total/step: ~$0.054 | Fresh 15-step workflow: ~$0.81**
-- **Cached recompilation (3 changed steps): ~$0.162**
-- **Blended monthly average (20% fresh, 80% cached): ~$0.292/compilation**
+| Scenario | Free cost (real, billed) | Starter cost | Pro cost |
+|----------|---------------------------|---------------|----------|
+| Short workflow (5 steps) | ~$0.018 | ~$0.022 | ~$0.36 |
+| Medium workflow (15 steps) | ~$0.055 | **~$0.065** | **~$1.06** |
+| Long workflow (30 steps) | ~$0.111 | ~$0.130 | ~$2.13 |
+| Recompilation (cached, 3 changed steps) | ~$0.011 | **~$0.013** | **~$0.21** |
+| **Blended (80% recompiles, 15 steps avg)** | **~$0.020** | **~$0.023** | **~$0.38** |
 
-| Scenario | Free cost (notional; real cost $0) | Starter / Pro cost | Enterprise cost |
-|----------|------------|--------------------|-----------------|
-| Short workflow (5 steps) | ~$0.01 | ~$0.070 | ~$0.27 |
-| Medium workflow (15 steps) | ~$0.03 | **~$0.21** | **~$0.81** |
-| Long workflow (30 steps) | ~$0.06 | ~$0.42 | ~$1.62 |
-| Recompilation (cached, 3 changed steps) | ~$0.006 | **~$0.042** | **~$0.162** |
-| **Blended (80% recompiles, 15 steps avg)** | **~$0.011** | **~$0.075** | **~$0.292** |
-
-**Key insight on continuous iteration:** Vision anchor calls are cached by element hash (`anchor_vision_llm.py`); the workflow-intent call is cached by a steps-summary+URLs hash (`workflow_intent.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps' vision anchors — the rest are cache hits. This makes daily iteration cheap regardless of provider. Selector strings are generated deterministically at zero token cost in all cases.
+**Key insight on continuous iteration:** Vision anchor calls are cached by element hash (`anchor_vision_llm.py`); the workflow-intent call is cached by a steps-summary+URLs hash (`workflow_intent.py`). Recompiling a workflow where only 2–3 steps changed fires LLM only for those steps' vision anchors — the rest are cache hits. This still makes daily iteration far cheaper than a fresh compile on every plan, but on Pro each fresh-compile step now costs ~19x what a Free step costs, almost entirely due to Opus 5.5 vision — cache-hit rate matters more for Pro's margin than it ever did under the old pool.
 
 **AI Usage Credits:** Human Edit can trigger extra LLM calls after the initial compile: step repair, selector or anchor regeneration, validation, and recovery artifact updates. Each plan gets a monthly AI Usage Credits pool that applies to both text and vision repair calls. The re-target wizard's "draw a new region" step (Pick element phase) is one of these vision calls (`region_selector_vision.py`, cached by DOM hash + drawn bbox so redrawing the same box doesn't re-bill) — it replaced a text-only regenerate call that couldn't actually resolve a drawn region to a DOM element (see `docs/App-Flow.md` §7 re-target wizard note), so this is a cost-neutral swap of one Human Edit call for another, not a new charge:
 
@@ -178,17 +169,17 @@ Studio answers it itself through the same metered proxy every other Human Edit c
 regardless of how many review steps a workflow has.
 
 **Example — Company on Starter (paid plan), 1 plugin, 50 workflows:**
-- Initial build: 50 × $0.21 = **$10.50 one-time** (50 compile credits spent)
-- Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.042 = **$1.26/month** (30 more compile credits spent — recompiles meter the same as first compiles)
+- Initial build: 50 × $0.065 = **$3.25 one-time** (50 compile credits spent)
+- Monthly iteration (recompile 10 workflows × 3 times, 3 changed steps): 30 compilations × $0.013 = **$0.39/month** (30 more compile credits spent — recompiles meter the same as first compiles)
 - Selector/anchor repair on existing workflows: draws from the included **2.5M text + vision token Human Edit reserve**
 
 | Component | Free | Starter | Pro | Enterprise |
 |-----------|-------|---------|-----|------------|
-| LLM per compilation (first build) | ~$0.03 | ~$0.21 | ~$0.21 | ~$0.81 |
-| LLM per recompilation (cached 3-step change) | ~$0.006 | ~$0.042 | ~$0.042 | ~$0.162 |
+| LLM per compilation (first build) | ~$0.055 | ~$0.065 | ~$1.06 | Contracted |
+| LLM per recompilation (cached 3-step change) | ~$0.011 | ~$0.013 | ~$0.21 | Contracted |
 | Build infrastructure | $0.10 | $0.10 | $0.10 | $0.10 |
 | Human Edit LLM reserve | 500K text + vision tokens | 2.5M text + vision tokens | 10M text + vision tokens | Contracted |
-| **Blended per compilation** | **~$0.008** | **~$0.075** | **~$0.075** | **~$0.292** |
+| **Blended per compilation** | **~$0.020** | **~$0.023** | **~$0.38** | Contracted |
 
 ---
 
@@ -198,12 +189,12 @@ Conxa does not need maximum LLM capacity all day. Compilation demand comes in bu
 
 | Pool | Normal configuration | Burst configuration | Why |
 |------|----------------------|---------------------|-----|
-| Starter / Pro OpenAI | GPT-5.4-mini Standard Tier 4 | GPT-5.4-mini Tier 5, Scale Tier, or Reserved Capacity for 100+ fresh workflow compilations/min | Tier 4 gives 10M TPM, enough for roughly 20 fresh 15-step workflow compilations/min at the current token shape; Tier 5 gives 180M TPM for much larger bursts |
-| Starter / Pro Together | Gemma 4 31B serverless for low-volume intent/text fallback | Dedicated endpoint replicas during known compile bursts | Together serverless limits are dynamic and can throttle sudden spikes; dedicated endpoints provide reserved hardware and predictable latency |
-| Enterprise OpenAI | GPT-5.4 Tier 4 for normal Enterprise compile traffic | GPT-5.4 Tier 5, Scale Tier, or Reserved Capacity | Tier 4 gives 4M TPM; Tier 5 gives 40M TPM for heavier Enterprise bursts |
-| Enterprise Anthropic | Claude Sonnet 4.6 Vision with standard limits | Priority Tier or custom Enterprise limits | Standard Anthropic limits are caps, not guaranteed minimum throughput; bursty vision workloads should use priority or negotiated limits |
+| Free / Starter OpenRouter | Standard pay-as-you-go routing across GLM 5.3 Flash, Qwen3 VL, Kimi K3 | OpenRouter's provider fallback/load-balancing across upstream hosts, or a dedicated-throughput agreement if volume justifies it | OpenRouter abstracts away individual upstream rate limits by routing across multiple hosts per model; the main risk at burst scale is upstream host queuing, not a single provider's TPM cap |
+| Pro Anthropic (Sonnet 5 text + Opus 5.5 vision/Execute) | Standard limits | Priority Tier or custom Enterprise limits; Fast mode (2x price) for latency-sensitive bursts | Standard Anthropic limits are caps, not guaranteed minimum throughput; bursty workloads should use priority or negotiated limits. Both text and vision now share one provider's limits |
+| Pro non-urgent recompiles | Opus 5.5 Standard | Message Batches API (half price, asynchronous) | Routing overnight or low-priority recompiles through Batch halves Opus 5.5's share of Pro's COGS |
+| Enterprise | Whatever the company requires — BYOK or negotiated | Priority Tier / Reserved Capacity per contract | Burst provisioning is part of the same per-contract plan as pricing — see "Planning Enterprise to the margin target" above |
 
-OpenAI Priority processing should be used only for latency-sensitive compile jobs. It improves speed/reliability but shares the same rate limits, so it does not replace Tier 5, Scale Tier, or Reserved Capacity for very large bursts. Together dedicated endpoints can be started for planned compilation windows and stopped afterward; billing is per-minute by hardware while the endpoint is running.
+Anthropic Priority Tier and Fast mode (Pro/Opus 5.5) should be used only for latency-sensitive compile jobs. The Batch API (half price) is the more relevant lever here: routing non-urgent Pro recompiles through it directly protects the build-heavy-month margin discussed above.
 
 ---
 
@@ -324,16 +315,16 @@ A Conxa `execute_skill` call maps roughly to **1 message-equivalent per attempt*
 
 ### Total Monthly Operating Cost
 
-Assumes blended compilation cost before Human Edit reserve: **~$0.075** for Starter/Pro traffic and **~$0.292** for Enterprise-grade traffic. Plugin packaging itself is treated as materially free.
+Assumes blended compilation cost per company mix (Starter ~$0.023/compile, Pro ~$0.38/compile — see above), weighted at the same Starter:Pro ratios used in Unit Economics below (roughly 70:30 at MVP/Growth, 60:40 at Scale): **~$0.13/compile** blended at MVP/Growth, **~$0.17/compile** blended at Scale. Enterprise compilation cost is contracted, not a pool rate — see "Planning Enterprise to the margin target" below. Plugin packaging itself is treated as materially free.
 
 | Scale | Companies | Workflow Compilations/Month | Compilation | Dashboard | Telemetry | Updates | **Total/Month** |
 |-------|-----------|--------------|-------------|-----------|-----------|---------|-----------------|
-| MVP | 10 | 20 Starter/Pro | ~$1.50 | $35 | $5 | $2 | **~$44** |
-| Growth | 100 | 200 Starter/Pro | ~$15 | $80 | $50 | $20 | **~$165** |
-| Scale | 500 | 1,000 Starter/Pro | ~$75 | $230 | $500 | $100 | **~$905** |
-| Enterprise | 2,000 | 5,000 Enterprise-grade | ~$1,460 | $700 | $3,000 | $400 | **~$5,560** |
+| MVP | 10 | 20 Starter/Pro | ~$3 | $35 | $5 | $2 | **~$45** |
+| Growth | 100 | 200 Starter/Pro | ~$26 | $80 | $50 | $20 | **~$176** |
+| Scale | 500 | 1,000 Starter/Pro | ~$166 | $230 | $500 | $100 | **~$996** |
+| Enterprise | 2,000 | 5,000 Enterprise-grade | Contracted | $700 | $3,000 | $400 | **Contracted + ~$4,100** |
 
-**Cost note:** Selector generation is deterministic and costs zero tokens. Compilation LLM cost is driven solely by intent + vision anchor calls. Vision anchor cache hit rate (same screenshot hash on recompile) is the primary cost lever — high-cache-hit recompilations cost ~80% less than fresh compilations.
+**Cost note:** Selector generation is deterministic and costs zero tokens. Compilation LLM cost is driven solely by intent + vision anchor calls. Vision anchor cache hit rate (same screenshot hash on recompile) is the primary cost lever — high-cache-hit recompilations cost ~80% less than fresh compilations, and this now matters far more on Pro than before because Opus 5.5's per-call vision cost is ~20x Qwen3 VL's.
 
 ---
 
@@ -400,7 +391,7 @@ This is why margins improve after the first build month. The cap protects Conxa 
 **Customer-facing meters:**
 - **Seats** - people who can use the dashboard / Build Studio for the workspace.
 - **Machines** - distinct devices a workspace can build from. Replaces the old installer-slot meter (removed 2026-08-08 — a workspace may now publish under unlimited product slugs on every tier); this is the control that keeps a single-machine free trial from quietly becoming a free Pro seat.
-- **Execute seats** (added 2026-09-16) - people a workspace has granted Conxa Execute access to, independent of Build Studio membership. Their chat usage draws from the workspace's AI Usage Credits pool below, tracked as its own line item (`execute_chat_tokens`) but not a separate quota. Since the 2026-09-17 merge, Conxa Execute has no dedicated LLM provider keys of its own — its chat calls now share the same managed provider pool (Groq/Google AI Studio/NVIDIA NIM) that compile and Human Edit already draw from, not a separate rate-limit budget.
+- **Execute seats** (added 2026-09-16) - people a workspace has granted Conxa Execute access to, independent of Build Studio membership. Their chat usage draws from the workspace's AI Usage Credits pool below, tracked as its own line item (`execute_chat_tokens`) but not a separate quota. Since the 2026-09-17 merge, Conxa Execute has no dedicated LLM provider keys of its own — its chat calls run on the same per-plan managed pool that compile and Human Edit draw from (as of 2026-09-24: GLM 5.3 Flash on Free and Kimi K3 on Starter, both via OpenRouter; Claude Opus 5.5 on Pro, direct from Anthropic), not a separate rate-limit budget.
 - **Compile credits** - monthly UTC fresh-compile credits. A fresh workflow compile consumes 1 credit. Starter and Pro can top up with one-time add-on packs (each also adds Human Edit tokens) that never expire and are consumed only after the monthly allowance runs out: +20 credits at ₹3,999, +50 at ₹9,999, +100 at ₹19,999, and +250 at ₹49,999.
 - **AI Usage Credits** - monthly UTC token pool for editor-triggered LLM work only: selector repair (1-click fix), semantic repair, visual re-anchor, and screenshot/bbox anchor regeneration (the "draw a new region" retarget wizard). Recompiling a whole workflow is billed like a first compile — see Compile credits above — not from this pool.
 
@@ -452,31 +443,92 @@ Editing an already-compiled workflow (selector repair, semantic repair, visual r
 
 ---
 
+## What Companies Actually Get
+
+It's worth being explicit about the value proposition so pricing feels justified.
+
+**Without Conxa:**
+- Build a custom MCP server from scratch
+- Write and maintain Playwright automation scripts
+- Handle selector drift when websites update
+- Build telemetry and analytics from scratch
+- Maintain installers for Windows and Mac
+- Manage distribution and updates
+
+**With Conxa:**
+- Record workflows in the Build Studio
+- Build a signed `.exe` to distribute to customers
+- See dashboard analytics for usage, success, failure, and recovery
+- Push plugin updates without customers reinstalling
+- Give Claude Desktop local MCP tools backed by precompiled workflows
+- Keep the plugin signed, trackable, updateable, and supported after the build-heavy first month
+- Receive Conxa runtime/healing improvements without rebuilding the product from scratch
+
+**At ₹0, 30-day trial (Free):** A company gets 1 seat, 1 build machine, 25 monthly compile credits, and 500K monthly Human Edit tokens — full self-healing, internal distribution only — enough to prove that Conxa works on their product before paying.
+
+**At ₹19,999/month (Starter):** A company gets 3 seats, 3 machines, 200 monthly compile credits, 2.5M monthly Human Edit tokens, priority builds, and 90-day analytics retention. Distribution stays internal-only. This is the first paid, one-team tier.
+
+**At ₹49,999/month (Pro):** A company gets 10 seats, 10 machines, 500 monthly compile credits, 10M monthly Human Edit tokens, external distribution with a Conxa-branded installer, the full ops dashboard with drift detection, highest-priority self-serve builds, and 1-year retention. This is the highest self-serve tier — an enterprise running its own org, or a vendor scaling as a channel.
+
+---
+
 ### Cost Per Tier (What Conxa Spends)
 
-Using recalculated LLM costs from current provider pricing. The customer sees subscriptions; Conxa
-models an internal build-heavy month for margin planning. Revenue is INR (what's actually charged);
-COGS is estimated in USD (what LLM providers actually bill) and converted at an indicative ₹83/USD for
-the margin line — **recompute against the live rate and current provider pricing before using these
-numbers for planning.** Compile credits and AI Usage Credits both dropped from the prior pricing
-sheet (Starter: 300→200 credits, 10M→2.5M Human Edit tokens; Pro: 1,000→500 credits, 50M→10M tokens),
-so build-heavy-month COGS should scale down roughly in proportion — the ranges below are a first pass,
-not a re-derivation from current per-token provider pricing.
+Recalculated for the 2026-09-23 provider swap (Free/Starter → OpenRouter) and the 2026-09-24 Pro
+change (Claude Sonnet 5 text + Claude Opus 5.5 vision/Execute, replacing GPT-6 Astra). The customer sees subscriptions; Conxa models an internal build-heavy month for margin
+planning. Revenue is INR (what's actually charged); COGS is estimated in USD and converted at an
+indicative ₹83/USD for the margin line — **recompute against the live rate and current provider
+pricing before using these numbers for planning.** These figures apply the same build-heavy-month
+utilization assumption as the prior pricing pass (not the full compile-credit ceiling — realistic
+usage during an active first month), scaled by each tier's new-vs-old per-compile cost ratio: Free
+~1.8x, Starter ~0.31x (~3.2x cheaper), Pro ~1.3x (driven almost entirely by Opus 5.5 vision). This is a first
+pass, not a token-by-token re-derivation.
+
+**The target this table is built around: ≥25% net profit margin in a build-heavy month, rising to
+≥90% in a maintenance month** — "net" meaning revenue minus everything (COGS *and* infra/telemetry/
+support opex), not gross margin. Every figure below is already net in that sense.
 
 | | **Free** | **Starter** | **Pro** | **Enterprise** |
 |--|-----------|-------------|---------|----------------|
-| LLM provider | Free-tier rotation + standard queue | Starter's dedicated provider (`compile_pool="starter"`) | Pro's dedicated provider (`compile_pool="pro"`), priority queue | BYOK (Azure OpenAI) or premium |
+| LLM provider | GLM 5.3 Flash + Qwen3 VL, via OpenRouter | Kimi K3 + Qwen3 VL, via OpenRouter | Claude Sonnet 5 + Claude Opus 5.5, direct | Whatever the company requires — BYOK or negotiated |
 | Seats | 1 | 3 | 10 | Contracted |
 | Machines | 1 | 3 | 10 | Contracted |
 | Compile credits / month | 25 | 200 | 500 | Unlimited |
 | AI Usage Credits | 500K tokens | 2.5M tokens | 10M tokens | Contracted |
 | Internal build-month envelope | ~25 fresh compiles | ~200 fresh compiles | ~500 fresh compiles | Contracted |
-| Compile + Human Edit planning cost (indicative) | **~$1–$5** | **~$14–$23** | **~$44–$60** | Contracted |
+| Compile + Human Edit planning cost (indicative) | **~$2–$9** | **~$4–$7** | **~$58–$78** | Contracted — see below |
 | Infra, telemetry, installer, payment-fee reserve | **~$10–$20** | **~$25–$40** | **~$65–$105** | Contracted |
-| **Total cost/company in build-heavy month (indicative)** | **~$11–$25 CAC** | **~$39–$63** | **~$109–$165** | Contracted |
+| **Total cost/company in build-heavy month (indicative)** | **~$12–$29 CAC** | **~$29–$47** | **~$123–$183** | Contracted |
 | **Revenue** | ₹0 | **₹19,999 (~$241)** | **₹49,999 (~$602)** | Custom, from ₹99,999 |
-| **Build-heavy gross margin (indicative)** | — | **~74–84%** | **~73–82%** | Contract-dependent |
-| **Maintenance-month gross margin** | — | **~90%+** | **~90%+** | Contract-dependent |
+| **Build-heavy net profit margin (indicative)** | — | **~80–88%** | **~70–80%** | Priced to ≥25% floor (see below) |
+| **Maintenance-month net profit margin** | — | **~90%+** | **~85–90%** | Priced to ≥90% target |
+| **Pro worst case: all 500 credits used on fresh 15-step compiles** | — | — | **~$530 LLM + ~$65–105 reserve ≈ $595–635 → net margin ≈ −5% to +1% (break-even)** | — |
+
+**Pro worst-case risk (kept visible on purpose):** the typical Pro range above assumes a realistic
+build-heavy month (mostly cached recompiles), not the full 500-credit ceiling. If a Pro workspace spends
+every credit on fresh 15-step compiles (500 × ~$1.06 ≈ $530), the month is roughly break-even, not 70–80%.
+Add-on packs stay profitable (~₹200 ≈ $2.40 revenue per credit vs. ~$1.06 fresh-compile cost). The
+signal to watch is a Pro workspace sustaining fresh-compile usage well above ~250 credits/month
+(see "What to Measure" → Subscription Capacity).
+
+Both self-serve tiers clear the 25% build-heavy floor with wide margin in the typical case — Pro is the
+tightest at ~70% low end, nearly triple the floor. Starter got materially *cheaper* to serve (Kimi K3 +
+Qwen3 VL 235B A22B Instruct undercut the old GPT-5.4-mini/Gemma pool by ~3.2x); Pro got moderately more
+expensive to serve (Opus 5.5 vision at $4/$20 vs. the old Sonnet-4.6-Vision $3/$15), but the Pro
+subscription price absorbs it comfortably. **If Pro's build-heavy margin ever compresses toward the
+floor** — e.g. a cohort with much lower cache-hit rates than assumed — the levers are the Batch API
+(half price) for non-urgent recompiles, then moving Pro's vision anchors to Claude Sonnet 5 (half of
+Opus 5.5's price, same provider), before raising price.
+
+**Planning Enterprise to the margin target:** Enterprise is BYOK/negotiated model choice per contract
+("whatever the company requires"), so there's no fixed pool cost to table here. Price every Enterprise
+contract by plugging the customer's actual chosen models into the same per-step formula used above
+(intent tokens × text-model rate + vision-anchor tokens × vision-model rate, scaled by expected
+compile volume and cache-hit rate), add the infra/telemetry/support reserve for their scale, and set
+the contract price so build-heavy net margin clears 25% and maintenance-month net margin clears 90% —
+the same two-number target as Starter/Pro, just solved per-contract instead of read off a fixed table.
+A customer requesting an expensive model mix (e.g., Opus-5.5-tier vision at high volume) should see that
+reflected in contract price, not absorbed as margin compression.
 
 **Pricing implication:** The four visible meters keep expectations clear while protecting Conxa from
 unbounded compile and repair loops. The 30-day trial replaces the old "free forever" framing as the
@@ -488,10 +540,14 @@ explicit usage overrides — moves to Enterprise.
 
 ## Unit Economics
 
-These scenarios assume a conservative build-heavy month using midpoint cost estimates from the tier
-table, converted at the same indicative ₹83/USD used above. Maintenance months are materially cheaper
+These scenarios assume a conservative build-heavy month using midpoint per-company cost estimates
+from the tier table above (Starter ~₹3,154/company, Pro ~₹12,700/company at ₹83/USD), recalculated
+for the 2026-09-23 provider swap and the 2026-09-24 Pro change to Claude Opus 5.5 vision. Margins below are **net profit**, not gross — COGS plus the full
+infra/telemetry/support reserve is already subtracted. Maintenance months are materially cheaper
 because live plugins usually receive only 1-2 workflow updates while still paying for dashboard,
-signing, telemetry, support, update delivery, and Conxa healing/runtime improvements.
+signing, telemetry, support, update delivery, and Conxa healing/runtime improvements — maintenance-
+month net margin stays ~90%+ across tiers regardless of which compile-time models are in the pool,
+since maintenance months barely touch the compile pool at all.
 
 ### Scenario A: MVP (10 Companies)
 Mix: 7 Starter, 3 Pro
@@ -499,13 +555,13 @@ Mix: 7 Starter, 3 Pro
 | | Value |
 |-|-------|
 | **Monthly Revenue** | (7 x ₹19,999) + (3 x ₹49,999) = **₹2,89,990** (~$3,494) |
-| Build-heavy COGS (indicative) | **~₹64,000** (~$770) |
-| **Gross Margin (indicative)** | **~78%** |
-| **Monthly Profit (indicative)** | **~+₹2,26,000** |
+| Build-heavy net cost (indicative) | **~₹60,180** (~$725) |
+| **Build-heavy net profit margin (indicative)** | **~79%** |
+| **Monthly Profit (indicative)** | **~+₹2,29,810** |
 
 **Break-even:** 1-2 paying companies covers baseline cloud infrastructure. The 30-day free trial's
 costs should be treated as acquisition spend, bounded by the machine-limit control rather than an
-open-ended free tier.
+open-ended free tier. Comfortably above the 25% build-heavy floor even at MVP scale.
 
 ---
 
@@ -515,9 +571,9 @@ Mix: 70 Starter, 30 Pro
 | | Value |
 |-|-------|
 | **Monthly Revenue** | (70 x ₹19,999) + (30 x ₹49,999) = **₹28,99,900** (~$34,938) |
-| Build-heavy COGS (indicative) | **~₹6,40,000** (~$7,700) |
-| **Gross Margin (indicative)** | **~78%** |
-| **Monthly Profit (indicative)** | **~+₹22,60,000** |
+| Build-heavy net cost (indicative) | **~₹6,01,800** (~$7,250) |
+| **Build-heavy net profit margin (indicative)** | **~79%** |
+| **Monthly Profit (indicative)** | **~+₹22,98,100** |
 
 ---
 
@@ -527,9 +583,9 @@ Mix: 300 Starter, 200 Pro
 | | Value |
 |-|-------|
 | **Monthly Revenue** | (300 x ₹19,999) + (200 x ₹49,999) = **₹1,59,99,500** (~$192,765) |
-| Build-heavy COGS (indicative) | **~₹35,20,000** (~$42,400) |
-| **Gross Margin (indicative)** | **~78%** |
-| **Monthly Profit (indicative)** | **~+₹1,24,80,000** |
+| Build-heavy net cost (indicative) | **~₹34,86,200** (~$42,000) |
+| **Build-heavy net profit margin (indicative)** | **~78%** |
+| **Monthly Profit (indicative)** | **~+₹1,25,13,300** |
 
 ---
 
@@ -538,26 +594,34 @@ Mix: 1,000 Starter, 800 Pro, 200 Enterprise at ₹8,30,000 (~$10K) average contr
 
 | | Value |
 |-|-------|
-| **Monthly Revenue (indicative)** | **~₹18.9 crore** (~$2.28M) |
-| Build-heavy COGS (indicative) | **~₹4.65 crore** (~$560K) |
-| **Gross Margin (indicative)** | **~75%** |
-| **Monthly Profit (indicative)** | **~+₹14.3 crore** (~$1.72M, ~$20.6M/year) |
+| **Monthly Revenue (indicative)** | **~₹22.60 crore** (~$2.72M) — corrected from a prior arithmetic error (was listed as ₹18.9 crore, which doesn't sum from this mix; ₹1.9999cr + ₹3.9999cr + ₹16.6cr = ₹22.5998cr) |
+| Build-heavy net cost (indicative) | **~₹6.31 crore** (~$760K) — Starter/Pro at the per-company figures above, Enterprise assumed priced to the same ~70% net margin as self-serve |
+| **Build-heavy net profit margin (indicative)** | **~72%** |
+| **Monthly Profit (indicative)** | **~+₹16.29 crore** (~$1.96M, ~$23.6M/year) |
 
 Enterprise contracts should be priced from the customer's requested seats, machines, compile credits,
-AI Usage Credits, active installs, telemetry retention, support SLA, BYOK, and SSO. Do not sell
+AI Usage Credits, active installs, telemetry retention, support SLA, BYOK, and SSO — and from the
+customer's actual chosen model mix, per "Planning Enterprise to the margin target" above. Do not sell
 "unlimited" Enterprise unless the contract has a negotiated usage envelope behind it.
+
+**All four scenarios land at 72–79% build-heavy net profit — well clear of the 25% floor.** Pro's
+higher per-company COGS (Opus 5.5 vision) is absorbed by its higher price point; the blended fleet margin
+moves inversely with Pro's share of the mix (more Pro companies pulls the blend down toward Pro's own
+~70–80% standalone range, more Starter pulls it up toward Starter's ~80–88%). These scenarios use
+typical build-heavy usage — a Pro fleet that burns its full 500 credits fresh every month is
+~break-even per company (see "Pro worst case" above).
 
 ---
 
 ## Growth Milestones
 
-| Milestone | Companies | Monthly Revenue | Monthly Cost | Profit | Key Actions |
+| Milestone | Companies | Monthly Revenue | Monthly Net Cost | Profit | Key Actions |
 |-----------|-----------|-----------------|--------------|--------|-------------|
-| **MVP live** | 10 | ~₹2.9L | ~₹0.64L | +₹2.26L | Ship subscription billing; enforce compile credits, AI Usage Credits, machine limit, and trial expiry |
-| **Beta** | 50 | ~₹14.5L | ~₹3.2L | +₹11.3L | Dashboard usage meters for seats, machines, compile credits, and AI Usage Credits |
-| **Growth** | 100 | ~₹29.0L | ~₹6.4L | +₹22.6L | Priority build queue, internal COGS alerts, fair-use throttles |
-| **Scale** | 500 | ~₹1.6Cr | ~₹35.2L | +₹1.25Cr | Negotiate provider discounts; add Enterprise sales motion |
-| **Enterprise** | 2,000 | ~₹18.9Cr | ~₹4.65Cr | +₹14.3Cr | SLA support, custom retention, reserved provider capacity |
+| **MVP live** | 10 | ~₹2.9L | ~₹0.60L | +₹2.30L | Ship subscription billing; enforce compile credits, AI Usage Credits, machine limit, and trial expiry |
+| **Beta** | 50 | ~₹14.5L | ~₹3.01L | +₹11.49L | Dashboard usage meters for seats, machines, compile credits, and AI Usage Credits |
+| **Growth** | 100 | ~₹29.0L | ~₹6.02L | +₹22.98L | Priority build queue, internal COGS alerts, fair-use throttles |
+| **Scale** | 500 | ~₹1.6Cr | ~₹34.86L | +₹1.25Cr | Negotiate provider discounts; add Enterprise sales motion |
+| **Enterprise** | 2,000 | ~₹22.60Cr | ~₹6.31Cr | +₹16.29Cr | SLA support, custom retention, reserved provider capacity |
 
 ---
 
@@ -673,41 +737,12 @@ From `docs/PRD.md` §11:
 
 ---
 
-## What Companies Actually Get
-
-It's worth being explicit about the value proposition so pricing feels justified.
-
-**Without Conxa:**
-- Build a custom MCP server from scratch
-- Write and maintain Playwright automation scripts
-- Handle selector drift when websites update
-- Build telemetry and analytics from scratch
-- Maintain installers for Windows and Mac
-- Manage distribution and updates
-
-**With Conxa:**
-- Record workflows in the Build Studio
-- Build a signed `.exe` to distribute to customers
-- See dashboard analytics for usage, success, failure, and recovery
-- Push plugin updates without customers reinstalling
-- Give Claude Desktop local MCP tools backed by precompiled workflows
-- Keep the plugin signed, trackable, updateable, and supported after the build-heavy first month
-- Receive Conxa runtime/healing improvements without rebuilding the product from scratch
-
-**At ₹0, 30-day trial (Free):** A company gets 1 seat, 1 build machine, 25 monthly compile credits, and 500K monthly Human Edit tokens — full self-healing, internal distribution only — enough to prove that Conxa works on their product before paying.
-
-**At ₹19,999/month (Starter):** A company gets 3 seats, 3 machines, 200 monthly compile credits, 2.5M monthly Human Edit tokens, priority builds, and 90-day analytics retention. Distribution stays internal-only. This is the first paid, one-team tier.
-
-**At ₹49,999/month (Pro):** A company gets 10 seats, 10 machines, 500 monthly compile credits, 10M monthly Human Edit tokens, external distribution with a Conxa-branded installer, the full ops dashboard with drift detection, highest-priority self-serve builds, and 1-year retention. This is the highest self-serve tier — an enterprise running its own org, or a vendor scaling as a channel.
-
----
-
 ## Cost Levers
 
 ### Biggest Impact
 
 **1. Caching is your biggest natural lever (already built)**  
-Vision anchor calls are cached by element hash and the workflow-intent call by a steps-summary+URLs hash (`anchor_vision_llm.py`, `workflow_intent.py`). A Starter/Pro recompile where 3 steps changed costs ~$0.042, not ~$0.21. Companies iterating daily are still cheap, but internal fair-use alerts should watch customers that repeatedly hit build-heavy usage patterns.
+Vision anchor calls are cached by element hash and the workflow-intent call by a steps-summary+URLs hash (`anchor_vision_llm.py`, `workflow_intent.py`). A Starter recompile where 3 steps changed costs ~$0.013, not ~$0.065 fresh; on Pro (Opus 5.5 vision), the same 3-step recompile costs ~$0.21 instead of ~$1.06 fresh — cache hits matter far more on Pro, since Opus 5.5 makes a fresh vision-anchor call ~19x pricier than Free's. Companies iterating daily are still cheap on every tier, but internal fair-use alerts should watch customers that repeatedly hit build-heavy usage patterns, especially on Pro.
 
 **2. Usage naturally drops after launch**
 Most companies spend the first month building and polishing the plugin, then move to 1–2 updates per month. This makes ongoing LLM cost much lower than the full-cap build-month model while subscription revenue continues for dashboard, signing, telemetry retention, support, update delivery, and Conxa healing/runtime updates.
@@ -719,13 +754,13 @@ Seats, machines, compile credits, and AI Usage Credits are the cleanest customer
 Vision anchor calls dominate compilation cost. Cache hits (same screenshot hash) cost zero tokens. Apps that recompile with minimal visual DOM change will have high anchor cache hit rates, making recompiles near-free. The cache key is the screenshot hash — stable page designs recompile at ~80% lower cost. Adding a "cache hit %" column to the build report gives companies visibility into their recompile efficiency.
 
 **5. Provider volume discounts at scale**
-At $10K+/month provider spend (~500 companies), negotiate committed-use pricing for GPT-5.4-mini, GPT-5.4, Gemma 4 31B, and Claude Vision. Target 20–30% reduction = saves meaningful cost at Scale stage.
+At $10K+/month provider spend (~500 companies), negotiate committed-use pricing for GLM 5.3 Flash, Qwen3 VL, and Kimi K3 via OpenRouter, and direct volume terms with Anthropic (Sonnet 5 and Opus 5.5 — one relationship covers all of Pro). Opus 5.5 vision is the highest-leverage target — it's the single biggest line item in Pro's COGS, so even a modest negotiated discount there moves Pro's build-heavy margin more than the same discount anywhere else in the pool.
 
 **6. Telemetry storage efficiency**
 At Enterprise scale (300M events/month), aggregation is important. Roll up raw events into daily summaries after 7 days. Companies rarely need to query individual run-level data older than 1 week. Reduces storage cost by 70–80%.
 
 **7. Free tier is customer acquisition cost**
-Free is now a 30-day trial capped at 1 machine, 25 compile credits, and 500K Human Edit tokens, so it should be protected by the machine-limit enforcement and free-tier provider routing. It is still worth offering because it proves product value before procurement — and the trial window bounds how long that acquisition cost runs.
+Free is now a 30-day trial capped at 1 machine, 25 compile credits, and 500K Human Edit tokens, protected by the machine-limit enforcement. As of the 2026-09-23 provider swap, Free is no longer $0 real COGS — it runs on GLM 5.3 Flash + Qwen3 VL via OpenRouter (~$0.020/compilation blended, real money, not a free-tier-rotation shadow price) — so the machine limit and trial expiry now bound genuine CAC, not just a rate-limit nuisance. It's still worth offering: the per-trial cost is a few dollars at most (25 compile credits × ~$0.020 ≈ $0.50 blended, at most ~$1.40 if all 25 are fresh 15-step compiles, plus a small Human Edit token cost), trivial next to the value of proving the product before procurement.
 
 **8. Update CDN costs**
 Already negligible. Only matters if plugins become large (>100MB). Keep plugin packages data-only (no embedded browser binaries). Currently well-controlled.
@@ -742,6 +777,7 @@ Already negligible. Only matters if plugins become large (>100MB). Keep plugin p
 | Telemetry volume explodes unexpectedly | $500 -> $5K/month infra cost | Implement event sampling for healthy runs; keep 100% of failures and recovery events |
 | Enterprise customer asks for "unlimited" under a fixed price | Contract becomes negative margin | Sell Enterprise as custom usage envelope: seats, machines, compile credits, AI Usage Credits, active installs, retention, SLA, BYOK |
 | High churn because customers don't adopt `.exe` | Companies cancel from low ROI | Instrument adoption rate; alert company when <20% of target customers installed |
+| A Pro workspace burns most of its 500 compile credits on fresh compiles every month | Opus 5.5 vision makes ~500 fresh 15-step compiles cost ~$530, roughly the whole ₹49,999 fee — Pro margin drops to ~break-even | Track Pro compile credits used and fresh-vs-cached ratio; alert above ~250 fresh credits/month; route non-urgent recompiles through the Batch API (half price); fall back to Sonnet 5 vision if a cohort trends this way |
 | Concurrency spikes during compilation | Build queue backs up or providers return 429 | Async compilation with job queue (`/api/v1/jobs`); use provider priority tiers and reserved capacity only when cohort demand proves it |
 
 ---
@@ -849,6 +885,11 @@ score), so the figures in this doc can be checked against measured fleet data ra
 
 | Date | Author | Change |
 |------|--------|--------|
+| 2026-09-24 | Kiran | v28: Changed Pro to an all-Anthropic pool — Claude Sonnet 5 text, **Claude Opus 5.5** ($4/$20 per MTok, verified against Anthropic pricing) for compile vision and Execute chat — replacing GPT-6 Astra and GPT-5.6 Sol. Set Starter's Execute chat model to Kimi K3 (was Qwen3 VL); Free's GLM 5.3 Flash text/Execute unchanged. Pro compile cost drops to ~$1.06 per fresh 15-step workflow, ~$0.21 per cached recompile, ~$0.38 blended (was ~$2.64 / ~$0.53 / ~$0.95). Recomputed Pro planning cost (~$58–78, total ~$123–183, margin ~70–80%), Unit Economics scenarios (now 72–79%), Growth Milestones, and Total Monthly Operating Cost. Added the Pro worst case (all 500 credits fresh ≈ $530 → ~break-even) to the Cost Per Tier table and Risks. Fixed stale figures: Execute no longer described as sharing the retired Groq/Google/NVIDIA pool; blended Starter $0.023 (not $0.015); Starter 3-step recompile $0.013 (not $0.0084); Free blended $0.020 (not $0.012). |
+| 2026-09-23 | Kiran | v27: Corrected the Free/Starter vision model from an assumed "Qwen3 VL 8B Instruct" to the actual model in use, **Qwen3 VL 235B A22B Instruct** ($0.20/$0.88 per MTok on OpenRouter vs. the 8B variant's $0.117/$0.455 — roughly 1.9x pricier). Recomputed every figure that depended on it: Free's blended compile cost moves $0.012→$0.020/compilation (real cost/CAC ratio ~1.8x the old free-tier-rotation baseline, not ~1.1x), Starter's moves $0.015→$0.023/compilation (~3.2x cheaper than the old GPT-5.4-mini/Gemma pool, not ~5x). Updated the per-step/scenario tables, the Cost Per Tier table's planning-cost ranges and totals (Free ~$12–$29, Starter ~$29–$47, both still comfortably above the 25%/90% net-profit targets — Starter's margin barely moves, ~80–88%), and the per-company Starter figure feeding Unit Economics (₹3,030→₹3,154; left the four scenario tables' own numbers unchanged since the resulting margin shift is sub-1% and within existing rounding). Pro's numbers (Sonnet 5 + Astra) are unaffected — this was a Free/Starter-only correction. |
+| 2026-09-23 | Kiran | v26: Swapped the compile-time LLM provider pools. Free and Starter move off the free-tier Groq/Google AI Studio/NVIDIA NIM rotation onto real, billed OpenRouter models — Free: GLM 5.3 Flash (text) + Qwen3 VL 8B (vision); Starter: Kimi K3 (text) + Qwen3 VL 8B (vision) — both +5.5% OpenRouter platform fee. Pro moves to Claude Sonnet 5 (text, direct Anthropic) + GPT-6 Astra (vision, direct OpenAI); Execute's multimodal model is GPT-5.6 Sol on Pro, GLM 5.3 Flash on Free. Enterprise stays "whatever the company requires" (BYOK or negotiated), now priced per-contract against an explicit target instead of a fixed table. Recomputed every downstream number: blended per-compilation cost (Free ~$0.011→~$0.012, Starter ~$0.075→~$0.015 [5x cheaper], Pro ~$0.292→~$0.95 [3.25x pricier, driven almost entirely by Astra's $10/$50 vs. the old Sonnet-4.6-Vision $3/$15]), the Cost Per Tier table, all four Unit Economics scenarios, and Growth Milestones. Reframed margin figures from "gross margin" to **net profit margin** (revenue minus COGS *and* infra/opex — the old table was already computing this despite the gross-margin label) against the requested target of **≥25% net profit in a build-heavy month, ≥90% in a maintenance month**; every tier and scenario clears both comfortably (self-serve build-heavy net margins now run ~50–88%, fleet blends ~67–71%), with Pro identified as the tier to watch since Astra is the dominant cost driver — the documented mitigation is routing vision-anchor calls to GPT-5.6 Sol instead of Astra before touching price. Added an explicit "Planning Enterprise to the margin target" method for pricing BYOK contracts against the same two-number target. Also corrected a pre-existing arithmetic error in Unit Economics Scenario D (revenue was listed as ₹18.9 crore but the stated company mix sums to ₹22.6 crore) while recomputing that table anyway. |
+| 2026-09-23 | Kiran | v25: Restructured for navigability — no data or figures changed. Moved "What Companies Actually Get" from its orphaned spot after Future Horizons to sit directly under Pricing Tiers/Revenue Model (its natural companion — the value prop that justifies the price a paragraph above it), immediately before "Cost Per Tier (What Conxa Spends)". Added a Contents line under the header linking to every top-level section, since the doc runs ~850 lines with no prior navigation aid. Heading levels and all other section order left untouched to avoid breaking existing anchor links from other docs. |
+| 2026-09-23 | Kiran | v24: Re-checked LLM provider pricing/limits against current docs (previously checked August 9, 2026). GPT-5.4/GPT-5.4-mini, Together AI Gemma 4 31B, Groq free tier (30 RPM/6K TPM/14,400 req/day), Google AI Studio free tier (Flash/Flash-Lite only since the April 2026 Pro removal), and NVIDIA NIM free tier (~40 RPM, 1,000 credits, forever-free) are all still unchanged. One real change: Claude Sonnet 5's $2/$10 per MTok pricing, previously logged here as a temporary introductory rate reverting to $3/$15 on September 1, 2026, is now confirmed **permanent** — that reversion was cancelled. Corrected the stale paragraph accordingly; this is a standing discount vs. Sonnet 4.6 Vision worth an actual Enterprise-pool router migration evaluation, not something to dismiss as an expiring window. No changes to Conxa's own subscription pricing or unit economics this pass. |
 | 2026-09-17 | Kiran | v23: Conxa Execute's standalone backend, dedicated LLM provider keys, and personal wallet/subscription (BYOK) were deleted — it now shares conxa-cloud's backend, Clerk app, and managed provider pool entirely, with access/billing folded into the existing team plan (`docs/TRD.md` §3.6). No underlying token pricing changes; the practical effect is that Execute chat now competes for the same free-tier provider rate limits as compile/Human Edit rather than having its own separate budget — worth watching if Execute usage grows. |
 | 2026-09-16 | Kiran | v22: Renamed "Human Edit pool" to "AI Usage Credits" throughout forward-looking body text and tables — the pool is no longer a Build Studio-only concept now that Conxa Execute seat grants (a workspace can hand out Execute access, billed against this same shared pool) draw from it too. Added the `execute_seats` meter (Free 1 / Starter 25 / Pro 100 / Enterprise contracted) alongside the existing seats/machines/compile-credits meters. No underlying token pricing or reserve-size changes — display rename plus one new capability meter. See `docs/Implementation-Plan.md` 1.15 and `docs/TRD.md` §13.4c. |
 | 2026-09-02 | — | v21: Re-synced execution-time recovery costs with `docs/TRD.md` §10.1. The product now has two behavioural tiers — A (in-process, zero tokens) and B (armed agent round, digest + screenshots). The old four-number ladder and the "text-only first, vision later" split are gone; ceiling env `CONXA_MAX_RECOVERY_TIER` still uses 2 vs 4. |

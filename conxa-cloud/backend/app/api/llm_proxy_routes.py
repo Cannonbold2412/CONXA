@@ -123,15 +123,6 @@ def _resolve_execute_chat_workspace(principal, body: ProxyBody) -> str:
     return target
 
 
-def _execute_route(principal, body: ProxyBody, vision: bool) -> tuple[str, bool]:
-    """(router pool, vision?) for this call. execute_chat goes to Execute's dedicated
-    deployment when configured, always on the vision path so its multimodal model serves
-    every turn. Everything else is unchanged."""
-    if body.usage_class == "execute_chat" and settings.has_execute_llm:
-        return "execute", True
-    return compile_pool_for(principal), vision
-
-
 def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[str, Any]:
     client = _require_known_client(request)
     principal = current_principal(request)
@@ -179,7 +170,7 @@ def _meter_and_call(request: Request, body: ProxyBody, *, vision: bool) -> dict[
 
     router_impl = get_router()
     error_detail: list[str] = []
-    pool, vision = _execute_route(principal, body, vision)
+    pool = compile_pool_for(principal)
     try:
         byok_entry = byok_pool_entry_for(principal)
         if byok_entry is not None:
@@ -287,7 +278,7 @@ def _meter_and_stream(request: Request, body: ProxyBody, *, vision: bool) -> Str
     router_impl = get_router()
     error_detail: list[str] = []
     chunks: "queue.Queue[Any]" = queue.Queue()
-    pool, vision = _execute_route(principal, body, vision)
+    pool = compile_pool_for(principal)
 
     def _worker() -> None:
         try:

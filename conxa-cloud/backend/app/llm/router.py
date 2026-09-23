@@ -302,10 +302,6 @@ class LLMRouter:
             if pool is not None and entry.pool != pool:
                 continue
 
-            # Execute's dedicated deployment is never picked by an unfiltered / any-pool fallback.
-            if pool is None and entry.pool == "execute":
-                continue
-
             return entry
 
         return None
@@ -362,7 +358,7 @@ class LLMRouter:
                 break
 
             entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal, pool=pool)
-            if entry is None and pool is not None and pool != "execute":
+            if entry is None and pool is not None:
                 _debug_log(f"router: pool={pool} exhausted{' for vision' if for_vision else ''}, falling back to any pool")
                 entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal)
 
@@ -375,7 +371,7 @@ class LLMRouter:
                         time.sleep(wait_s)
                         wait_budget -= wait_s
                         entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal, pool=pool)
-                        if entry is None and pool is not None and pool != "execute":
+                        if entry is None and pool is not None:
                             entry = self._next_available_entry(for_vision=for_vision, multimodal=multimodal)
                     else:
                         wait_budget = 0
@@ -441,8 +437,8 @@ class LLMRouter:
         retried — the caller sees whatever text arrived. Today only `copilot_reply` uses this."""
         if not self.pool:
             raise RuntimeError(
-                "No LLM providers enabled. Set at least one *_API_KEYS and "
-                "*_ENABLED=true in .env (e.g. GROQ_API_KEYS=gsk_... + GROQ_ENABLED=true)."
+                "No LLM providers enabled. Set at least one LLM_{TIER}_API_KEYS "
+                "(e.g. LLM_FREE_API_KEYS=sk-or-... for the Free/OpenRouter pool)."
             )
         return self._route(
             task, payload, timeout_ms, for_vision=False, error_detail=error_detail, pool=pool,

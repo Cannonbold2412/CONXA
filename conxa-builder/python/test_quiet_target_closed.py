@@ -7,8 +7,7 @@ close) should be swallowed; anything else must still reach the default handler.
 
 import os
 
-os.environ.setdefault("SKILL_GROQ_ENABLED", "true")
-os.environ.setdefault("SKILL_GROQ_API_KEYS", "test-key")
+os.environ.setdefault("SKILL_LLM_FREE_API_KEYS", "test-key")
 
 from conxa_compile.recorder.session import _quiet_target_closed_exception_handler
 

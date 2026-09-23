@@ -49,6 +49,12 @@ services:
       # Signs time-limited installer download links (SG-07).
       - key: SKILL_INSTALLER_SIGNING_KEY
         sync: false
+      # Dashboard "Report a bug" page — email via Resend's HTTPS API (Render's
+      # free plan blocks outbound SMTP ports). Blank disables the feature (503).
+      - key: SKILL_RESEND_API_KEY
+        sync: false
+      - key: SKILL_BUG_REPORT_TO_EMAIL
+        sync: false
       # Cashfree billing — LIVE.
       - key: CASHFREE_ENV
         value: PROD
@@ -63,11 +69,13 @@ services:
       - key: CASHFREE_PRO_PLAN_ID
         sync: false
       # LLM provider keys (at least one required by the Settings validator).
-      - key: GROQ_API_KEYS
+      # Free/Starter run on OpenRouter, Pro direct on Anthropic — see
+      # conxa-cloud/backend/ROUTER_SETUP.md.
+      - key: LLM_FREE_API_KEYS
         sync: false
-      - key: GOOGLE_AI_STUDIO_API_KEYS
+      - key: LLM_STARTER_API_KEYS
         sync: false
-      - key: NVIDIA_NIM_API_KEYS
+      - key: LLM_PRO_API_KEYS
         sync: false
       - key: SKILL_DATABASE_URL
         fromDatabase:

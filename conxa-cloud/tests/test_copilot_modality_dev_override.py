@@ -31,3 +31,15 @@ def test_prod_without_screenshot_is_text(monkeypatch) -> None:
 def test_non_copilot_task_is_unaffected(monkeypatch) -> None:
     monkeypatch.setattr(llm_client.settings, "environment", "dev")
     assert _copilot_modality("anchor_vision", {"image_base64": "x"}) is None
+
+
+def test_execute_chat_always_multimodal() -> None:
+    """Execute chat has no dedicated deployment (it shares the workspace's tier
+    pool — see docs/cost_model.md "LLM Provider Strategy") but still always
+    takes the multimodal_model slot, screenshot or not."""
+    img_messages = [{"role": "user", "content": [
+        {"type": "text", "text": "what is this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]}]
+    assert _copilot_modality("execute_chat", {"messages": img_messages}) == "multimodal"
+    assert _copilot_modality("execute_chat", {"messages": [{"role": "user", "content": "hi"}]}) == "multimodal"

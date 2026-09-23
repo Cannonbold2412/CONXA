@@ -292,193 +292,49 @@ class Settings(BaseSettings):
     # rather than silently storing plaintext.
     byok_encryption_key: str = Field(default="", validation_alias="SKILL_BYOK_ENCRYPTION_KEY")
 
-    # Multi-provider LLM key pool (free-tier rotation)
-    groq_enabled: bool = Field(default=True, validation_alias=_provider_env("GROQ_ENABLED"))
-    groq_endpoint: str = Field(
-        default="https://api.groq.com/openai/v1",
-        validation_alias=_provider_env("GROQ_ENDPOINT"),
-    )
-    groq_api_keys: str = Field(default="", validation_alias=_provider_env("GROQ_API_KEYS"))
-    groq_text_model: str = Field(
-        default="llama-3.3-70b-versatile",
-        validation_alias=_provider_env("GROQ_TEXT_MODEL"),
-    )
-    groq_vision_model: str = Field(
-        default="meta-llama/llama-4-scout-17b-16e-instruct",
-        validation_alias=_provider_env("GROQ_VISION_MODEL"),
-    )
-    groq_multimodal_model: str = Field(
-        default="",  # optional — falls back to groq_vision_model when unset
-        validation_alias=_provider_env("GROQ_MULTIMODAL_MODEL"),
-    )
+    # Bug report submissions (dashboard "Report a bug" page) — sent as an email via
+    # Resend's HTTPS API rather than SMTP, since Render's free plan blocks outbound
+    # SMTP ports. Empty resend_api_key/bug_report_to_email disables the endpoint (503).
+    resend_api_key: str = ""
+    bug_report_to_email: str = ""
+    bug_report_from_email: str = "Conxa Bug Reports <onboarding@resend.dev>"
+    bug_report_max_bytes: int = 25 * 1024 * 1024
 
-    google_ai_studio_enabled: bool = Field(
-        default=True,
-        validation_alias=_provider_env("GOOGLE_AI_STUDIO_ENABLED"),
+    # LLM key pool: three symmetric, single-deployment tiers (Free/Starter/Pro — each
+    # its own provider label, endpoint, keys, text/vision models, fallback models), no
+    # separate multi-provider rotation block any more. The old Groq/Google AI Studio/
+    # NVIDIA NIM/Cerebras/Together/Mistral/FreeLLMAPI pool was retired 2026-09-23 — see
+    # docs/cost_model.md "LLM Provider Strategy". Free/Starter run on OpenRouter; Pro
+    # routes direct to Anthropic (llm_pro_* below).
+    #
+    # Free's models: GLM 5.3 Flash text + Qwen3 VL 235B A22B Instruct vision, via
+    # OpenRouter (+5.5% OpenRouter platform fee on top of list price). LLM_FREE_API_KEYS
+    # stays empty until set: no key configured = no Free pool entries.
+    llm_free_provider: str = Field(
+        default="openrouter", validation_alias=_provider_env("LLM_FREE_PROVIDER")
     )
-    google_ai_studio_endpoint: str = Field(
-        default="https://generativelanguage.googleapis.com/v1beta/openai",
-        validation_alias=_provider_env("GOOGLE_AI_STUDIO_ENDPOINT"),
+    llm_free_endpoint: str = Field(
+        default="https://openrouter.ai/api/v1", validation_alias=_provider_env("LLM_FREE_ENDPOINT")
     )
-    google_ai_studio_api_keys: str = Field(
-        default="",
-        validation_alias=_provider_env("GOOGLE_AI_STUDIO_API_KEYS"),
+    llm_free_api_keys: str = Field(default="", validation_alias=_provider_env("LLM_FREE_API_KEYS"))
+    llm_free_text_model: str = Field(
+        default="z-ai/glm-5.3-flash", validation_alias=_provider_env("LLM_FREE_TEXT_MODEL")
     )
-    google_ai_studio_text_model: str = Field(
-        default="gemini-2.5-flash",
-        validation_alias=_provider_env("GOOGLE_AI_STUDIO_TEXT_MODEL"),
+    llm_free_vision_model: str = Field(
+        default="qwen/qwen3-vl-235b-a22b-instruct",
+        validation_alias=_provider_env("LLM_FREE_VISION_MODEL"),
     )
-    google_ai_studio_vision_model: str = Field(
-        default="gemini-2.5-flash",
-        validation_alias=_provider_env("GOOGLE_AI_STUDIO_VISION_MODEL"),
+    llm_free_fallback_text_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_FREE_FALLBACK_TEXT_MODEL")
     )
-    google_ai_studio_multimodal_model: str = Field(
-        default="",  # optional — falls back to google_ai_studio_vision_model when unset
-        validation_alias=_provider_env("GOOGLE_AI_STUDIO_MULTIMODAL_MODEL"),
+    llm_free_fallback_vision_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_FREE_FALLBACK_VISION_MODEL")
     )
-
-    nvidia_nim_enabled: bool = Field(
-        default=True,
-        validation_alias=_provider_env("NVIDIA_NIM_ENABLED"),
+    llm_free_multimodal_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_FREE_MULTIMODAL_MODEL")
     )
-    nvidia_nim_endpoint: str = Field(
-        default="https://integrate.api.nvidia.com/v1",
-        validation_alias=_provider_env("NVIDIA_NIM_ENDPOINT"),
-    )
-    nvidia_nim_api_keys: str = Field(
-        default="",
-        validation_alias=_provider_env("NVIDIA_NIM_API_KEYS"),
-    )
-    nvidia_nim_text_model: str = Field(
-        default="meta/llama-4-maverick-17b-128e-instruct",
-        validation_alias=_provider_env("NVIDIA_NIM_TEXT_MODEL"),
-    )
-    nvidia_nim_vision_model: str = Field(
-        default="meta/llama-3.2-90b-vision-instruct",
-        validation_alias=_provider_env("NVIDIA_NIM_VISION_MODEL"),
-    )
-    nvidia_nim_multimodal_model: str = Field(
-        default="",  # optional — falls back to nvidia_nim_vision_model when unset
-        validation_alias=_provider_env("NVIDIA_NIM_MULTIMODAL_MODEL"),
-    )
-
-    cerebras_enabled: bool = Field(
-        default=False,
-        validation_alias=_provider_env("CEREBRAS_ENABLED"),
-    )
-    cerebras_endpoint: str = Field(
-        default="https://api.cerebras.ai/v1",
-        validation_alias=_provider_env("CEREBRAS_ENDPOINT"),
-    )
-    cerebras_api_keys: str = Field(
-        default="",
-        validation_alias=_provider_env("CEREBRAS_API_KEYS"),
-    )
-    cerebras_text_model: str = Field(
-        default="llama-4-scout-17b-16e-instruct",
-        validation_alias=_provider_env("CEREBRAS_TEXT_MODEL"),
-    )
-    cerebras_vision_model: str = Field(
-        default="",
-        validation_alias=_provider_env("CEREBRAS_VISION_MODEL"),
-    )
-    cerebras_multimodal_model: str = Field(
-        default="",  # optional — falls back to cerebras_vision_model when unset
-        validation_alias=_provider_env("CEREBRAS_MULTIMODAL_MODEL"),
-    )
-
-    together_enabled: bool = Field(
-        default=False,
-        validation_alias=_provider_env("TOGETHER_ENABLED"),
-    )
-    together_endpoint: str = Field(
-        default="https://api.together.xyz/v1",
-        validation_alias=_provider_env("TOGETHER_ENDPOINT"),
-    )
-    together_api_keys: str = Field(default="", validation_alias=_provider_env("TOGETHER_API_KEYS"))
-    together_text_model: str = Field(
-        default="meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-        validation_alias=_provider_env("TOGETHER_TEXT_MODEL"),
-    )
-    together_vision_model: str = Field(
-        default="meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        validation_alias=_provider_env("TOGETHER_VISION_MODEL"),
-    )
-    together_multimodal_model: str = Field(
-        default="",  # optional — falls back to together_vision_model when unset
-        validation_alias=_provider_env("TOGETHER_MULTIMODAL_MODEL"),
-    )
-
-    openrouter_enabled: bool = Field(
-        default=False,
-        validation_alias=_provider_env("OPENROUTER_ENABLED"),
-    )
-    openrouter_endpoint: str = Field(
-        default="https://openrouter.ai/api/v1",
-        validation_alias=_provider_env("OPENROUTER_ENDPOINT"),
-    )
-    openrouter_api_keys: str = Field(
-        default="",
-        validation_alias=_provider_env("OPENROUTER_API_KEYS"),
-    )
-    openrouter_text_model: str = Field(
-        default="deepseek/deepseek-v3:free",
-        validation_alias=_provider_env("OPENROUTER_TEXT_MODEL"),
-    )
-    openrouter_vision_model: str = Field(
-        default="meta-llama/llama-4-scout:free",
-        validation_alias=_provider_env("OPENROUTER_VISION_MODEL"),
-    )
-    openrouter_multimodal_model: str = Field(
-        default="",  # optional — falls back to openrouter_vision_model when unset
-        validation_alias=_provider_env("OPENROUTER_MULTIMODAL_MODEL"),
-    )
-
-    mistral_enabled: bool = Field(
-        default=False,
-        validation_alias=_provider_env("MISTRAL_ENABLED"),
-    )
-    mistral_endpoint: str = Field(
-        default="https://api.mistral.ai/v1",
-        validation_alias=_provider_env("MISTRAL_ENDPOINT"),
-    )
-    mistral_api_keys: str = Field(default="", validation_alias=_provider_env("MISTRAL_API_KEYS"))
-    mistral_text_model: str = Field(
-        default="mistral-large-latest",
-        validation_alias=_provider_env("MISTRAL_TEXT_MODEL"),
-    )
-    mistral_vision_model: str = Field(
-        default="pixtral-large-latest",
-        validation_alias=_provider_env("MISTRAL_VISION_MODEL"),
-    )
-    mistral_multimodal_model: str = Field(
-        default="",  # optional — falls back to mistral_vision_model when unset
-        validation_alias=_provider_env("MISTRAL_MULTIMODAL_MODEL"),
-    )
-    # FreeLLMAPI (github.com/tashfeenahmed/freellmapi) — self-hosted OpenAI-compatible
-    # proxy that stacks 28 providers' free tiers behind one /v1 endpoint. The key is
-    # FreeLLMAPI's own unified "freellmapi-…" bearer, not any upstream provider key;
-    # upstream free-tier keys are configured inside the proxy itself.
-    freellmapi_enabled: bool = Field(
-        default=False,
-        validation_alias=_provider_env("FREELLMAPI_ENABLED"),
-    )
-    freellmapi_endpoint: str = Field(
-        default="http://127.0.0.1:3001/v1",
-        validation_alias=_provider_env("FREELLMAPI_ENDPOINT"),
-    )
-    freellmapi_api_keys: str = Field(default="", validation_alias=_provider_env("FREELLMAPI_API_KEYS"))
-    freellmapi_text_model: str = Field(
-        default="auto",  # let the proxy's router pick a model with remaining quota
-        validation_alias=_provider_env("FREELLMAPI_TEXT_MODEL"),
-    )
-    freellmapi_vision_model: str = Field(
-        default="",  # vision-capable model must be pinned explicitly (e.g. google/gemini-2.5-flash)
-        validation_alias=_provider_env("FREELLMAPI_VISION_MODEL"),
-    )
-    freellmapi_multimodal_model: str = Field(
-        default="",  # optional — falls back to freellmapi_vision_model when unset
-        validation_alias=_provider_env("FREELLMAPI_MULTIMODAL_MODEL"),
+    llm_free_fallback_multimodal_model: str = Field(
+        default="", validation_alias=_provider_env("LLM_FREE_FALLBACK_MULTIMODAL_MODEL")
     )
 
     # Router behavior
@@ -499,11 +355,23 @@ class Settings(BaseSettings):
     # models — rather than pointing at one of the Free-pool providers above.
     # A tier with no llm_{tier}_endpoint/api_keys configured contributes no
     # pool entry, so that plan's compiles fall back to the Free pool.
-    llm_starter_provider: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_PROVIDER"))
-    llm_starter_endpoint: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_ENDPOINT"))
+    # Starter's models (docs/cost_model.md "LLM Provider Strategy") — Kimi K3 text +
+    # Qwen3 VL vision, via OpenRouter. LLM_STARTER_API_KEYS stays empty until set: no
+    # key configured = no Starter pool entries, so Starter compiles fall back to Free.
+    llm_starter_provider: str = Field(
+        default="openrouter", validation_alias=_provider_env("LLM_STARTER_PROVIDER")
+    )
+    llm_starter_endpoint: str = Field(
+        default="https://openrouter.ai/api/v1", validation_alias=_provider_env("LLM_STARTER_ENDPOINT")
+    )
     llm_starter_api_keys: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_API_KEYS"))
-    llm_starter_text_model: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_TEXT_MODEL"))
-    llm_starter_vision_model: str = Field(default="", validation_alias=_provider_env("LLM_STARTER_VISION_MODEL"))
+    llm_starter_text_model: str = Field(
+        default="moonshotai/kimi-k3", validation_alias=_provider_env("LLM_STARTER_TEXT_MODEL")
+    )
+    llm_starter_vision_model: str = Field(
+        default="qwen/qwen3-vl-235b-a22b-instruct",
+        validation_alias=_provider_env("LLM_STARTER_VISION_MODEL"),
+    )
     llm_starter_fallback_text_model: str = Field(
         default="", validation_alias=_provider_env("LLM_STARTER_FALLBACK_TEXT_MODEL")
     )
@@ -517,11 +385,26 @@ class Settings(BaseSettings):
         default="", validation_alias=_provider_env("LLM_STARTER_FALLBACK_MULTIMODAL_MODEL")
     )
 
-    llm_pro_provider: str = Field(default="", validation_alias=_provider_env("LLM_PRO_PROVIDER"))
-    llm_pro_endpoint: str = Field(default="", validation_alias=_provider_env("LLM_PRO_ENDPOINT"))
+    # Pro's models (docs/cost_model.md "LLM Provider Strategy") — Claude Sonnet 5 text +
+    # Claude Opus 5.5 vision, direct to Anthropic (no OpenRouter fee). Routed through the
+    # router's existing OpenAI-compatible path: Anthropic's own API exposes an
+    # OpenAI-compatible endpoint at this base URL (Bearer auth, same request/response
+    # shape as every other pooled provider) — no new auth style needed. Model-id strings
+    # are placeholders; verify against Anthropic's live model catalog before deploy.
+    # LLM_PRO_API_KEYS stays empty until set: no key = no Pro pool entries, falls back to Free.
+    llm_pro_provider: str = Field(
+        default="anthropic", validation_alias=_provider_env("LLM_PRO_PROVIDER")
+    )
+    llm_pro_endpoint: str = Field(
+        default="https://api.anthropic.com/v1", validation_alias=_provider_env("LLM_PRO_ENDPOINT")
+    )
     llm_pro_api_keys: str = Field(default="", validation_alias=_provider_env("LLM_PRO_API_KEYS"))
-    llm_pro_text_model: str = Field(default="", validation_alias=_provider_env("LLM_PRO_TEXT_MODEL"))
-    llm_pro_vision_model: str = Field(default="", validation_alias=_provider_env("LLM_PRO_VISION_MODEL"))
+    llm_pro_text_model: str = Field(
+        default="claude-sonnet-5", validation_alias=_provider_env("LLM_PRO_TEXT_MODEL")
+    )
+    llm_pro_vision_model: str = Field(
+        default="claude-opus-5-5", validation_alias=_provider_env("LLM_PRO_VISION_MODEL")
+    )
     llm_pro_fallback_text_model: str = Field(
         default="", validation_alias=_provider_env("LLM_PRO_FALLBACK_TEXT_MODEL")
     )
@@ -533,19 +416,6 @@ class Settings(BaseSettings):
     )
     llm_pro_fallback_multimodal_model: str = Field(
         default="", validation_alias=_provider_env("LLM_PRO_FALLBACK_MULTIMODAL_MODEL")
-    )
-
-    # Conxa Execute's own dedicated deployment (single endpoint, no rotation, ONE multimodal
-    # model for every turn - text and image alike). Unset =
-    # Execute chat keeps using the shared pool exactly as before.
-    execute_llm_provider: str = Field(default="", validation_alias=_provider_env("EXECUTE_LLM_PROVIDER"))
-    execute_llm_endpoint: str = Field(default="", validation_alias=_provider_env("EXECUTE_LLM_ENDPOINT"))
-    execute_llm_api_keys: str = Field(default="", validation_alias=_provider_env("EXECUTE_LLM_API_KEYS"))
-    execute_llm_multimodal_model: str = Field(
-        default="", validation_alias=_provider_env("EXECUTE_LLM_MULTIMODAL_MODEL")
-    )
-    execute_llm_fallback_multimodal_model: str = Field(
-        default="", validation_alias=_provider_env("EXECUTE_LLM_FALLBACK_MULTIMODAL_MODEL")
     )
 
     # Cashfree payment gateway. These intentionally do not use the SKILL_ prefix.
@@ -644,51 +514,19 @@ class Settings(BaseSettings):
     def enabled_llm_providers(self) -> list[ProviderConfig]:
         """Load all enabled LLM providers with their API keys, returning a flat pool.
 
-        Every provider below is tagged pool="free" (docs/PRD.md §11's compile_pool
-        capability). Starter and Pro each get their own independent, single-deployment
-        block instead (see _tier_provider_configs) — tagged pool="starter"/"pro"."""
-        providers_config = [
-            ("groq", self.groq_enabled, self.groq_endpoint, self.groq_api_keys,
-             self.groq_text_model, self.groq_vision_model, self.groq_multimodal_model),
-            ("google_ai_studio", self.google_ai_studio_enabled, self.google_ai_studio_endpoint,
-             self.google_ai_studio_api_keys, self.google_ai_studio_text_model,
-             self.google_ai_studio_vision_model, self.google_ai_studio_multimodal_model),
-            ("nvidia_nim", self.nvidia_nim_enabled, self.nvidia_nim_endpoint,
-             self.nvidia_nim_api_keys, self.nvidia_nim_text_model, self.nvidia_nim_vision_model,
-             self.nvidia_nim_multimodal_model),
-            ("cerebras", self.cerebras_enabled, self.cerebras_endpoint,
-             self.cerebras_api_keys, self.cerebras_text_model, self.cerebras_vision_model,
-             self.cerebras_multimodal_model),
-            ("together", self.together_enabled, self.together_endpoint,
-             self.together_api_keys, self.together_text_model, self.together_vision_model,
-             self.together_multimodal_model),
-            ("openrouter", self.openrouter_enabled, self.openrouter_endpoint,
-             self.openrouter_api_keys, self.openrouter_text_model, self.openrouter_vision_model,
-             self.openrouter_multimodal_model),
-            ("mistral", self.mistral_enabled, self.mistral_endpoint,
-             self.mistral_api_keys, self.mistral_text_model, self.mistral_vision_model,
-             self.mistral_multimodal_model),
-            ("freellmapi", self.freellmapi_enabled, self.freellmapi_endpoint,
-             self.freellmapi_api_keys, self.freellmapi_text_model, self.freellmapi_vision_model,
-             self.freellmapi_multimodal_model),
-        ]
-
+        Free, Starter, and Pro are three symmetric, single-deployment tiers (see
+        _tier_provider_configs) — each its own provider label, endpoint, keys, and
+        text/vision/fallback models, tagged pool="free"/"starter"/"pro". No endpoint/keys
+        configured for a tier means that plan contributes no pool entries and its
+        compiles fall back to the Free pool. (docs/PRD.md §11's compile_pool capability;
+        docs/cost_model.md "LLM Provider Strategy" for the current per-tier models.)"""
         result: list[ProviderConfig] = []
-        for provider_name, enabled, endpoint, api_keys_str, text_model, vision_model, multimodal_model in providers_config:
-            if not enabled or not endpoint:
-                continue
-            keys = self._split_api_keys(api_keys_str)
-            for key in keys:
-                result.append(ProviderConfig(
-                    provider=provider_name,
-                    endpoint=endpoint,
-                    api_key=key,
-                    text_model=text_model,
-                    vision_model=vision_model,
-                    multimodal_model=multimodal_model,
-                    pool="free",
-                ))
-
+        result.extend(self._tier_provider_configs(
+            "free", self.llm_free_provider, self.llm_free_endpoint,
+            self.llm_free_api_keys, self.llm_free_text_model, self.llm_free_vision_model,
+            self.llm_free_fallback_text_model, self.llm_free_fallback_vision_model,
+            self.llm_free_multimodal_model, self.llm_free_fallback_multimodal_model,
+        ))
         result.extend(self._tier_provider_configs(
             "starter", self.llm_starter_provider, self.llm_starter_endpoint,
             self.llm_starter_api_keys, self.llm_starter_text_model, self.llm_starter_vision_model,
@@ -701,19 +539,7 @@ class Settings(BaseSettings):
             self.llm_pro_fallback_text_model, self.llm_pro_fallback_vision_model,
             self.llm_pro_multimodal_model, self.llm_pro_fallback_multimodal_model,
         ))
-        # Execute is multimodal-only: the one model fills every slot (the router's vision gate
-        # keys on vision_model, and every execute_chat turn takes the vision path).
-        mm, mm_fb = self.execute_llm_multimodal_model, self.execute_llm_fallback_multimodal_model
-        result.extend(self._tier_provider_configs(
-            "execute", self.execute_llm_provider, self.execute_llm_endpoint,
-            self.execute_llm_api_keys, mm, mm, mm_fb, mm_fb, mm, mm_fb,
-        ))
-
         return result
-
-    @property
-    def has_execute_llm(self) -> bool:
-        return any(p.pool == "execute" for p in self.enabled_llm_providers())
 
     def _tier_provider_configs(
         self,
@@ -728,10 +554,10 @@ class Settings(BaseSettings):
         multimodal_model: str = "",
         fallback_multimodal_model: str = "",
     ) -> list[ProviderConfig]:
-        """Build the pool entries for a single-deployment tier (Starter/Pro): its own
+        """Build the pool entries for a single-deployment tier (Free/Starter/Pro): its own
         provider label, endpoint, keys, and text/vision/multimodal models, independent of
-        the Free-pool providers above. No endpoint/keys configured = no entries, so that
-        tier's compiles fall back to the Free pool."""
+        every other tier. No endpoint/keys configured = no entries, so that tier's
+        compiles fall back to the Free pool (or fail outright if Free itself is unconfigured)."""
         if not endpoint or not provider:
             return []
         return [
@@ -783,8 +609,8 @@ class Settings(BaseSettings):
             return self
         if not self.enabled_llm_providers():
             raise ValueError(
-                "No LLM providers enabled. Set at least one *_API_KEYS and "
-                "*_ENABLED=true in .env (e.g. GROQ_API_KEYS=gsk_... + GROQ_ENABLED=true). "
+                "No LLM providers enabled. Set at least one LLM_{TIER}_API_KEYS "
+                "(e.g. LLM_FREE_API_KEYS=sk-or-... for the Free/OpenRouter pool). "
                 "See ROUTER_SETUP.md or .env.example for the full provider list."
             )
         return self
