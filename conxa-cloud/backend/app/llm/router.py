@@ -578,6 +578,10 @@ class LLMRouter:
             if "openrouter.ai" in entry.endpoint and "kimi-k3" in str(body_dict.get("model", "")).lower():
                 body_dict["reasoning"] = {"enabled": True}
                 body_dict["provider"] = {"only": ["sail-research/fp4"], "allow_fallbacks": False}
+            # OpenRouter groups requests sharing a session_id (Execute sends one per chat).
+            chat_session_id = str(payload_with_model.get("session_id") or "").strip()[:128]
+            if chat_session_id and "openrouter.ai" in entry.endpoint:
+                body_dict["session_id"] = chat_session_id
             if on_delta is not None:
                 body_dict["stream"] = True
             raw_body = json.dumps(body_dict).encode("utf-8")

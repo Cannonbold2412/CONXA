@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ChatMessage, ConfirmRun, ExecuteContext, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Attachment, ChatMessage, ConfirmRun, ExecuteContext, HistoryRow, Identity, SessionSummary, SkillRow } from "./bridge";
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
 import { BrowserPanel } from "./BrowserPanel";
@@ -75,6 +75,17 @@ function SkillPills({ skills, onPick, limit }: { skills: SkillRow[]; onPick: (s:
   );
 }
 
+type LiveTurn = { user: ChatMessage; editIndex: number | null; content: string; thinking: string };
+const MAX_ATTACH_BYTES = 10 * 1024 * 1024;
+const TEXT_EXT = /\.(txt|md|csv|tsv|json|jsonl|ya?ml|xml|html?|css|log|py|js|jsx|ts|tsx|java|c|cpp|h|go|rs|rb|php|sh|sql|toml|ini)$/i;
+
+function msgText(m: ChatMessage): string {
+  return typeof m.content === "string" ? m.content : m.content.map((p) => (p.type === "text" ? p.text : "")).join("");
+}
+function msgImages(m: ChatMessage): string[] {
+  return typeof m.content === "string" ? [] : m.content.flatMap((p) => (p.type === "image_url" ? [p.image_url.url] : []));
+}
+
 export function App() {
   const api = window.conxaExecute;
   const [runtimeOk, setRuntimeOk] = useState<boolean | null>(null);
@@ -89,18 +100,28 @@ export function App() {
   const [formOk, setFormOk] = useState(true);
   const [formDetail, setFormDetail] = useState("");
   const [formDetailsOpen, setFormDetailsOpen] = useState(false);
-  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [, setHistory] = useState<HistoryRow[]>([]);
   const [mode, setMode] = useState<Mode>("chat");
   const [showSettings, setShowSettings] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [chatLog, setChatLog] = useState<(ChatMessage & { error?: boolean })[]>([]);
-  const [streamingMsg, setStreamingMsg] = useState<{ content: string; thinking: string } | null>(null);
+  // In-flight turns, keyed by chat. The main process only saves a transcript when its turn ends,
+  // so the sent message and streamed text live here until then (lets you switch chats mid-run).
+  const [live, setLive] = useState<Record<string, LiveTurn>>({});
+  const [chatErrors, setChatErrors] = useState<Record<string, string>>({});
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attachError, setAttachError] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
   const [pendingRun, setPendingRun] = useState<ConfirmRun | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const sessionRef = useRef<string | null>(null);
+  sessionRef.current = sessionId;
+  const liveNow = sessionId ? live[sessionId] : undefined;
+  const chatBusy = Boolean(liveNow);
   const [signedIn, setSignedIn] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [startupError, setStartupError] = useState("");
@@ -275,7 +296,7 @@ export function App() {
     () =>
       chatLog
         .map((m, idx) => ({ m, idx }))
-        .filter(({ m }) => (m.role === "user" || m.role === "assistant") && m.content),
+        .filter(({ m }) => (m.role === "user" || m.role === "assistant") && (msgText(m) || msgImages(m).length)),
     [chatLog],
   );
   // Past the sign-in gate below, `signedIn` is always true — chat is ready
@@ -304,40 +325,74 @@ export function App() {
     await refreshHistory();
   }
 
+  async function addFiles(files: FileList | null) {
+    if (!files) return;
+    setAttachError("");
+    const added: Attachment[] = [];
+    for (const f of Array.from(files)) {
+      if (f.size > MAX_ATTACH_BYTES) { setAttachError(`${f.name} is larger than 10 MB.`); continue; }
+      const isImage = /^image\/(png|jpe?g|gif|webp)$/.test(f.type);
+      const isText = f.type.startsWith("text/") || TEXT_EXT.test(f.name);
+      if (!isImage && !isText) { setAttachError(`${f.name}: only images and text files are supported.`); continue; }
+      const data = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(r.error);
+        if (isImage) r.readAsDataURL(f); else r.readAsText(f);
+      });
+      added.push({ name: f.name, mime: f.type, kind: isImage ? "image" : "text", data });
+    }
+    setAttachments((prev) => [...prev, ...added]);
+    if (fileInput.current) fileInput.current.value = "";
+  }
+
   async function sendChat() {
     const text = chatInput.trim();
-    if (!text || busy || !sessionId) return;
+    if ((!text && attachments.length === 0) || chatBusy || !sessionId) return;
+    const sid = sessionId;
     const editIndex = editingIndex;
+    const files = attachments;
     setChatInput("");
+    setAttachments([]);
+    setAttachError("");
     setEditingIndex(null);
-    setChatLog((prev) => [...(editIndex !== null ? prev.slice(0, editIndex) : prev), { role: "user", content: text }]);
-    setBusy(true);
-    setStreamingMsg({ content: "", thinking: "" });
+    const shown: ChatMessage["content"] = files.some((a) => a.kind === "image")
+      ? [{ type: "text", text }, ...files.filter((a) => a.kind === "image").map((a) => ({ type: "image_url" as const, image_url: { url: a.data } }))]
+      : text;
+    setChatLog((prev) => [...(editIndex !== null ? prev.slice(0, editIndex) : prev), { role: "user", content: shown }]);
+    setLive((prev) => ({ ...prev, [sid]: { user: { role: "user", content: shown }, editIndex, content: "", thinking: "" } }));
     const requestId = crypto.randomUUID();
     const unsubscribe = api.onChatDelta((delta) => {
       if (delta.requestId !== requestId) return;
-      setStreamingMsg((prev) => {
-        const base = prev || { content: "", thinking: "" };
-        return delta.type === "reasoning"
-          ? { ...base, thinking: base.thinking + delta.text }
-          : { ...base, content: base.content + delta.text };
+      setLive((prev) => {
+        const base = prev[sid];
+        if (!base) return prev;
+        return {
+          ...prev,
+          [sid]: delta.type === "reasoning"
+            ? { ...base, thinking: base.thinking + delta.text }
+            : { ...base, content: base.content + delta.text },
+        };
       });
     });
     try {
-      const r = await api.chatSend({ text, sessionId, requestId, editIndex: editIndex ?? undefined });
-      if (r.ok) {
-        // Reload from the session store rather than hand-appending — main.js
-        // may have pruned/compacted the transcript for this turn, and that's
-        // the authoritative post-turn state.
-        const loaded = await api.loadSession({ id: sessionId });
-        setChatLog(loaded.session?.messages || []);
-      } else {
-        setChatLog((prev) => [...prev, { role: "assistant", content: r.message || "Something went wrong.", error: true }]);
+      const r = await api.chatSend({ text, sessionId: sid, requestId, editIndex: editIndex ?? undefined, attachments: files });
+      if (sessionRef.current === sid) {
+        if (r.ok) {
+          // Reload from the session store rather than hand-appending — main.js
+          // may have pruned/compacted the transcript for this turn, and that's
+          // the authoritative post-turn state.
+          const loaded = await api.loadSession({ id: sid });
+          setChatLog(loaded.session?.messages || []);
+        } else {
+          setChatLog((prev) => [...prev, { role: "assistant", content: r.message || "Something went wrong.", error: true }]);
+        }
+      } else if (!r.ok) {
+        setChatErrors((prev) => ({ ...prev, [sid]: r.message || "Something went wrong." }));
       }
     } finally {
       unsubscribe();
-      setStreamingMsg(null);
-      setBusy(false);
+      setLive((prev) => { const n = { ...prev }; delete n[sid]; return n; });
     }
     await refreshHistory();
     await refreshSessions();
@@ -394,7 +449,18 @@ export function App() {
       return;
     }
     setSidebarError("");
-    setChatLog(loaded.session?.messages || []);
+    const err = chatErrors[s.id];
+    if (err) setChatErrors(({ [s.id]: _gone, ...rest }) => rest);
+    setChatLog([
+      ...withLive(s.id, loaded.session?.messages || []),
+      ...(err ? [{ role: "assistant", content: err, error: true }] : []),
+    ]);
+  }
+
+  function withLive(id: string, stored: ChatMessage[]): ChatMessage[] {
+    const turn = live[id];
+    if (!turn) return stored;
+    return [...(turn.editIndex !== null ? stored.slice(0, turn.editIndex) : stored), turn.user];
   }
 
   function pickSkill(s: SkillRow) {
@@ -422,12 +488,6 @@ export function App() {
       }
       setEditingIndex(null);
     }
-  }
-
-  async function deleteRun(at: string) {
-    const r = await api.deleteHistory({ at });
-    if (r.ok) setHistory(r.items || []);
-    else setSidebarError(r.message || "Could not delete that run.");
   }
 
   function handleBack() {
@@ -464,6 +524,20 @@ export function App() {
             </button>
           </div>
         )}
+        {(attachments.length > 0 || attachError) && (
+          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
+            {attachments.map((a, i) => (
+              <span key={i} className="flex items-center gap-1 rounded-lg bg-bg px-2 py-1 text-[12px] text-fg-muted">
+                {a.kind === "image" && <img src={a.data} alt="" className="h-5 w-5 rounded object-cover" />}
+                <span className="max-w-[160px] truncate">{a.name}</span>
+                <button type="button" className="hover:text-fg" aria-label={`Remove ${a.name}`} onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}>
+                  <Icon d={paths.x} size={12} />
+                </button>
+              </span>
+            ))}
+            {attachError && <span className="text-[12px] text-err">{attachError}</span>}
+          </div>
+        )}
         <textarea
           className="theme-scroll max-h-[220px] min-h-[72px] w-full resize-none overflow-y-auto bg-transparent px-1 text-[15px] text-fg placeholder:text-fg-dim outline-none"
           rows={emptyChatHome ? 3 : 2}
@@ -476,25 +550,32 @@ export function App() {
               sendChat();
             }
           }}
-          disabled={!runtimeOk || !chatReady || busy}
+          disabled={!runtimeOk || !chatReady || chatBusy}
           placeholder={chatReady ? "How can I help you today?" : "Waiting for Execute access…"}
         />
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
-            <span className="flex h-7 w-7 items-center justify-center rounded-full text-fg-muted">
+            <input ref={fileInput} type="file" multiple hidden onChange={(e) => addFiles(e.target.files)} />
+            <button
+              type="button"
+              className="flex h-7 w-7 items-center justify-center rounded-full text-fg-muted hover:bg-bg-hover hover:text-fg"
+              aria-label="Attach files"
+              title="Attach images or text files (up to 10 MB)"
+              onClick={() => fileInput.current?.click()}
+            >
               <Icon d={paths.plus} size={16} />
-            </span>
+            </button>
             <div className="flex rounded-full bg-bg p-0.5 text-[12px]">
               <button type="button" className={`rounded-full px-3 py-1 ${mode === "chat" ? "bg-bg-active text-fg" : "text-fg-dim"}`} onClick={() => setMode("chat")}>Chat</button>
               <button type="button" className={`rounded-full px-3 py-1 ${mode === "form" ? "bg-bg-active text-fg" : "text-fg-dim"}`} onClick={() => setMode("form")}>Form</button>
             </div>
           </div>
           <div className="flex items-center gap-2 text-[12px] text-fg-dim">
-            <span>{activeContext && activeContext.kind !== "personal" ? `CONXA · ${activeContext.workspace_name}` : "CONXA"}</span>
+            <span>{activeContext ? `CONXA · ${activeContext.workspace_name}` : "CONXA"}</span>
             <button
               type="button"
               className="flex h-8 w-8 items-center justify-center rounded-full bg-fg text-bg disabled:opacity-30"
-              disabled={!runtimeOk || !chatReady || busy}
+              disabled={!runtimeOk || !chatReady || chatBusy}
               onClick={sendChat}
               aria-label="Send"
             >
@@ -573,25 +654,11 @@ export function App() {
               active={s.id === sessionId}
               onClick={() => pickSession(s)}
               onDelete={collapsed ? undefined : () => deleteChat(s.id)}
-              icon={<Icon d={paths.list} size={15} />}
+              icon={s.id in live
+                ? <span className="mx-[5px] h-[7px] w-[7px] rounded-full bg-ok" title="Running" />
+                : <Icon d={paths.list} size={15} />}
             >
               {collapsed ? "" : s.title}
-            </Row>
-          ))}
-
-          {!collapsed && <p className="mb-1 mt-5 px-2 text-[11px] text-fg-dim">Runs</p>}
-          {history.slice(0, 24).map((h, i) => (
-            <Row
-              key={`${h.at}-${i}`}
-              onDelete={collapsed ? undefined : () => deleteRun(h.at)}
-              icon={<Icon d={paths.list} size={15} />}
-            >
-              {collapsed ? "" : (
-                <span className="flex w-full items-center justify-between gap-2">
-                  <span className="truncate">{h.skill || "run"}</span>
-                  <span className={h.status === "completed" ? "text-ok" : h.status === "awaiting_auth" ? "text-fg-muted" : "text-err"}>{statusLabel(h.status)}</span>
-                </span>
-              )}
             </Row>
           ))}
         </div>
@@ -687,15 +754,16 @@ export function App() {
                 m.role === "user" ? (
                   <div key={idx} className="group mx-auto flex max-w-[900px] flex-col items-end">
                     <div className="max-w-[70%] whitespace-pre-wrap rounded-2xl bg-bg-elevated px-4 py-2.5 text-[15px] leading-relaxed">
-                      {m.content}
+                      {msgImages(m).map((u, k) => <img key={k} src={u} alt="" className="mb-2 max-h-48 rounded-lg" />)}
+                      {msgText(m)}
                     </div>
-                    <MsgActions className="mt-1" text={m.content} onEdit={busy ? undefined : () => { setChatInput(m.content); setEditingIndex(idx); }} />
+                    <MsgActions className="mt-1" text={msgText(m)} onEdit={chatBusy ? undefined : () => { setChatInput(msgText(m)); setEditingIndex(idx); }} />
                   </div>
                 ) : (
                   <div key={idx} className="group mx-auto max-w-[900px]">
                     <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
-                    <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{renderBold(m.content)}</div>
-                    <MsgActions className="mt-1" text={m.content} />
+                    <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{renderBold(msgText(m))}</div>
+                    <MsgActions className="mt-1" text={msgText(m)} />
                   </div>
                 )
               )}
@@ -719,14 +787,14 @@ export function App() {
                   </div>
                 </div>
               )}
-              {streamingMsg && (
+              {liveNow && (
                 <div className="mx-auto max-w-[900px]">
                   <div className="mb-1 text-[11px] text-fg-dim">CONXA</div>
-                  {streamingMsg.thinking && (
-                    <pre className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-dim">{streamingMsg.thinking}</pre>
+                  {liveNow.thinking && (
+                    <pre className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-dim">{liveNow.thinking}</pre>
                   )}
-                  {streamingMsg.content && (
-                    <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{renderBold(streamingMsg.content)}</div>
+                  {liveNow.content && (
+                    <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{renderBold(liveNow.content)}</div>
                   )}
                 </div>
               )}

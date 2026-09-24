@@ -46,6 +46,14 @@ async function saveSessionMessages(id, messages) {
   await storage.write(["message", id], messages);
   await storage.update(["session", id], (draft) => {
     draft.updatedAt = new Date().toISOString();
+    if (draft.title === "New chat") {
+      const first = messages.find((m) => m.role === "user");
+      const text = first && (typeof first.content === "string"
+        ? first.content
+        : (first.content || []).map((p) => p.text || "").join(" "));
+      const title = String(text || "").replace(/\s+/g, " ").trim().slice(0, 40);
+      if (title) draft.title = title;
+    }
   });
 }
 

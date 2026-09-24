@@ -16,7 +16,6 @@ type Props = {
 };
 
 const KIND_LABEL: Record<ExecuteContext["kind"], string> = {
-  personal: "Personal",
   member: "Team",
   grant: "Granted access",
 };
@@ -24,6 +23,7 @@ const KIND_LABEL: Record<ExecuteContext["kind"], string> = {
 export function SettingsModal({
   open, onClose, identity, contexts, activeWorkspaceId, onSwitchContext, switchingContext, theme, onThemeChange, onLogout,
 }: Props) {
+  const [tab, setTab] = useState<"general" | "update">("general");
   const [version, setVersion] = useState("");
   const [checkPhase, setCheckPhase] = useState<"idle" | "checking" | "available" | "not-available" | "error">("idle");
   const [latestVersion, setLatestVersion] = useState("");
@@ -77,16 +77,26 @@ export function SettingsModal({
         <nav className="flex w-56 shrink-0 flex-col border-r border-line p-3">
           <p className="mb-3 px-1 text-[13px] font-medium text-fg">CONXA</p>
           <p className="px-2 pb-1 text-[11px] text-fg-dim">Settings</p>
-          <div className="rounded-lg bg-bg-active px-2.5 py-1.5 text-[13px]">General</div>
+          {([["general", "General"], ["update", "Software update"]] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              className={`mb-0.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] ${tab === id ? "bg-bg-active" : "text-fg-muted hover:bg-bg-hover hover:text-fg"}`}
+            >
+              {label}
+            </button>
+          ))}
         </nav>
-        <div className="min-w-0 flex-1 overflow-auto p-8">
+        <div className="theme-scroll min-w-0 flex-1 overflow-auto p-8">
           <div className="mb-6 flex items-start justify-between">
-            <h2 id="settings-title" className="text-xl font-medium">General</h2>
+            <h2 id="settings-title" className="text-xl font-medium">{tab === "general" ? "General" : "Software update"}</h2>
             <button type="button" className="rounded-md p-1 text-fg-dim hover:bg-bg-hover hover:text-fg" onClick={onClose} aria-label="Close">
               <Icon d={paths.x} size={18} />
             </button>
           </div>
 
+          {tab === "general" && (<>
           <section className="mb-8">
             <h3 className="mb-4 text-[15px] font-medium">Appearance</h3>
             <div className="flex items-center justify-between gap-4">
@@ -110,6 +120,7 @@ export function SettingsModal({
             </div>
           </section>
 
+          {contexts.length > 1 && (
           <section className="mb-8">
             <h3 className="mb-1 text-[15px] font-medium">Execute access</h3>
             <p className="mb-3 text-sm text-fg-muted">
@@ -137,15 +148,17 @@ export function SettingsModal({
               ))}
             </div>
           </section>
+          )}
 
           <section className="mb-8">
             <h3 className="mb-1 text-[15px] font-medium">Your CONXA account</h3>
             <p className="mb-3 text-sm text-fg-muted">Signed in as {identity?.email || identity?.name || identity?.user_id}.</p>
             <Button variant="secondary" onClick={onLogout}>Sign out</Button>
           </section>
+          </>)}
 
+          {tab === "update" && (
           <section>
-            <h3 className="mb-1 text-[15px] font-medium">Software update</h3>
             <p className="mb-3 text-sm text-fg-muted">
               CONXA updates itself in the background. Check here if you want the latest version right away.
             </p>
@@ -185,6 +198,7 @@ export function SettingsModal({
               </div>
             </div>
           </section>
+          )}
         </div>
       </div>
     </div>

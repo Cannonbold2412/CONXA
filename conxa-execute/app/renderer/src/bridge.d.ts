@@ -15,7 +15,9 @@ export type HistoryRow = {
   message?: string;
 };
 
-export type ChatMessage = { role: string; content: string; thinking?: string };
+export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+export type ChatMessage = { role: string; content: string | ContentPart[]; thinking?: string };
+export type Attachment = { name: string; mime: string; kind: "image" | "text"; data: string };
 
 export type ChatDelta = { requestId: string; type: "text" | "reasoning"; text: string };
 
@@ -47,7 +49,7 @@ export type PanelNavAction = "back" | "forward" | "reload" | "stop" | "load";
 export type ExecuteContext = {
   workspace_id: string;
   workspace_name: string;
-  kind: "personal" | "member" | "grant";
+  kind: "member" | "grant";
   credits_remaining?: number | null;
 };
 
@@ -72,7 +74,7 @@ export type Bridge = {
     getVersion: () => Promise<string>;
     onStatus: (cb: (p: UpdateStatus) => void) => () => void;
   };
-  chatSend: (p: { text: string; sessionId: string; requestId?: string; editIndex?: number }) => Promise<{ ok: boolean; text?: string; message?: string }>;
+  chatSend: (p: { text: string; sessionId: string; requestId?: string; editIndex?: number; attachments?: Attachment[] }) => Promise<{ ok: boolean; text?: string; message?: string }>;
   onChatDelta: (cb: (p: ChatDelta) => void) => () => void;
   onConfirmRun: (cb: (p: ConfirmRun) => void) => () => void;
   confirmRunReply: (p: { id: string; approved: boolean }) => Promise<{ ok: boolean }>;

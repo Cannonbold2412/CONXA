@@ -47,7 +47,7 @@ async function getContexts() {
  * caller can paint the reply live — the eventual resolved value is
  * unaffected, still the full accumulated turn.
  */
-function makeChatCompletion({ targetWorkspaceId, timeoutMs, onDelta } = {}) {
+function makeChatCompletion({ targetWorkspaceId, sessionId, timeoutMs, onDelta } = {}) {
   return async function chatCompletion(openaiBody) {
     let resp;
     try {
@@ -60,6 +60,7 @@ function makeChatCompletion({ targetWorkspaceId, timeoutMs, onDelta } = {}) {
           ...(targetWorkspaceId ? { target_workspace_id: targetWorkspaceId } : {}),
           payload: {
             messages: openaiBody.messages,
+            ...(sessionId ? { session_id: sessionId } : {}),
             ...(openaiBody.tools ? { tools: openaiBody.tools, tool_choice: openaiBody.tool_choice } : {}),
           },
         }),

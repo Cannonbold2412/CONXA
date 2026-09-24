@@ -351,6 +351,20 @@ handle("chat:confirm-run-reply", (_e, payload) => {
   return { ok: true };
 });
 
+// Text files are inlined as fenced blocks; images become OpenAI image_url parts
+// (content stays a plain string when there are no images).
+function userMessage(text, attachments) {
+  const files = Array.isArray(attachments) ? attachments : [];
+  const body = [String(text || ""), ...files.filter((a) => a.kind === "text")
+    .map((a) => `\n\n[Attached file: ${a.name}]\n\`\`\`\n${a.data}\n\`\`\``)].join("");
+  const images = files.filter((a) => a.kind === "image");
+  if (!images.length) return { role: "user", content: body };
+  return {
+    role: "user",
+    content: [{ type: "text", text: body }, ...images.map((a) => ({ type: "image_url", image_url: { url: a.data } }))],
+  };
+}
+
 handle("chat:send", async (_e, payload) => {
   const full = settings.loadSettings();
   const sessionId = payload.sessionId;
@@ -364,7 +378,7 @@ handle("chat:send", async (_e, payload) => {
   const priorMessages = editIndex !== null ? stored.slice(0, editIndex) : stored;
   const nextMessages = compaction.pruneIfNeeded([
     ...priorMessages,
-    { role: "user", content: String(payload.text || "") },
+    userMessage(payload.text, payload.attachments),
   ]);
 
   const tools = await mcp.listChatTools();
@@ -381,7 +395,7 @@ handle("chat:send", async (_e, payload) => {
     system: SYSTEM_PROMPT,
     messages: nextMessages,
     tools,
-    chatCompletion: executeClient.makeChatCompletion({ targetWorkspaceId: full.activeWorkspaceId, onDelta }),
+    chatCompletion: executeClient.makeChatCompletion({ targetWorkspaceId: full.activeWorkspaceId, sessionId, onDelta }),
     executeTool: async (name, args) => {
       if (name === "execute_skill") {
         if (!(await confirmRun(requestId, args))) {

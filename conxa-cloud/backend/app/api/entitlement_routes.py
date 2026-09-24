@@ -213,7 +213,6 @@ def get_execute_contexts(request: Request) -> dict[str, Any]:
     contexts: dict[str, dict[str, Any]] = {}
 
     personal_id = personal_workspace_id(principal.user_id)
-    contexts[personal_id] = {"workspace_id": personal_id, "workspace_name": "Personal", "kind": "personal"}
 
     orgs = clerk_user_organizations(principal.user_id)
     if orgs is None:
@@ -240,8 +239,6 @@ def get_execute_contexts(request: Request) -> dict[str, Any]:
         contexts[ws_id] = {"workspace_id": ws_id, "workspace_name": workspace_name_for(ws_id), "kind": "grant"}
 
     for ctx in contexts.values():
-        if ctx["kind"] == "personal":
-            continue
         try:
             ctx["credits_remaining"] = execute_pool_status(ctx["workspace_id"])["remaining"]
         except Exception:  # noqa: BLE001
@@ -250,6 +247,10 @@ def get_execute_contexts(request: Request) -> dict[str, Any]:
             # that's been silently failing for a workspace was invisible.
             logger.warning("execute_pool_status_failed workspace_id=%s", ctx["workspace_id"], exc_info=True)
             ctx["credits_remaining"] = None
+
+    if not contexts:
+        # Solo user with no team or grant: their own workspace is the only one left.
+        contexts[personal_id] = {"workspace_id": personal_id, "workspace_name": "Personal", "kind": "member"}
 
     return {"contexts": list(contexts.values()), "active_workspace_id": principal.workspace_id}
 
