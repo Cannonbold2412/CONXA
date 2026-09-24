@@ -29,7 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Check, Loader2, Pencil, RotateCw, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react'
 
-type AppState = 'idle' | 'launching' | 'waiting' | 'captured' | 'failed'
+type AppState = 'idle' | 'launching' | 'waiting' | 'unconfirmed' | 'captured' | 'failed'
 
 /** Edit-in-place dialog for a group app's name/login URL/success URL. */
 function EditAppDialog({
@@ -201,8 +201,18 @@ export function GroupAuthWizard({
   })
 
   const finishMut = useMutation({
-    mutationFn: () => finishGroupAppAuth(sessionId!, groupId, activeAppId!),
+    mutationFn: (force?: boolean) => finishGroupAppAuth(sessionId!, groupId, activeAppId!, force),
     onSuccess: (data) => {
+      // P0 (Application Authentication Recording): a failed self-test does NOT end the
+      // session — the login window is still open server-side, so stay in `waiting` with the
+      // reason shown, letting the person keep signing in (or click "Save anyway"). Only a
+      // `confirmed: true` response (learned + self-tested, or force-saved, or the browser was
+      // already closed) means the session actually ended.
+      if (!data.confirmed) {
+        setAppState('unconfirmed')
+        setError(data.reason)
+        return
+      }
       setAppState('captured')
       setSessionId(null)
       qc.setQueryData(['group-auth-status', groupId], data.auth)
@@ -222,9 +232,11 @@ export function GroupAuthWizard({
     },
   })
 
-  // Poll recording status while a login window is open, same 1s cadence as the
-  // old RecordLoginDialog. Auto-finish the moment the recorder detects the
-  // app's success URL — this is the "closes on its own" behaviour.
+  // Poll recording status while a login window is open, same 1s cadence as the old
+  // RecordLoginDialog. Only the browser closing (by hand) or the poll itself erroring
+  // auto-finishes — reached_wait_url is a passive hint on the row below, never an auto-close
+  // trigger (spec P0 §3: only the user's own Done ends an auth session; the server-side
+  // auto-stop-on-success_url this used to rely on was removed for the same reason).
   const recStatusQ = useQuery({
     queryKey: ['group-app-recording-status', sessionId],
     queryFn: () => getWorkflowRecordingStatus(sessionId!),
@@ -235,29 +247,24 @@ export function GroupAuthWizard({
 
   useEffect(() => {
     if (appState !== 'waiting' || finishMut.isPending) return
-    // Auto-finish on the recorder's own success signal, on the browser closing, or on the
-    // status poll itself failing — a poll that starts erroring while `retry: false` is set
-    // freezes `recStatusQ.data` at its last good value forever, which used to leave the card
-    // stuck on "Sign in — this closes on its own" with nothing to break out of it.
-    // Deliberately NOT keyed on `auth_captured`: that flag just means "a storage-state save
-    // succeeded while the window was still open" — it also fires on the login page's own
-    // first redirect (e.g. www.github.com/login -> github.com/login), which would auto-finish
-    // the wizard before the user had signed in at all. Only reached_wait_url (a configured
-    // success_url actually matched) or the browser closing count as real completion.
+    // A poll that starts erroring while `retry: false` is set freezes `recStatusQ.data` at its
+    // last good value forever — without this, the card would stay stuck on "waiting" with
+    // nothing to break out of it.
     if (recStatusQ.isError) {
-      finishMut.mutate()
+      finishMut.mutate(undefined)
       return
     }
-    if (!recStatusQ.data) return
-    if (recStatusQ.data.reached_wait_url || recStatusQ.data.browser_open === false) {
-      finishMut.mutate()
+    // The browser closing on its own (the user closed Chromium by hand) is the one remaining
+    // non-Done way a session ends — cmd_finish_group_app_auth falls back to a 2-way check in
+    // that case rather than the full learn flow (nothing left to observe live).
+    if (recStatusQ.data?.browser_open === false) {
+      finishMut.mutate(undefined)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     appState,
     finishMut.isPending,
     recStatusQ.isError,
-    recStatusQ.data?.reached_wait_url,
     recStatusQ.data?.browser_open,
   ])
 
@@ -304,6 +311,7 @@ export function GroupAuthWizard({
         const isReady = app.state === 'ready' && !isActive
         const isExpired = app.state === 'expired' && !isActive
         const isFailed = isActive && appState === 'failed'
+        const isUnconfirmed = isActive && appState === 'unconfirmed'
         const isChecking = checkingAppId === app.id
         const isUnverified = isReady && !app.verified
         return (
@@ -325,7 +333,7 @@ export function GroupAuthWizard({
                   'flex size-7 shrink-0 items-center justify-center rounded-full',
                   isReady && app.verified
                     ? 'bg-emerald-500/15 text-emerald-400'
-                    : isUnverified
+                    : isUnverified || isUnconfirmed
                       ? 'bg-amber-500/15 text-amber-400'
                       : isExpired || isFailed
                         ? 'bg-red-500/15 text-red-400'
@@ -336,7 +344,7 @@ export function GroupAuthWizard({
                   <Check className="size-3.5" />
                 ) : isActive && (appState === 'launching' || appState === 'waiting') ? (
                   <Loader2 className="size-3.5 animate-spin" />
-                ) : isExpired || isFailed ? (
+                ) : isExpired || isFailed || isUnconfirmed ? (
                   <ShieldAlert className="size-3.5" />
                 ) : (
                   <ShieldCheck className="size-3.5" />
@@ -358,12 +366,19 @@ export function GroupAuthWizard({
                     <Button size="sm" variant="outline" onClick={skip}>Skip</Button>
                     <Button size="sm" onClick={() => retry(app.id)}>Retry</Button>
                   </>
-                ) : isActive && appState === 'waiting' ? (
+                ) : isActive && (appState === 'waiting' || isUnconfirmed) ? (
                   // Not disabled — a stuck poll (see the auto-finish effect above) must never
                   // trap the user with no way out of "waiting" other than force-quitting Chromium.
                   <>
                     <Button size="sm" variant="outline" onClick={skip}>Cancel</Button>
-                    <Button size="sm" disabled={finishMut.isPending} onClick={() => finishMut.mutate()}>
+                    {isUnconfirmed && (
+                      // P0: the self-test couldn't confirm sign-in — force-save with no learned
+                      // definition rather than force the person to keep retrying indefinitely.
+                      <Button size="sm" variant="outline" disabled={finishMut.isPending} onClick={() => finishMut.mutate(true)}>
+                        Save anyway
+                      </Button>
+                    )}
+                    <Button size="sm" disabled={finishMut.isPending} onClick={() => finishMut.mutate(undefined)}>
                       {finishMut.isPending ? <Loader2 className="size-3.5 animate-spin" /> : 'Done'}
                     </Button>
                   </>
@@ -409,10 +424,11 @@ export function GroupAuthWizard({
             <div className="pl-10">
               <p className="break-all font-mono text-[11px] text-zinc-500">{app.login_url}</p>
               {isActive && appState === 'waiting' && (
-                <p className="mt-0.5 text-[11px] text-sky-300">
-                  {app.success_url
-                    ? "Sign in — this closes on its own once you're done, or click Done."
-                    : 'Sign in, then click Done or close the window.'}
+                <p className="mt-0.5 text-[11px] text-sky-300">Sign in, then click Done.</p>
+              )}
+              {isUnconfirmed && (
+                <p className="mt-0.5 text-[11px] text-amber-300">
+                  {error || "Couldn't confirm you're signed in yet. Finish signing in and click Done again, or Save anyway."}
                 </p>
               )}
               {isFailed && (

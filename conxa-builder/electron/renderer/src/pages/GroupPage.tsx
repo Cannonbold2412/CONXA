@@ -43,16 +43,18 @@ function AddAppDialog({ groupId }: { groupId: string }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [loginUrl, setLoginUrl] = useState('')
-  const [successUrl, setSuccessUrl] = useState('')
   const [error, setError] = useState('')
 
+  // Success URL is no longer collected here (P0: Application Authentication Recording) — sign-in
+  // is learned from the Connect session itself, not configured up front. The field still exists
+  // on the model (Edit keeps it, as an optional manual hint for the runtime's generic fallback
+  // when a definition can't be learned) — see docs/TRD.md §5.2a.
   const mutation = useMutation({
-    mutationFn: () => addGroupApp(groupId, name, loginUrl, successUrl),
+    mutationFn: () => addGroupApp(groupId, name, loginUrl, ''),
     onSuccess: () => {
       setOpen(false)
       setName('')
       setLoginUrl('')
-      setSuccessUrl('')
       setError('')
       qc.invalidateQueries({ queryKey: ['group', groupId] })
       qc.invalidateQueries({ queryKey: ['group-auth-status', groupId] })
@@ -80,11 +82,6 @@ function AddAppDialog({ groupId }: { groupId: string }) {
           <div className="space-y-1.5">
             <Label className="text-zinc-300">Login URL</Label>
             <Input value={loginUrl} onChange={(e) => setLoginUrl(e.target.value)} placeholder="https://app.example.com/login" className="border-white/10 bg-white/5 text-zinc-100" />
-          </div>
-          <div className="space-y-1.5">
-            <Label className="text-zinc-300">Success URL <span className="text-zinc-600">(optional)</span></Label>
-            <Input value={successUrl} onChange={(e) => setSuccessUrl(e.target.value)} placeholder="https://app.example.com/dashboard" className="border-white/10 bg-white/5 text-zinc-100" />
-            <p className="text-xs text-zinc-500">Reaching this page means login succeeded — the browser closes automatically.</p>
           </div>
           {error ? <p className="text-sm text-red-400">{error}</p> : null}
           <Button className="w-full" onClick={() => mutation.mutate()} disabled={!name || !loginUrl || mutation.isPending}>

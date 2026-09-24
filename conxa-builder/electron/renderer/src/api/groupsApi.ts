@@ -55,9 +55,13 @@ export type GroupAppStatus = {
    * session, not just "a session file exists". A `ready` app can still be unverified. */
   verified: boolean
   last_error: string
-  /** Set when the sign-in was saved without ever reaching success_url (closed by hand, or none set):
-   * a run watches for the same URL, so it may not detect this app as signed in. Advisory only. */
+  /** "" when has_auth_definition is true — a learned definition detects sign-in on its own.
+   * Otherwise set when the sign-in was saved without ever reaching success_url (closed by
+   * hand, or none set): the runtime's generic detection ladder then has less to go on. */
   detect_warning: string
+  /** Learned at Connect's Done (P0: Application Authentication Recording) — true once this
+   * app's sign-in is detected via a learned definition rather than the generic ladder. */
+  has_auth_definition: boolean
 }
 
 export type GroupAuthStatus = {
@@ -116,12 +120,19 @@ export function startGroupAppAuth(
   return cmd('start_group_app_auth', { group_id: groupId, app_id: appId })
 }
 
+/** P0 (Application Authentication Recording): while the login window is still open, this first
+ * tries to LEARN a sign-in definition from what just happened and self-tests it — a definition
+ * that fails the self-test does NOT end the session (`confirmed: false`); the window stays open
+ * so the person can keep signing in and click Done again. Pass `force: true` (the "Save anyway"
+ * action) to skip learning and save the session as-is, falling back to generic detection for
+ * this app — same as before this feature existed. */
 export function finishGroupAppAuth(
   sessionId: string,
   groupId: string,
   appId: string,
-): Promise<{ group: Group; auth: GroupAuthStatus }> {
-  return cmd('finish_group_app_auth', { session_id: sessionId, group_id: groupId, app_id: appId })
+  force?: boolean,
+): Promise<{ confirmed: true; group: Group; auth: GroupAuthStatus } | { confirmed: false; reason: string }> {
+  return cmd('finish_group_app_auth', { session_id: sessionId, group_id: groupId, app_id: appId, force: !!force })
 }
 
 export function cancelGroupAppAuth(sessionId: string): Promise<{ ok: boolean }> {
