@@ -248,17 +248,12 @@ Each skill's own `manifest.json` also carries `"unclaimed_hosts": [hostname, ...
 hostnames the recording visited that no `GroupApp` of its group covers (`group_store.unclaimed_hosts`,
 AUTH-1; see `docs/TRD.md` §5.2a "Unclaimed hosts"). Advisory only: the runtime warns, it never gates on it.
 
-Each skill's own `manifest.json` also carries `"required_apps": [app_id, ...]`
-— the subset of its group's `GroupApp`s that workflow's own `target_url`/
-`protected_url`, **and every hostname the recording actually visited**
-(`SkillMeta.visited_hosts`, populated at compile time from the recorded
-events — see `docs/TRD.md` §5.2a "Per-workflow app scoping"), resolve to by
-hostname. The runtime's group-auth gate (`runtime/browser.js::getGroupAuthContext`)
-only *requires* these apps to be signed in before running the skill — but it
-*seeds* the merged session from every app in the group whose saved session
-still validates, required or not, so a workflow that wanders into an
-ungated sibling app mid-run still arrives signed in instead of hitting a
-login wall.
+A skill's `manifest.json` carries no per-skill app list. The runtime's group-auth gate
+(`runtime/app/browser.js::getGroupAuthContext`) requires **every** `GroupApp` of the skill's
+group (from `pack.json`'s `groups`) to be signed in before running it, and seeds the merged
+session from every app in the group that has a saved session. (`required_apps` was removed
+2026-09-25, AUTH-14 - see `docs/TRD.md` §5.2a "A group is the unit of sign-in"; an older
+manifest's copy is ignored.)
 
 **Platform tags (2026-08-23):** `Workflow.visited_hosts: list[str]` records the
 hostnames a saved recording navigated, extracted from session events at
@@ -266,10 +261,10 @@ hostnames a saved recording navigated, extracted from session events at
 empty recording clears it (`clear_recording`). `cmd_get_group` returns each
 workflow with `used_apps: [{id, name}]` — every group app whose
 `login_url`/`success_url` hostname matches the workflow's start URLs **or** its
-`visited_hosts`, via the same `apps_for_workflow` matcher that computes
-build-time `required_apps`. The group page renders these as platform chips
+`visited_hosts`, via the same `apps_for_workflow` matcher the
+recording gate uses. The group page renders these as platform chips
 (e.g. `Render` `Vercel` on one card). At execution time the same union drives
-concurrency: the runtime adds every required app's host to the run's
+concurrency: the runtime adds every group app's host to the run's
 `host_lock` set, so runs sharing any touched platform serialize while
 disjoint-platform runs execute in parallel (see `docs/TRD.md` §4.5 and
 §5.2a "Platform tags").
@@ -494,10 +489,10 @@ class SkillMeta(BaseModel):
                                   # when no compensation workflow is linked.
     visited_hosts: list[str]      # Every hostname the recording actually navigated to
                                   # (main frame + any tab opened during recording), lowercase,
-                                  # deduped. Feeds required_apps (§2.2) so a workflow that
-                                  # starts in one group app but links into a sibling mid-
-                                  # recording gates on both at execution time, not just the
-                                  # app its start URL resolves to. Empty on skills compiled
+                                  # deduped. Feeds unclaimed_hosts (§2.2) and the group
+                                  # page's platform chips, so a workflow that starts in one
+                                  # group app but links into a sibling mid-recording shows
+                                  # both. Empty on skills compiled
                                   # before this field existed.
 ```
 

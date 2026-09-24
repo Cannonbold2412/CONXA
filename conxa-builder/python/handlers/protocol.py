@@ -111,6 +111,42 @@ def _runtime_result_text(result: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
+def _sign_in_setup_drift(workflow: Any, pack_json: dict[str, Any]) -> str:
+    """Why the BUILT pack's sign-in setup for this workflow's group no longer matches the live group,
+    or "" when they agree.
+
+    Run Test executes the built pack (the runtime resolves apps from its ``groups`` block) but
+    ``_stage_runtime_auth`` stages the LIVE group's sessions under the live app ids. When the group
+    changed after the build — an app re-added under a new id, a sign-in definition learned — the two
+    id sets disagree, the runtime never sees the fresh session, and it silently reads a stale orphan
+    instead. Refusing until the pack is rebuilt keeps the sandbox testing exactly what ships.
+    """
+    from conxa_core.storage.group_store import get_group
+
+    group_id = str(getattr(workflow, "group_id", "") or "")
+    group = get_group(group_id) if group_id else None
+    if group is None:
+        return ""
+    built_group = next((g for g in pack_json.get("groups") or [] if g.get("id") == group_id), {})
+    built = {a.get("id"): a for a in built_group.get("apps") or []}
+
+    changed: list[str] = []
+    for app in group.apps:
+        b = built.get(app.id)
+        if b is None or (b.get("login_url"), b.get("success_url"), b.get("auth_definition")) != (
+            app.login_url, app.success_url, getattr(app, "auth_definition", None),
+        ):
+            changed.append(app.name)
+    live_ids = {a.id for a in group.apps}
+    changed.extend(str(app_id) for app_id in built if app_id not in live_ids)
+    if not changed:
+        return ""
+    return (
+        f"Sign-in setup for the {group.name} group changed after the last build ({', '.join(changed)}). "
+        "Rebuild the skill package before testing."
+    )
+
+
 def _stage_runtime_auth(workflow: Any, company: str, data_dir: Path) -> None:
     """Copy every authenticated app in the workflow's group into the test
     sandbox, one file per app (``{company}__{app_id}_raw_state.json``). The

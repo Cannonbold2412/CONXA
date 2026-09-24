@@ -105,8 +105,8 @@ def extract_visited_hosts(events: list[dict[str, Any]]) -> list[str]:
     """Every hostname a recording actually navigated to — main frame
     (ev.page.url) and any tab opened during the recording (ev.tab.url).
 
-    Shared by the compiler (SkillMeta.visited_hosts, which gates build-time
-    required_apps via group_store.apps_for_workflow) and the recording save
+    Shared by the compiler (SkillMeta.visited_hosts, which feeds the manifest's
+    unclaimed_hosts via group_store.unclaimed_hosts) and the recording save
     path (handlers/session.py persists it onto Workflow.visited_hosts so
     platform tags show before the first compile). Kept here so both callers
     derive identical hosts from identical events.

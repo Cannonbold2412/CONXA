@@ -81,7 +81,11 @@ function looksPaused(domProbe) {
 // the app itself, not a third party fronting one). The signed-out baseline compare below
 // (isSignedInAgainstBaseline) is what replaced host-list reasoning; this function only classifies
 // ONE snapshot in isolation, generically.
-const LOGIN_PATH_RE = /^\/(login|signin|sign-in|session-expired)(\/|$|\?)/i;
+// A whole path segment at ANY depth, not just the first: Google's signed-out pages live under
+// /v3/signin/ (identifier, accountchooser), and a dead session with a remembered account lands on
+// the chooser — no password box, an address different from the cookie-less page — which the
+// first-segment-only form read as "signed in".
+const LOGIN_PATH_RE = /\/(login|signin|sign-in|session-expired)(\/|$)/i;
 function looksLikeLoginAnswer({ url, hasPasswordBox } = {}) {
   if (hasPasswordBox) return true;
   try {

@@ -1,8 +1,8 @@
-// _filterRequiredApps gates on the apps a skill's manifest actually declared;
-// getGroupAuthContext seeds the merged session from every VALID app in the group
-// but gates (and interrupts) only on the required ones — one interruption naming
-// every missing/expired required app, not one login window at a time. See
-// CLAUDE.md's group-auth notes and browser.js's getGroupAuthContext docstring.
+// A group is the unit of sign-in: a workflow in a group runs only when EVERY app in that group is
+// authenticated — there is no per-skill subset (the old manifest `required_apps` is gone, and a
+// caller still passing `requiredAppIds` must not be able to narrow the gate). One interruption
+// names every missing/expired app, not one login window at a time. See browser.js's
+// getGroupAuthContext docstring.
 "use strict";
 
 const assert = require("assert");
@@ -25,80 +25,51 @@ function check(name, fn) {
 }
 
 // Isolate CONXA_DATA_DIR/CONXA_DIR before requiring browser.js (it reads env at module load).
-const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-group-required-apps-"));
+const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-group-gates-every-app-"));
 process.env.CONXA_DATA_DIR = tmpDataDir;
 process.env.CONXA_DIR = tmpDataDir;
 
 const browser = require("../../app/browser");
-const { _filterRequiredApps, getGroupAuthContext } = browser;
+const { getGroupAuthContext } = browser;
 
 const RENDER = { id: "app_render", name: "Render", login_url: "https://dashboard.render.com/login" };
 const HUBSPOT = { id: "app_hubspot", name: "HubSpot", login_url: "https://app.hubspot.com/login" };
 
 async function run() {
-  console.log("_filterRequiredApps:");
+  // Neither app has a saved session file, so each resolves "invalid" without launching a browser to
+  // check it — this exercises the missing-apps gate without needing Playwright/chromium to work in
+  // the test environment.
+  console.log("getGroupAuthContext (every app gates):");
 
-  await check("undefined requiredAppIds gates on every app (legacy manifests)", () => {
-    const apps = _filterRequiredApps([RENDER, HUBSPOT], undefined);
-    assert.deepStrictEqual(apps, [RENDER, HUBSPOT]);
-  });
-
-  await check("empty requiredAppIds means this skill needs none of the group's apps", () => {
-    const apps = _filterRequiredApps([RENDER, HUBSPOT], []);
-    assert.deepStrictEqual(apps, []);
-  });
-
-  await check("requiredAppIds scopes the gate to only the apps this skill declared", () => {
-    const apps = _filterRequiredApps([RENDER, HUBSPOT], ["app_hubspot"]);
-    assert.deepStrictEqual(apps, [HUBSPOT]);
-  });
-
-  // getGroupAuthContext: both apps below have no saved session file at all, so
-  // _validateGroupApp resolves "invalid" without launching a browser (see its
-  // `if (!stored) return ...` early exit) — this exercises the missing-apps path
-  // without needing Playwright/chromium to actually work in the test environment.
-  console.log("\ngetGroupAuthContext (missing-app gating):");
-
-  await check("missing required apps open one interruption naming all of them, not one at a time", async () => {
+  await check("every missing app opens one interruption naming all of them, not one at a time", async () => {
     const group = { id: "g1", name: "Sales", apps: [RENDER, HUBSPOT] };
-    const result = await getGroupAuthContext("acme-required-apps-test", group, null, {
-      headless: true,
-      requiredAppIds: ["app_render", "app_hubspot"],
-    });
+    const result = await getGroupAuthContext("acme-gates-every-app-1", group, null, { headless: true });
     assert.strictEqual(result.authPending, true);
     assert.ok(result.message.includes("Render"));
     assert.ok(result.message.includes("HubSpot"));
+    assert.ok(result.message.includes("2 applications"), "the count is the whole group's, not a subset");
     assert.strictEqual(result.apps.length, 2);
     assert.deepStrictEqual(new Set(result.apps.map((a) => a.id)), new Set(["app_render", "app_hubspot"]));
   });
 
-  await check("a sibling app not in requiredAppIds does not block — only required apps gate", async () => {
+  await check("a legacy requiredAppIds option cannot narrow the gate — an app it omits still gates", async () => {
     const group = { id: "g2", name: "Sales", apps: [RENDER, HUBSPOT] };
-    // Only Render is required; HubSpot has no session either, but must not appear
-    // in the interruption since it was never gated on.
-    const result = await getGroupAuthContext("acme-required-apps-test-2", group, null, {
+    const result = await getGroupAuthContext("acme-gates-every-app-2", group, null, {
       headless: true,
       requiredAppIds: ["app_render"],
     });
     assert.strictEqual(result.authPending, true);
-    assert.strictEqual(result.apps.length, 1);
-    assert.strictEqual(result.apps[0].id, "app_render");
+    assert.strictEqual(result.apps.length, 2);
   });
 
-  await check("explicit empty requiredAppIds skips validating group siblings entirely (no Chromium, no gate)", async () => {
+  await check("an explicitly empty requiredAppIds no longer skips the gate", async () => {
     const group = { id: "g3", name: "Sales", apps: [RENDER, HUBSPOT] };
-    // Neither app has a session file, so if this DID validate/gate on them (the old
-    // behavior for undefined requiredAppIds), it would come back authPending: true.
-    // A skill that explicitly declares required_apps: [] must get a usable context
-    // back immediately instead, with no validation of Render/HubSpot at all.
-    const result = await getGroupAuthContext("acme-required-apps-test-3", group, null, {
+    const result = await getGroupAuthContext("acme-gates-every-app-3", group, null, {
       headless: true,
       requiredAppIds: [],
     });
-    assert.strictEqual(result.authPending, undefined);
-    assert.strictEqual(result.sessionSource, "group-no-required-apps");
-    assert.ok(result.browser, "expected a real browser context, not an auth-pending response");
-    await result.browser.close();
+    assert.strictEqual(result.authPending, true, "used to return a usable 'group-no-required-apps' context");
+    assert.strictEqual(result.apps.length, 2);
   });
 
   fs.rmSync(tmpDataDir, { recursive: true, force: true });

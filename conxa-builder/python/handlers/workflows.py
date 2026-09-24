@@ -20,6 +20,7 @@ from handlers.protocol import (
     _event_sink,
     _runtime_result_text,
     _safe_id,
+    _sign_in_setup_drift,
     _stage_runtime_auth,
     _validate_release_notes,
     _validate_release_version,
@@ -718,6 +719,16 @@ class WorkflowsMixin:
                 "skill_pack_not_built",
                 f"Built skill pack not found: skill-packs/{company}. Run Build Skill Package again.",
             )
+        # Same idea as the workflow_stale guard above, for the group's sign-in setup: the sandbox
+        # tests the BUILT pack, so a group changed since (a re-Connected app, a learned sign-in
+        # definition) must be rebuilt in first — see _sign_in_setup_drift.
+        try:
+            built_pack_json = json.loads((source_dir / "pack.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            built_pack_json = {}
+        drift = _sign_in_setup_drift(workflow, built_pack_json)
+        if drift:
+            raise _CommandError("sign_in_setup_stale", drift)
 
         try:
             # ── Assemble (or refresh) the customer-faithful sandbox ───────────

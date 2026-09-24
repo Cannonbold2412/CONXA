@@ -83,7 +83,7 @@ class Workflow(BaseModel):
     recording_duration_seconds: float | None = None
     # Every hostname the saved recording navigated to (extracted from session
     # events at stop_recording time, before any compile). Lets the group page
-    # show all touched platform apps pre-compile and feed required_apps-style
+    # show all touched platform apps pre-compile and feed the same host
     # matching — see conxa_compile.recorder.session.extract_visited_hosts.
     visited_hosts: list[str] = Field(default_factory=list)
     skill_id: str | None = None

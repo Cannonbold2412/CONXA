@@ -321,6 +321,64 @@ class TestBackendStaleGateEnforcement:
                 assert exc.code != "workflow_stale"
 
 
+# ─── Sign-in setup drift gate (cmd_test_workflow) ─────────────────────────────
+
+class TestSignInSetupDrift:
+    """Run Test executes the BUILT pack, but stages the LIVE group's saved sessions under the live
+    app ids. If the group changed after the build (an app re-added under a new id, a sign-in
+    definition learned), the runtime reads sessions by the pack's ids and silently picks up a stale
+    orphan — so Run Test must refuse until the pack is rebuilt."""
+
+    GROUP_ID = "grp-1"
+
+    @staticmethod
+    def _app(app_id: str, name: str, auth_definition: dict | None = None) -> Any:
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            id=app_id, name=name, login_url=f"https://{app_id}.test/login", success_url="",
+            auth_definition=auth_definition,
+        )
+
+    def _built(self, *apps: Any) -> dict:
+        return {"groups": [{"id": self.GROUP_ID, "name": "Enterprise", "apps": [
+            {"id": a.id, "name": a.name, "login_url": a.login_url, "success_url": a.success_url,
+             "auth_definition": a.auth_definition} for a in apps
+        ]}]}
+
+    def _drift(self, live_apps: list, pack_json: dict, group_id: str = GROUP_ID) -> str:
+        from types import SimpleNamespace
+        from handlers.protocol import _sign_in_setup_drift
+
+        wf = SimpleNamespace(group_id=group_id)
+        group = SimpleNamespace(id=self.GROUP_ID, name="Enterprise", apps=live_apps) if group_id else None
+        with patch("conxa_core.storage.group_store.get_group", return_value=group):
+            return _sign_in_setup_drift(wf, pack_json)
+
+    def test_in_sync_is_empty(self) -> None:
+        apps = [self._app("github", "GitHub", {"v": 1}), self._app("google", "Google")]
+        assert self._drift(apps, self._built(*apps)) == ""
+
+    def test_app_readded_under_a_new_id_is_drift(self) -> None:
+        # The real case: pack built with `google-drive`, group later re-connected as `google`.
+        built = self._built(self._app("github", "GitHub"), self._app("google-drive", "Google"))
+        live = [self._app("github", "GitHub"), self._app("google", "Google")]
+        msg = self._drift(live, built)
+        assert "Enterprise" in msg and "Google" in msg and "google-drive" in msg
+        assert "Rebuild the skill package" in msg
+
+    def test_newly_learned_definition_is_drift(self) -> None:
+        built = self._built(self._app("github", "GitHub"))
+        live = [self._app("github", "GitHub", {"version": 1})]
+        assert "GitHub" in self._drift(live, built)
+
+    def test_group_missing_from_the_built_pack_is_drift(self) -> None:
+        live = [self._app("github", "GitHub")]
+        assert "GitHub" in self._drift(live, {"groups": []})
+
+    def test_workflow_without_a_group_is_never_drift(self) -> None:
+        assert self._drift([], {"groups": []}, group_id="") == ""
+
+
 # ─── H-5: sensitive-flagged test inputs never reach persisted test history ────
 
 class TestRedactSensitiveTestInputs:

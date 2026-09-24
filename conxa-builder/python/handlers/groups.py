@@ -234,8 +234,8 @@ class GroupsMixin:
             data["stage"] = derive_workflow_stage(wf)
             # Which of the group's apps this workflow actually touches — same
             # matcher (and same inputs: start URLs + recorded hosts) as build-time
-            # required_apps, so the card's platform chips can never disagree with
-            # runtime auth gating. visited_hosts is captured at stop_recording, so
+            # the recording gate, so the card's platform chips can never disagree
+            # with it (runtime gating is the whole group). visited_hosts is captured at stop_recording, so
             # chips appear before the first compile.
             from conxa_core.storage.group_store import apps_for_workflow, unclaimed_hosts
 

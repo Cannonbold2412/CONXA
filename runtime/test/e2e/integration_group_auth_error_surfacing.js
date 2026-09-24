@@ -30,7 +30,7 @@ function writeSkill(skillPacksDir, workspaceId, slug) {
   fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({
     slug, name: slug, version: "0.0.1", required_runtime: ">=0.0.0",
     company: workspaceId, target_url: "", inputs_required: [], checksum: {},
-    group_id: "g1", required_apps: ["app_drive", "app_docs"],
+    group_id: "g1",
   }));
   fs.writeFileSync(path.join(dir, "execution.json"), JSON.stringify([
     { type: "navigate", url: "http://127.0.0.1:1/unreachable" },

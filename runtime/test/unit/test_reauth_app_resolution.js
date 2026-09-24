@@ -76,6 +76,26 @@ async function run() {
     assert.strictEqual(withoutDefinition.hasAuthDefinition, false, "Render has no learned definition");
   });
 
+  await check("a mid-run auth failure drops the dying app's 'validated' stamp, so the next call re-validates for real", async () => {
+    // Without this the 6h stamp survives: the next execute_skill skips the live check, runs with the
+    // same dead session and fails identically — while the error promises a sign-in prompt.
+    const sessionPath = path.join(tmpDataDir, "billing_session.json");
+    fs.writeFileSync(sessionPath, JSON.stringify({ cookies: [] }));
+    const billingKey = `${WORKSPACE_ID}__${BILLING.id}`;
+    const renderKey = `${WORKSPACE_ID}__${RENDER.id}`;
+    browser._writeValidationCache(billingKey, sessionPath);
+    browser._writeValidationCache(renderKey, sessionPath);
+    assert.ok(browser._readValidationCache(billingKey, sessionPath) > 0, "precondition: stamped");
+
+    await browser.captureReAuth(WORKSPACE_ID, "https://billing.example.com/login", null, tmpDataDir, () => {}, {
+      groupId: "g1",
+      fallbackUrl: "https://dashboard.render.com",
+    });
+
+    assert.strictEqual(browser._readValidationCache(billingKey, sessionPath), 0, "the dying app's stamp must be gone");
+    assert.ok(browser._readValidationCache(renderKey, sessionPath) > 0, "a sibling's stamp must be left alone");
+  });
+
   await check("falls back to the manifest's fallback host when the failing-page host matches nothing", async () => {
     const calls = [];
     const logFn = (_level, event, data) => calls.push({ event, data });

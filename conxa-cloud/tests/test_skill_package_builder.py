@@ -1349,10 +1349,10 @@ class TestSavedSkillJsonBuild:
         assert "conxa" in claude_md
         assert "npx -y conxa install" not in claude_md
 
-    def test_group_app_only_required_when_workflow_actually_targets_it(self, tmp_path, monkeypatch):
-        """A workflow in a group must not be gated on a sibling app it never
-        touches (e.g. a Render app registered on the Sales group blocking an
-        unrelated filebin.net workflow — see FIX.md)."""
+    def test_manifests_carry_no_per_skill_required_apps(self, tmp_path, monkeypatch):
+        """A group is the unit of sign-in: the runtime gates every workflow on EVERY app in
+        its group (pack.json's `groups` block), so no manifest may carry a per-skill subset —
+        not for a workflow that targets an app, and not for one that touches none."""
         from types import SimpleNamespace
         import conxa_compile.skill_package_builder as skill_package_builder
         from conxa_core.config import settings
@@ -1402,11 +1402,15 @@ class TestSavedSkillJsonBuild:
 
         pack_dir = tmp_path / "skill-packs" / "wrk_test"
 
-        unrelated_manifest = json.loads((pack_dir / "grp_sales" / "upload_8_files" / "manifest.json").read_text())
-        assert unrelated_manifest["required_apps"] == []
+        for slug in ("upload_8_files", "sync_contact_to_crm"):
+            manifest = json.loads((pack_dir / "grp_sales" / slug / "manifest.json").read_text())
+            assert "required_apps" not in manifest, slug
+            assert manifest["group_id"] == "grp_sales"
 
-        render_manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
-        assert render_manifest["required_apps"] == ["app_render"]
+        # The one thing the runtime gates on is the group's full app list.
+        pack_json = json.loads((pack_dir / "pack.json").read_text())
+        (grp,) = [g for g in pack_json["groups"] if g["id"] == "grp_sales"]
+        assert [a["id"] for a in grp["apps"]] == ["app_render"]
 
     def test_pack_json_carries_the_learned_auth_definition_and_no_secrets(self, tmp_path, monkeypatch):
         """P0: a learned auth_definition ships with its app in pack.json's groups block, and
@@ -1475,69 +1479,6 @@ class TestSavedSkillJsonBuild:
         assert "?" not in blob and "#" not in blob
         assert all(isinstance(k, str) for k in apps_by_id["app_render"]["auth_definition"]["session_keys"])
 
-    def test_visited_hosts_widen_required_apps_beyond_start_url(self, tmp_path, monkeypatch):
-        """A workflow that STARTS in one app but links into a sibling mid-recording
-        must gate on both at execution time — not just the app its start URL happens
-        to resolve to. See CLAUDE.md's group-auth notes / SkillMeta.visited_hosts."""
-        from types import SimpleNamespace
-        import conxa_compile.skill_package_builder as skill_package_builder
-        from conxa_core.config import settings
-
-        monkeypatch.setattr(settings, "data_dir", tmp_path)
-
-        workspace_id = "wrk_test"
-        pack = SimpleNamespace(display_name="Acme")
-
-        render_app = SimpleNamespace(
-            id="app_render", name="Render",
-            login_url="https://dashboard.render.com/login",
-            success_url="https://dashboard.render.com",
-        )
-        billing_app = SimpleNamespace(
-            id="app_billing", name="Billing",
-            login_url="https://billing.example.com/login",
-            success_url="https://billing.example.com/home",
-        )
-        group = SimpleNamespace(id="grp_sales", name="Sales", apps=[render_app, billing_app])
-
-        wf = SimpleNamespace(
-            id="wf_render", workspace_id=workspace_id, group_id="grp_sales",
-            slug="sync_contact_to_crm", name="Sync contact to CRM", session_id="s2",
-            skill_id="skill_render", edited_at=1,
-            target_url="https://dashboard.render.com", protected_url="https://dashboard.render.com/",
-        )
-
-        # No `visited_hosts` in meta — a skill compiled before the field existed must
-        # fall back to today's start-URL-only behavior.
-        legacy_skill = {
-            "meta": {"id": "skill_render", "title": "sync_contact_to_crm"},
-            "inputs": [],
-            "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://dashboard.render.com"}}]}],
-        }
-        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, display_name=None: pack)
-        monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [wf])
-        monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: legacy_skill)
-        monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
-        monkeypatch.setattr(skill_package_builder, "set_build", lambda *args, **kwargs: None)
-        monkeypatch.setattr("conxa_core.storage.group_store.get_group", lambda _group_id: group)
-
-        build_skill_package(workspace_id, company_name="Acme")
-        pack_dir = tmp_path / "skill-packs" / "wrk_test"
-        manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
-        assert manifest["required_apps"] == ["app_render"]
-
-        # Now with visited_hosts covering the mid-flow link-out to Billing — both
-        # apps must be required.
-        skill_with_visit = {
-            "meta": {"id": "skill_render", "title": "sync_contact_to_crm", "visited_hosts": ["billing.example.com"]},
-            "inputs": [],
-            "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://dashboard.render.com"}}]}],
-        }
-        monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: skill_with_visit)
-        build_skill_package(workspace_id, company_name="Acme")
-        manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
-        assert set(manifest["required_apps"]) == {"app_render", "app_billing"}
-
     def _single_workflow_build(self, tmp_path, monkeypatch, *, visited_hosts, group):
         from types import SimpleNamespace
         import conxa_compile.skill_package_builder as skill_package_builder
@@ -1576,7 +1517,7 @@ class TestSavedSkillJsonBuild:
         manifest = self._single_workflow_build(
             tmp_path, monkeypatch, visited_hosts=["dashboard.render.com", "drive.google.com"], group=group,
         )
-        assert manifest["required_apps"] == ["app_render"]
+        assert "required_apps" not in manifest
         assert manifest["unclaimed_hosts"] == ["drive.google.com"]
 
         manifest = self._single_workflow_build(tmp_path, monkeypatch, visited_hosts=["dashboard.render.com"], group=group)

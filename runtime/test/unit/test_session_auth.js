@@ -94,7 +94,7 @@ function storeValidSession(ws, appId, domain) {
   }));
   browser._writeValidationCache(`${ws}__${appId}`, file);
 }
-const opts = (ws, extra = {}) => ({ headless: false, groupId: "g1", requiredAppIds: ["a", "b"], runId: `run_${ws}`, ...extra });
+const opts = (ws, extra = {}) => ({ headless: false, groupId: "g1", runId: `run_${ws}`, ...extra });
 const loginTabs = (ctx, origin) => ctx.pages().filter((p) => !p.isClosed() && p.url().startsWith(`${origin}/login`));
 const readFile = (ws, appId) => JSON.parse(fs.readFileSync(path.join(SESSIONS(), `${ws}__${appId}_raw_state.json`), "utf8"));
 

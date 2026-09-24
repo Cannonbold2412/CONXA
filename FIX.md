@@ -21,3 +21,11 @@ Customers currently have to sign in to each app through a browser window that ha
 **Saved this batch of sign-in work as organised checkpoints — 2026-09-25**
 Several days of sign-in improvements were sitting unsaved in one big pile. They are now saved as five clear checkpoints: the sign-in detection, the behind-the-scenes learning, the setup screen, the tests, and the written notes. This makes it easy to see what changed and to undo one piece without losing the rest.
 — 2026-09-25
+
+**Fixed "your Google sign-in expired" showing up right after signing in — 2026-09-25**
+Testing a GitHub-to-Google-Drive workflow kept saying Google had signed out, even seconds after the person signed in again. The test was quietly using an old, dead Google login left over from the day before instead of the fresh one — like handing the guard yesterday's expired ticket while today's sits in your pocket. Now the test refuses to run if the sign-in setup changed since the last build and tells you to rebuild, a dead login sitting on Google's "choose an account" screen is recognised as signed out, and a failed run no longer hides the fact that it needs a fresh sign-in.
+— 2026-09-25
+
+**Made every workflow in a group need all of that group's apps signed in — 2026-09-25**
+Each workflow used to carry its own separate list of "apps I need", and that list could disagree with the group and let a workflow start while one app's login was already dead. Now a group works like a building with one security desk: to run any workflow inside it, every app in the group has to be signed in first. The extra list is gone, and so are the mix-ups it caused.
+— 2026-09-25

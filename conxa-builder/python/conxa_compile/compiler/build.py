@@ -454,8 +454,8 @@ def _persisted_visual_asset_path(
 def _extract_visited_hosts(cleaned_events: list[dict[str, Any]]) -> list[str]:
     """Every hostname this recording actually navigated to — main frame
     (ev.page.url) and any tab opened during the recording (ev.tab.url) — so
-    SkillMeta.visited_hosts can gate required_apps on everywhere the workflow
-    goes, not just where it starts. See group_store.apps_for_workflow."""
+    SkillMeta.visited_hosts can flag unclaimed_hosts from everywhere the workflow
+    goes, not just where it starts. See group_store.unclaimed_hosts."""
     from conxa_compile.recorder.session import extract_visited_hosts
 
     return extract_visited_hosts(cleaned_events)

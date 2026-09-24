@@ -244,7 +244,6 @@ let teardownExecBrowser;
 let captureReAuth;
 let gracefulShutdown;
 let resolveGroup;
-let filterRequiredApps;
 let resolveTargetHosts;
 let createTracker;
 let mapErrorToCode;
@@ -263,7 +262,7 @@ try {
   ({ runPlan, enrichStepsWithRecovery, applyStepOverrides, appendRecoveryEvent, clearRetryBudget, checkRetryBudget, isAuthFailure, stepAssertions, frameScopedInventory, uniqueDownloadName, sweepOldRuns, extractZipOnce } = require("./run"));
   ({ getCachedBrowser, releaseCachedBrowser, teardownExecBrowser, captureReAuth, gracefulShutdown,
      getAuthContext, awaitAuthPending, describeAuthWait, authAppStatus,
-     _resolveGroup: resolveGroup, _filterRequiredApps: filterRequiredApps } = require("./browser"));
+     _resolveGroup: resolveGroup } = require("./browser"));
   ({ resolveTargetHosts } = require("./target_hosts"));
   ({ createTracker, mapErrorToCode, drainSpill } = require("./tracker"));
   ({ closeExtraTabs } = require("./tabs"));
@@ -760,8 +759,6 @@ async function _handleTool(name, args, extra) {
       headless: false, logFn: log, authOnly: true,
       runId: `auth_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       groupId: entry && entry.manifest && entry.manifest.group_id,
-      requiredAppIds: Array.isArray(args.apps) ? args.apps.map(String)
-        : (entry && Array.isArray(entry.manifest.required_apps) ? entry.manifest.required_apps : undefined),
     };
     // AUTH-1: hosts the recording visited that no group app covers — never blocks, but the agent can
     // tell the user to already be signed in there instead of the run dying at that login wall.
@@ -867,7 +864,7 @@ async function _handleTool(name, args, extra) {
     await _schedulerStore().update(rec.id, { next_run_at: next ? next.toISOString() : null });
     let targetHosts = [];
     try {
-      targetHosts = resolveTargetHosts([{ entry }], { resolveGroup, filterRequiredApps });
+      targetHosts = resolveTargetHosts([{ entry }], { resolveGroup });
     } catch (_) {}
     return text(JSON.stringify({
       created: true,
@@ -1058,17 +1055,6 @@ async function _handleTool(name, args, extra) {
     const { maxRecoveryTier: _effMaxTier, agentRecoveryEnabled: _effAgentEnabled } =
       _effectiveRecoveryTier(primary.entry.manifest);
 
-    // Auth pre-flight must cover every skill in the sequence, not just the first — a run with
-    // 2+ skills shares one browser/context (see getCachedBrowser below, keyed off primary.entry
-    // .workspace_id for the whole sequence), so an app only the SECOND skill needs was previously
-    // never gated on before step 0 of the FIRST skill ran, discovering it expired mid-sequence
-    // instead of pre-flight. Union every skill's required_apps; if any skill's manifest predates
-    // the required_apps field (undefined = legacy "gate on every app"), the whole union falls
-    // back to that same safe legacy behavior rather than silently narrowing to only the skills
-    // that do declare it.
-    const _requiredAppIdsUnion = resolved.some((r) => !Array.isArray(r.entry.manifest.required_apps))
-      ? undefined
-      : Array.from(new Set(resolved.flatMap((r) => r.entry.manifest.required_apps)));
     if (primary.isResume && !checkRetryBudget(primary.entry.slug, primary.resumeFrom))
       return err(`Retry budget exhausted at step ${primary.resumeFrom}. Fix the root cause in execution.json before retrying from step 0.`);
 
@@ -1494,7 +1480,7 @@ async function _handleTool(name, args, extra) {
         // this run's original admission, and a resumed park continues that same run rather than
         // starting a new one.
         if (_hostRelease == null) {
-          const _targetHosts = resolveTargetHosts(resolved, { resolveGroup, filterRequiredApps });
+          const _targetHosts = resolveTargetHosts(resolved, { resolveGroup });
           exec.waitingForHost = _targetHosts;
           const _lock = await hostLock.acquireHosts(_targetHosts, { runId: _runId, slug: primary.entry.slug }, {
             isDone: _execCancelled,
@@ -1523,7 +1509,7 @@ async function _handleTool(name, args, extra) {
         // run in the scheduler daemon's engine and this chat-driven run can never double-hit the
         // same platform. Filesystem trouble degrades to in-process-only (fail open — see
         // file_lock.js); unit tests omit locksDir and stay hermetic by design.
-        const _targetHosts = resolveTargetHosts(resolved, { resolveGroup, filterRequiredApps });
+        const _targetHosts = resolveTargetHosts(resolved, { resolveGroup });
 
         // PROD-18 policy gate: refuse before any browser work — before the host lock, before
         // a page is ever opened. Only on a fresh start; a resumed park is continuing a run
@@ -1595,7 +1581,6 @@ async function _handleTool(name, args, extra) {
           headless: !watch,
           logFn: log,
           groupId: primary.entry.manifest && primary.entry.manifest.group_id,
-          requiredAppIds: _requiredAppIdsUnion,
           runId: _runId,
           noPrompt: trigger === "scheduled", // nobody is there to sign in — report it, never open a window
         });

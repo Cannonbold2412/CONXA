@@ -122,6 +122,24 @@ test("looksLikeLoginAnswer: an unparseable url is treated as a login answer, nev
   assert.ok(looksLikeLoginAnswer({ url: "", hasPasswordBox: false }));
 });
 
+// A dead session with a remembered account lands on Google's account chooser, which has no
+// password box and lives under /v3/signin/ — the segment is not the FIRST one.
+test("looksLikeLoginAnswer: a login segment at any depth counts (Google's /v3/signin/accountchooser)", () => {
+  assert.ok(looksLikeLoginAnswer({ url: "https://accounts.google.com/v3/signin/accountchooser?continue=x", hasPasswordBox: false }));
+  assert.ok(looksLikeLoginAnswer({ url: "https://accounts.google.com/v3/signin/identifier", hasPasswordBox: false }));
+});
+
+test("looksLikeLoginAnswer: only a WHOLE segment counts, never a longer word containing it", () => {
+  assert.ok(!looksLikeLoginAnswer({ url: "https://app.acme.com/account/signin-methods", hasPasswordBox: false }));
+  assert.ok(!looksLikeLoginAnswer({ url: "https://app.acme.com/settings/login-history", hasPasswordBox: false }));
+});
+
+test("isSignedInAgainstBaseline: a dead session's account chooser is NOT signed in, even though it differs from the cookie-less page", () => {
+  const baseline = { url: "https://accounts.google.com/v3/signin/identifier", hasPasswordBox: true };
+  const chooser = { url: "https://accounts.google.com/v3/signin/accountchooser", hasPasswordBox: false };
+  assert.strictEqual(isSignedInAgainstBaseline(baseline, chooser), false);
+});
+
 test("judgeFromSnapshots: after is null (probe failed) -> can't tell", () => {
   assert.strictEqual(judgeFromSnapshots({ url: "https://app.acme.com/login", hasPasswordBox: true }, null), null);
 });

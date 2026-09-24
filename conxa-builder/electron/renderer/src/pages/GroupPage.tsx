@@ -156,7 +156,7 @@ function hostnameOf(url: string): string {
 
 /** Which of the group's configured apps this workflow targets. The backend
  * computes `used_apps` (start URLs + every host the recording visited, via the
- * same matcher as build-time required_apps — see handlers/groups.py); this
+ * same matcher as the recording gate — see handlers/groups.py); this
  * fallback only covers stale payloads from before that field existed. */
 function appsUsedBy(wf: Workflow, apps: GroupApp[]): GroupApp[] {
   if (wf.used_apps) return apps.filter((a) => wf.used_apps!.some((u) => u.id === a.id))

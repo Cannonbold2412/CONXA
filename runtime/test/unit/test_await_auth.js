@@ -62,9 +62,7 @@ test("describeAuthWait: names the real state instead of claiming a window just o
   assert.match(describeAuthWait([{ name: "A", outcome: "captured" }, { name: "B", outcome: "timeout" }]), /waiting for sign-in to B\b/);
 });
 
-test("authOnly: a group with nothing to gate reports authenticated without building a browser", async () => {
-  const group = { name: "G", apps: [{ id: "a", name: "A", login_url: "https://a.test/login" }] };
-  assert.deepStrictEqual(await getGroupAuthContext("ws_g", group, null, { authOnly: true, requiredAppIds: [] }), { authenticated: true });
+test("authOnly: a group with no apps reports authenticated without building a browser", async () => {
   assert.deepStrictEqual(await getGroupAuthContext("ws_g", { name: "G", apps: [] }, null, { authOnly: true }), { authenticated: true });
 });
 

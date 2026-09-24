@@ -48,7 +48,7 @@ async function main() {
   fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({
     slug: "gate-skill", name: "gate-skill", version: "0.0.1", required_runtime: ">=0.0.0",
     company: workspaceId, target_url: `${base}/home`, inputs_required: [], checksum: {},
-    group_id: "g1", required_apps: ["app_a"],
+    group_id: "g1",
   }));
   fs.writeFileSync(path.join(dir, "execution.json"), JSON.stringify([{ type: "navigate", url: `${base}/home` }]));
   fs.writeFileSync(path.join(dir, "inputs.json"), JSON.stringify({ inputs: [] }));

@@ -45,8 +45,8 @@ Counts are of still-open items only. Resolved items live in [`Done.md`](Done.md)
 | P1 — Blocking / Foundational | 3 |
 | P2 — High Value, Do Soon (incl. Discovered Items) | 36 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 20 |
-| P4 — Low Urgency, Opportunistic | 31 |
-| **Total** | **105** |
+| P4 — Low Urgency, Opportunistic | 34 |
+| **Total** | **108** |
 
 ---
 
@@ -1459,7 +1459,7 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 
 ---
 
-## P4 — Low Urgency, Opportunistic (31 remaining)
+## P4 — Low Urgency, Opportunistic (34 remaining)
 
 ### AUTH-10 — A same-host app whose success page is public could pass the signed-out-baseline check while actually signed out
 - **Category:** Execution & Recovery / Authentication
@@ -1467,6 +1467,25 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 - **Why required:** correctness edge case in the new baseline-compare auth mechanism, not urgent — no known app currently triggers it.
 - **Complexity:** S–M (would need a stronger baseline signal — e.g. an authenticated marker check similar to AUTH-8's `accountNameProbe`, run against the app's actual landing page — if a real site is ever shown to need it).
 - **Partially mitigated by AUTH-13 (`Done.md`):** an app whose sign-in was *learned* (has a saved `auth_definition`) is not exposed to this gap by construction — the definition is built from a genuine LIVE-vs-OUT contrast and self-tested (OUT must not evaluate "yes") before it's ever saved. This item stays open for the app that has no learned definition yet (never connected under the new flow, or force-saved past a failed self-test) and still falls back to the plain baseline compare.
+- **Also narrowed by AUTH-15 (`Done.md`):** the generic check now treats a login segment at ANY path depth as login-shaped (`LOGIN_PATH_RE`), which closes the case where a signed-out probe lands on a login-*shaped* page that merely differs from the baseline (Google's `/v3/signin/accountchooser`). What remains open is only the truly public, non-login-shaped success page described above.
+
+### AUTH-16 — The recording gate still scopes by the apps a workflow's URLs touch, while the runtime now gates on the whole group
+- **Category:** Build Studio / Authentication
+- **Description:** AUTH-14 (`Done.md`) made a group the unit of sign-in at run time — every app must be signed in. `handlers/session.py::cmd_start_recording` still narrows the record-time gate with `apps_for_workflow` (only apps the workflow's own URLs match must be connected; a non-matching workflow just gets an `auth_scope_warning`; an expired sibling only warns). A person can therefore record in a half-connected group and only meet the missing app at the first run's pre-flight. Align it: require every group app to be captured and not expired before recording. That also deletes `auth_scope_warning`, `expired_sibling_names` and their `workflowsApi.ts`/UI plumbing.
+- **Why required:** one rule at both gates; removes the last consumer of the per-workflow matcher in a gating role (it stays for the group page's platform chips and `unclaimed_hosts`).
+- **Complexity:** S–M (handler, UI copy, `conxa-cloud/tests/test_recording_group_app_scoping_and_writeback.py`).
+
+### AUTH-17 — A signed-out Google Drive lands on a marketing page that `isAuthFailure` doesn't recognise
+- **Category:** Execution & Recovery / Authentication
+- **Description:** Observed 2026-09-23 on the Github→Drive Run Test: with no usable Google session, `drive.google.com` redirected to `workspace.google.com/intl/en-US/products/drive/` — a public marketing page with no `/login` or `/signin` segment and no "sign in" title — so step 7 failed as "Ambiguous element resolution (no signal cleared uniqueness gate)" on the "New" button instead of as a session expiry (see `sandbox/data/runs/<id>/_evidence/evidence.json`). A dead remembered-account session lands on `/v3/signin/accountchooser` and IS recognised (AUTH-15). Pre-flight (group-level gating, AUTH-14, plus learned definitions, AUTH-13) should now stop a signed-out Google reaching the step at all; this is the mid-run backstop for an app where it doesn't.
+- **Why required:** mislabels an auth failure as a selector problem and sends the person to edit a healthy workflow.
+- **Complexity:** S — needs a generic signal (e.g. when the app has an `auth_definition`, evaluate the failing page against its signed-out markers/path) rather than another URL pattern.
+
+### TEST-13 — `integration_host_lock.js` and `integration_auth_detached.js` fail on a clean checkout since AUTH-9
+- **Category:** Testing
+- **Description:** Both real-server e2e files (run by hand — `npm test` covers only `test/unit`) fail 4 checks each on clean HEAD (verified 2026-09-25 in a throwaway worktree). Their fixtures assume the pre-AUTH-9 detection ("an empty storage state counts as signed-in when the app lands on a non-login URL", per `integration_host_lock.js`'s own comment); the local fixture server answers every path with the same page, so the genuine signed-out baseline equals the probe and nothing ever validates. Make a pre-seeded session distinguishable from the cookie-less baseline (e.g. the server redirects `/login` → `/home` only when a session cookie is present, and the fixture seeds that cookie) or give the fixture apps a learned `auth_definition`. `integration_group_auth_error_surfacing.js` is unaffected.
+- **Why required:** they guard host-lock keying and the detached sign-in flow, which are currently untested.
+- **Complexity:** S–M.
 
 ### AUTH-11 — `docs/artifacts/login-desk.html` is stale after AUTH-9's baseline-compare redesign
 - **Category:** Documentation

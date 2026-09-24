@@ -15,9 +15,9 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | MCP — MCP | 1 | MCP-4 |
 | TEST — Testing & Cleanup | 1 | TEST-6 |
 | REC — Recorder | 1 | REC-STALE-1 |
-| AUTH — Authentication | 10 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13 |
+| AUTH — Authentication | 12 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15 |
 | DEAD — Tech debt | 1 | DEAD-1 |
-| **Total** | **79** | |
+| **Total** | **81** | |
 
 ---
 
@@ -1393,7 +1393,7 @@ question — that compile produced inputs named `sports` and `react_select_3_lis
 dropdown's enum is also frozen from the recording (picking a different State still offers the
 recorded State's cities). None of these block a run; all deserve their own item.
 
-## AUTH — Authentication (8 done)
+## AUTH — Authentication (12 done)
 
 ### AUTH-1 — Warn at pre-flight when a workflow visits a host that has no sign-in app configured
 **Resolved:** 2026-09-21
@@ -1466,6 +1466,20 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Description:** The original ask (P0 pasted spec, 2026-09-25): let Conxa learn how an application signals successful sign-in during a manual Connect session, instead of hardcoded per-app rules, and reuse that learned definition at runtime — generically, for any application, not a rule list.
 - **Scope cuts, disclosed:** no AI/vision in this pass — the definition is learned purely from the LIVE/OUT/RELOAD contrast, no LLM call anywhere in the mechanism (learn time or runtime). The standalone-browser login fallback (`_waitForInteractiveAuth`'s non-session branch — an unattended run with no session/context yet) still uses the generic ladder; only the primary in-session path (`_waitForSessionLogin`, what `getGroupAuthContext` uses) is definition-aware. A login window closed by hand (not Done) still saves with no definition, same as before this feature — no 2-way OUT/RELOAD self-test was added for that path.
 - **Complexity:** L — new shared evaluator (twinned Python/JS), a cross-thread learn/self-test bridge inside the recorder's dedicated Playwright thread, a package/model field, and a runtime probe path threaded through pre-flight/login-wait/prover/mid-run-retry.
+
+### AUTH-14 — A group is the unit of sign-in: a workflow runs only when EVERY app in its group is signed in
+**Resolved:** 2026-09-25
+- **Resolution:** Deleted the per-skill `required_apps` layer end to end. Runtime: `browser.js::getGroupAuthContext` gates on `group.apps` (the `_filterRequiredApps` scoping, the `group-no-required-apps` early return and a caller's stray `requiredAppIds` are gone; a passed `requiredAppIds` is ignored), `_sessionKey` no longer folds an app set into the browser-cache key, `server.js` no longer computes a per-skill/`execute_sequence` union, `authenticate` lost its `apps` argument, and `target_hosts.js::resolveTargetHosts` locks on every group app's host. Studio: `skill_package_builder.py`/`_output.py` stop computing and writing `manifest.required_apps` (an older manifest's copy is simply ignored — no migration); `unclaimed_hosts` (AUTH-1) and `group_store.apps_for_workflow` (recording gate + group-page chips) are kept. The recording gate (`handlers/session.py`) is deliberately unchanged — see AUTH-16 in `TODO.md`. Regression tests: `runtime/test/unit/test_group_gates_every_app.js` (replaces `test_group_required_apps.js`), `test_target_hosts.js`, `conxa-cloud/tests/test_skill_package_builder.py`. Full design: `docs/TRD.md` §5.2a "A group is the unit of sign-in".
+- **Category:** Execution & Recovery / Authentication
+- **Description:** User directive, 2026-09-25, while investigating the Github→Drive Run Test failure (AUTH-15): "any workflow inside this group will only work if all the applications of that group are authenticated — why do we have to separately pass required apps." The per-skill list was a second source of truth that had to agree with `pack.json`'s `groups` and with the live group Studio stages sessions from, and it gated *less* than a person expects (a skill that never visited an app ran while that app's login was dead).
+- **Complexity:** M — a deletion across runtime, builder, tests and three docs; no new mechanism.
+
+### AUTH-15 — Github→Drive Run Test: "Google's saved sign-in expired mid-run" right after re-Connecting Google (three composing defects)
+**Resolved:** 2026-09-25
+- **Resolution:** Root-caused by decrypting the sandbox sessions and replaying them in Playwright (fresh `google` session → Drive Home; the `google-drive` session the run actually used → `/v3/signin/accountchooser`, signed out). (1) **Trigger:** Run Test ran the BUILT pack (Google app id `google-drive`, no `auth_definition`) but `_stage_runtime_auth` staged the LIVE group's sessions under the new id `google`, so the runtime read a dead orphan. `handlers/protocol.py::_sign_in_setup_drift` + a guard in `cmd_test_workflow` now raise `sign_in_setup_stale` ("…changed after the last build (…). Rebuild the skill package before testing.") — the sign-in twin of `workflow_stale`; verified against the real dev data (fires) and a simulated rebuild (silent). (2) **Why pre-flight accepted it:** the generic baseline check read Google's account chooser as signed in — `LOGIN_PATH_RE` now matches `login|signin|sign-in|session-expired` as a whole path segment at any depth (was first-segment only), the shape `run.js::AUTH_FAILURE_URL_RE` already used; also narrows AUTH-10. (3) **Why retrying could never recover:** the 6h validation stamp survived a mid-run auth failure, so run 2 skipped the live check and failed identically — `captureReAuth` now calls the new `auth_cache.js::clearValidation(key)` for the app it resolves as dead. Regression tests: `test_login_signals.js`, `test_reauth_app_resolution.js`, `conxa-cloud/tests/test_pipeline_gates.py::TestSignInSetupDrift`. Full write-up: `docs/TRD.md` §5.2a "Run Test refuses a pack whose sign-in setup drifted".
+- **Category:** Execution & Recovery / Authentication
+- **Description:** Run Test of *Github to Drive File Handoff* (group Enterprise) failed at step 6 (Drive "New") with "Google's saved sign-in expired mid-run" twice in a row, although pre-flight reported `2/2_valid` and Google had been re-Connected seconds earlier; the second run skipped validation entirely (`ttl_cached:2`). The learned definition (AUTH-13) already judged the dead session correctly (verdict `no`) but was never in the stale pack — which defect (1) now prevents.
+- **Complexity:** M — three small, independent fixes plus the investigation.
 
 ## DEAD — Tech debt (1 done)
 

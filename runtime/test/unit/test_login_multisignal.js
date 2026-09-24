@@ -110,7 +110,7 @@ function workspace(id, { successPath = "/home" } = {}) {
   }));
   return ws;
 }
-const opts = (ws) => ({ headless: false, groupId: "g1", requiredAppIds: ["a"], runId: `run_${ws}` });
+const opts = (ws) => ({ headless: false, groupId: "g1", runId: `run_${ws}` });
 const loginTabs = (ctx) => ctx.pages().filter((p) => !p.isClosed() && p.url().startsWith(`${ORIGIN}/`) && !p.url().startsWith(`${ORIGIN}/home`));
 
 async function reset() { await registry.closeAll(); for (const b of launched) await b.close().catch(() => {}); launched = []; }
@@ -217,7 +217,7 @@ async function run() {
     browser._writeValidationCache(`${ws}__a`, fileA);
 
     const before = APP.hits.login;
-    const r1 = await getCachedBrowser(ws, null, { headless: false, groupId: "g1", requiredAppIds: ["a", "b"], runId: `run_${ws}` });
+    const r1 = await getCachedBrowser(ws, null, { headless: false, groupId: "g1", runId: `run_${ws}` });
     assert.strictEqual(r1.authPending, true);
     assert.deepStrictEqual(r1.apps.map((x) => x.id), ["b"], "only AppB needed a login window");
     const waited = await awaitAuthPending(r1, { timeoutMs: 15000 });

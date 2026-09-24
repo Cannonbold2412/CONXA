@@ -78,10 +78,10 @@ def apps_for_workflow(apps: list[GroupApp], *urls: str) -> list[GroupApp]:
     `urls` accepts both full URLs (target_url/protected_url) and bare
     hostnames (SkillMeta.visited_hosts) — _url_hostname normalizes either.
 
-    Shared by the recording gate (handlers/session.py) and the compiled
-    manifest's required_apps (skill_package_builder.py) so "which apps does
-    this workflow need" can't drift between record-time and build-time — a
-    workflow that never navigates to a given app is never gated on it.
+    Shared by the recording gate (handlers/session.py) and the group page's
+    platform chips (handlers/groups.py) so "which apps does this workflow
+    touch" can't disagree between them. It no longer decides runtime gating:
+    the runtime signs in to EVERY app in a workflow's group.
     """
     wf_sites = {_site(h) for h in (_url_hostname(u) for u in urls) if h}
     if not wf_sites:

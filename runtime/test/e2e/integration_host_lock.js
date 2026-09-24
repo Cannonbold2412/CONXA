@@ -53,16 +53,16 @@ function writeSkill(skillPacksDir, workspaceId, slug, targetUrl, navigatePath) {
   fs.writeFileSync(path.join(dir, "recovery.json"), JSON.stringify({ steps: [] }));
 }
 
-// A Workflow-Group skill: its manifest declares group_id + required_apps, so
-// server.js's resolveTargetHosts unions EVERY required app's success_url/login_url
+// A Workflow-Group skill: its manifest declares group_id, so
+// server.js's resolveTargetHosts unions EVERY group app's success_url/login_url
 // host into the run's lock set — not just where the skill starts.
-function writeGroupSkill(skillPacksDir, workspaceId, slug, groupId, requiredAppIds, targetUrl, navigatePath) {
+function writeGroupSkill(skillPacksDir, workspaceId, slug, groupId, targetUrl, navigatePath) {
   const dir = path.join(skillPacksDir, workspaceId, "_default", slug, "current");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({
     slug, name: slug, version: "0.0.1", required_runtime: ">=0.0.0",
     company: workspaceId, target_url: targetUrl, inputs_required: [], checksum: {},
-    group_id: groupId, required_apps: requiredAppIds,
+    group_id: groupId,
   }));
   fs.writeFileSync(path.join(dir, "execution.json"), JSON.stringify([
     { type: "navigate", url: `${targetUrl}${navigatePath}` },
@@ -114,7 +114,7 @@ async function main() {
   writeSkill(skillPacksDir, workspaceId, "skill-b", targetUrl, "");     // fast
   // Group skill starting on 127.0.0.1 whose required apps span BOTH hosts — its
   // lock set must be the UNION (127.0.0.1 + localhost), not just its start host.
-  writeGroupSkill(skillPacksDir, workspaceId, "skill-g", "g1", ["app_local", "app_loopback"], targetUrl, "slow");
+  writeGroupSkill(skillPacksDir, workspaceId, "skill-g", "g1", targetUrl, "slow");
   // Standalone skill on localhost only: overlaps skill-g ONLY through the group's
   // second required app — the case plain start-host matching would miss.
   writeSkill(skillPacksDir, workspaceId, "skill-c", altTargetUrl, "");

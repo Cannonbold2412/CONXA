@@ -186,6 +186,9 @@ function refreshAppState(previous, current, hosts = [], claimedElsewhere = null)
 // Resolve a workspace's WorkflowGroup from pack.json's `groups` block. null means the pack has no
 // `groups` (built before Workflow Groups) or not this group — getAuthContext reports that as a
 // pack that needs rebuilding; captureReAuth and target_hosts.js treat it as "no group info".
+// A group app's session key — see mergeStorageStates's comment above.
+const _appKey = (workspace_id, app) => `${workspace_id}__${app.id}`;
+
 function _resolveGroup(workspace_id, groupId) {
   const pack = _loadPack(workspace_id);
   const groups = Array.isArray(pack.groups) ? pack.groups : [];
@@ -194,68 +197,21 @@ function _resolveGroup(workspace_id, groupId) {
   return groups[0];
 }
 
-// ─── Auth-validation TTL cache ────────────────────────────────────────────
-// A successful network validation is stamped per app key; repeat runs within
-// CONXA_AUTH_VALIDATION_TTL_MS (default 6h) skip the live check entirely. The
-// stamp records the session file's mtime — a fresh interactive login rewrites
-// that file, invalidating the cached verdict (which described the OLD state).
-const AUTH_VALIDATION_TTL_MS = Number(process.env.CONXA_AUTH_VALIDATION_TTL_MS) || 6 * 60 * 60 * 1000;
-function _authValidationCachePath() {
-  return path.join(SESSIONS_DIR, "_auth_validation_cache.json");
-}
-function _readValidationCache(key, sessionPath) {
-  try {
-    const entry = JSON.parse(fs.readFileSync(_authValidationCachePath(), "utf8"))[key];
-    if (!entry || typeof entry.validatedAt !== "number") return 0;
-    if (Date.now() - entry.validatedAt > AUTH_VALIDATION_TTL_MS) return 0;
-    const mtime = fs.statSync(sessionPath).mtimeMs;
-    if (Math.abs(mtime - entry.sessionMtimeMs) > 1) return 0;
-    return entry.validatedAt;
-  } catch (_) {
-    return 0;
-  }
-}
-function _writeValidationCache(key, sessionPath) {
-  try {
-    let cache = {};
-    try { cache = JSON.parse(fs.readFileSync(_authValidationCachePath(), "utf8")); } catch (_) {}
-    cache[key] = { validatedAt: Date.now(), sessionMtimeMs: fs.statSync(sessionPath).mtimeMs };
-    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-    fs.writeFileSync(_authValidationCachePath(), JSON.stringify(cache));
-  } catch (_) {}
-}
+const authCache = require("./auth_cache")(SESSIONS_DIR);
+const { AUTH_VALIDATION_TTL_MS, readValidationCache: _readValidationCache, writeValidationCache: _writeValidationCache, readLanding: _readLanding } = authCache;
 
 function _mtimeOrZero(p) {
   try { return fs.statSync(p).mtimeMs; } catch (_) { return 0; }
 }
 
-// ─── Remembered landing address ────────────────────────────────────────────────────────────────
-// docs/artifacts/login-desk.html "Follow the journey": the first real stop after a sign-in (learned
-// from the customer's own login, not typed in) is remembered purely as a NAVIGATION HINT for
-// server.js's post-login pre-navigate (a pack with no leading `navigate` step lands here first
-// instead of on the login page) — it plays no part in sign-in detection any more, that's the
-// signed-out baseline compare (_signedOutBaseline / isSignedInAgainstBaseline), which needs no
-// learned or configured address at all. Same read/write shape as the validation cache above, one
-// file, keyed the same way.
-function _landingUrlsPath() {
-  return path.join(SESSIONS_DIR, "_landing_urls.json");
-}
-function _readLanding(key) {
-  try { return JSON.parse(fs.readFileSync(_landingUrlsPath(), "utf8"))[key] || ""; } catch (_) { return ""; }
-}
 // Stores only the origin — a navigation hint only needs "which site", not a specific path that
 // risks going stale as the app's own routes change. Refuses to learn anything still login-shaped
 // (loginSignals.looksLikeLoginAnswer) — that's never "the app", it's a hop through it.
 function _writeLanding(key, url) {
   if (!url || _rejectReasonForProtectedUrl(url)) return;
   try {
-    const u = new URL(url);
     if (loginSignals.looksLikeLoginAnswer({ url, hasPasswordBox: false })) return;
-    let cache = {};
-    try { cache = JSON.parse(fs.readFileSync(_landingUrlsPath(), "utf8")); } catch (_) {}
-    cache[key] = `${u.origin}/`;
-    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-    fs.writeFileSync(_landingUrlsPath(), JSON.stringify(cache));
+    authCache.writeLanding(key, `${new URL(url).origin}/`);
   } catch (_) {}
 }
 // success_url (explicit) beats the learned landing address (observed) beats login_url (the only
@@ -323,84 +279,37 @@ async function _loadSessionForKey(key, authManager, logFn) {
 // Thin per-app wrapper over _loadSessionForKey — kept as its own name since
 // getGroupAuthContext's caller comments and tests refer to "loading a group app session".
 async function _loadGroupAppSession(workspace_id, app, authManager, logFn) {
-  return _loadSessionForKey(`${workspace_id}__${app.id}`, authManager, logFn);
+  return _loadSessionForKey(_appKey(workspace_id, app), authManager, logFn);
 }
 
-// Scopes a group's apps down to the ones a skill's manifest.required_apps actually
-// declared. undefined requiredAppIds (pre-field manifest) means "gate on every app" —
-// the pre-existing behavior. Pulled out of getGroupAuthContext so it's unit-testable
-// without touching Playwright/chromium.
-function _filterRequiredApps(groupApps, requiredAppIds) {
-  return Array.isArray(requiredAppIds)
-    ? groupApps.filter((a) => requiredAppIds.includes(a.id))
-    : groupApps;
-}
-
-/** Group-aware auth resolution: gate on the REQUIRED apps only, but seed the
- * merged context from every app with a stored session. This mirrors what
- * recording already does (handlers/session.py seeds every captured app) — a
- * workflow that wanders into a sibling app mid-run arrives already signed in
- * instead of hitting a login wall, even though that app wasn't gated on up front.
+/** Group-aware auth resolution. A group is the unit of sign-in: a workflow in it runs only when
+ * EVERY app in the group is authenticated — there is no per-skill subset (the manifest's old
+ * `required_apps` was removed; a caller's stray `opts.requiredAppIds` is ignored). The merged
+ * context is seeded from every app's stored session, so a workflow that moves between apps
+ * mid-run arrives signed in to each.
  *
- * Cost model: only REQUIRED apps pay a live network validation (one shared
- * headless browser for the whole batch). Siblings are seeded without a check —
- * merging expired cookies is harmless since they're never gated. A required app
- * whose session validated within CONXA_AUTH_VALIDATION_TTL_MS (default 6h, see
- * _readValidationCache) skips its network check too.
+ * Cost model: every app pays a live network validation (one shared headless browser for the
+ * whole batch) unless its session validated within CONXA_AUTH_VALIDATION_TTL_MS (default 6h, see
+ * _readValidationCache), which skips that app's check.
  *
- * Any missing/expired REQUIRED app opens its own login window — ALL of them
- * at once, not one at a time, so a run with N broken apps costs the user one
- * interruption instead of N. Each app is keyed `${workspace_id}__${app.id}` in
- * _pendingAuth, so the parallel opens never collide.
- *
- * opts.requiredAppIds scopes the gate to the apps the executing skill's manifest
- * actually declared (matched by hostname against its own target_url/protected_url
- * *and* every host the recording actually visited — see skill_package_builder.py
- * and SkillMeta.visited_hosts). undefined means the manifest predates this field:
- * fall back to gating on every app in the group (old behavior). An explicit empty
- * list means this skill touches none of the group's apps, so it runs with no
- * group auth gate at all (but still seeds every other valid app's session, in
- * case it wanders into one anyway). */
+ * Any missing/expired app opens its own login window — ALL of them at once, not one at a time,
+ * so a run with N broken apps costs the user one interruption instead of N. Each app is keyed
+ * `${workspace_id}__${app.id}` in _pendingAuth, so the parallel opens never collide. */
 async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) {
   const headless = opts.headless !== false;
   const logFn = opts.logFn;
-  const required = _filterRequiredApps(group.apps, opts.requiredAppIds);
-  const requiredIds = new Set(required.map((a) => a.id));
   const key = _sessionKey(workspace_id, opts, headless);
 
   // opts.authOnly: the `authenticate` tool only wants to know whether sign-in is complete (opening
   // login tabs for whatever is missing) — never a run context, so every site that would build
   // one returns { authenticated: true } instead.
-  if (opts.authOnly && (group.apps.length === 0 || (Array.isArray(opts.requiredAppIds) && opts.requiredAppIds.length === 0))) {
-    return { authenticated: true };
-  }
+  if (opts.authOnly && group.apps.length === 0) return { authenticated: true };
   if (group.apps.length === 0) {
     return _openSessionResult(key, undefined, headless, opts, { protectedUrl: "", sessionSource: "group-no-apps" });
   }
 
-  // A manifest that EXPLICITLY declares zero required apps (opts.requiredAppIds is an
-  // array, just empty — not undefined, which means a legacy pre-field manifest and must
-  // still fall through to gate+seed everything below) means this skill is not expected to
-  // touch any sibling app in the group, ever. Validating every sibling anyway (below) exists
-  // purely to pre-seed sessions for a workflow that unexpectedly wanders into one mid-run —
-  // that's not a real risk for a skill that declares it won't, so skip paying for N real,
-  // up-to-30s-timeout network checks (one per group app, every single execution) that this
-  // run has no chance of needing. If such a skill does wander somewhere unexpected despite
-  // its own manifest, it hits a normal auth failure there instead of arriving pre-authenticated.
-  if (Array.isArray(opts.requiredAppIds) && opts.requiredAppIds.length === 0) {
-    return _openSessionResult(key, undefined, headless, opts, { protectedUrl: "", sessionSource: "group-no-required-apps" });
-  }
-
   // Load every app's stored session first (no browser), then decide who pays a
-  // live network check.
-  //
-  // Cost model (see the TTL-cache helpers above): only REQUIRED apps pay a live
-  // network validation. Sibling sessions are seeded unconditionally without one —
-  // merging expired cookies is harmless since siblings are never gated (worst case
-  // a mid-run wander arrives unauthenticated there, identical to today's
-  // invalid-sibling outcome). Legacy manifests (requiredAppIds undefined) gate on
-  // every app, so they still validate everything. A fresh TTL stamp on a required
-  // app's exact session file skips its network check too.
+  // live network check (see the TTL-cache helpers above).
   const _groupAuthT0 = Date.now();
   if (logFn) logFn("info", "test_phase", { phase: `group_auth_validate_start:${group.apps.map((a) => a.name).join(",")}`, ms: 0 });
   const loaded = await Promise.all(group.apps.map((app) => _loadGroupAppSession(workspace_id, app, authManager, logFn)));
@@ -412,10 +321,9 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       results.push({ app, stored: null, valid: false });
       return;
     }
-    const key = `${workspace_id}__${app.id}`;
-    const isRequired = requiredIds.has(app.id);
-    if (!isRequired || (sessionPath && _readValidationCache(key, sessionPath))) {
-      results.push({ app, stored, sessionPath, valid: true, fromCache: isRequired });
+    const key = _appKey(workspace_id, app);
+    if (sessionPath && _readValidationCache(key, sessionPath)) {
+      results.push({ app, stored, sessionPath, valid: true, fromCache: true });
       return;
     }
     // navUrl is always login_url now — detection re-probes the sign-in address itself (see
@@ -427,11 +335,11 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   });
   // The `authenticate` tool with nothing to probe and nothing missing: report success without
   // building any browser at all.
-  const missingStored = results.some((r) => requiredIds.has(r.app.id) && !r.stored);
+  const missingStored = results.some((r) => !r.stored);
   if (opts.authOnly && batch.length === 0 && !missingStored) return { authenticated: true };
 
   // ONE Chromium for the whole session (see browser_session.js). Every stored session is seeded
-  // into it; a required app that still needs a live check is probed in a throwaway tab of it; an
+  // into it; an app that still needs a live check is probed in a throwaway tab of it; an
   // app that is missing or expired gets a sign-in tab in it. So the browser a login lands in is the
   // browser the workflow runs in — nothing is re-seeded from disk and nothing is re-validated.
   // Newest session file first: mergeStorageStates keeps the FIRST cookie per name|domain|path, so a
@@ -443,11 +351,11 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   try {
     opened = await _openSession(key, seed, headless, opts);
   } catch (e) {
-    // Chromium itself won't start (missing / mid-install). If a required app needed the browser for
+    // Chromium itself won't start (missing / mid-install). If an app needed the browser for
     // a check or a sign-in, report it the way a failed login-window launch always was — a
     // `launch_failed` sign-in result callers surface at once instead of waiting on a window that
     // never opened. With nothing to check it is a plain run-context failure: propagate.
-    const needy = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
+    const needy = results.filter((r) => !r.valid);
     if (needy.length === 0) throw e;
     return {
       authPending: true,
@@ -455,15 +363,16 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       message: e.message,
       apps: needy.map((r) => ({
         id: r.app.id, name: r.app.name, loginUrl: r.app.login_url,
-        authPending: true, key: `${workspace_id}__${r.app.id}`, reason: "launch_failed", launchFailed: true, message: e.message,
+        authPending: true, key: _appKey(workspace_id, r.app), reason: "launch_failed", launchFailed: true, message: e.message,
       })),
     };
   }
   if (opened.refused) return opened;
   const { session, id } = opened;
-  const protectedUrlOf = () => (required[0] && _protectedUrlOf(required[0], `${workspace_id}__${required[0].id}`))
-    || (results.find((r) => r.valid) && _protectedUrlOf(results.find((r) => r.valid).app, `${workspace_id}__${results.find((r) => r.valid).app.id}`))
-    || "";
+  const protectedUrlOf = () => {
+    const app = group.apps[0];
+    return app ? _protectedUrlOf(app, _appKey(workspace_id, app)) : "";
+  };
   // A warm session of this key that another call parked in the meantime already passed pre-flight.
   if (opened.reused) return _sessionResult(session, id, { sessionSource: "group" });
 
@@ -485,7 +394,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       network_checked: batch.length,
       ttl_cached: results.filter((r) => r.fromCache).length,
     });
-    const missingRequired = results.filter((r) => requiredIds.has(r.app.id) && !r.valid);
+    const missingRequired = results.filter((r) => !r.valid);
 
     if (missingRequired.length === 0) {
       if (opts.authOnly) {
@@ -501,7 +410,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     const plural = missingRequired.length === 1;
     const message =
       `This workflow belongs to the ${group.name} group and requires authentication to ` +
-      `${required.length} application${required.length === 1 ? "" : "s"}. Sign in to ` +
+      `${group.apps.length} application${group.apps.length === 1 ? "" : "s"}. Sign in to ` +
       `${names.join(", ")} in the window${plural ? "" : "s"} that just opened, then run the skill again.`;
     const alreadyOpenMessage =
       `Sign-in for ${names.join(", ")} is already waiting in ${plural ? "an open window" : "open windows"} ` +
@@ -535,10 +444,10 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
     };
     const hostsOf = (a) => [_hostOf(a.login_url), _hostOf(a.success_url)].filter(Boolean);
     const pendings = await Promise.all(missingRequired.map((r) =>
-      beginInteractiveAuth(`${workspace_id}__${r.app.id}`, _loginEntryUrl(r.app), {
+      beginInteractiveAuth(_appKey(workspace_id, r.app), _loginEntryUrl(r.app), {
         label: r.app.name,
         storedState: r.stored,
-        protectedUrl: _protectedUrlOf(r.app, `${workspace_id}__${r.app.id}`),
+        protectedUrl: _protectedUrlOf(r.app, _appKey(workspace_id, r.app)),
         authManager,
         sessionsDir: SESSIONS_DIR,
         logFn,
@@ -605,15 +514,12 @@ async function _persistSession(workspace_id, state, authManager, sessionsDir, lo
 // a probe's worth of latency to the common nothing-expired case. A visible run's session is not
 // parked: server.js closes its browser at teardown and release() then drops the dead entry at once.
 
-// A session is one Chromium keyed by what it is authenticated for: requiredAppIds is part of the
-// key because two skills in the same group can depend on different app subsets, so a context built
-// (or auth-gated) for one must never be reused for the other. A host-owned (Execute) session also
-// carries its run id — its views live under that id in Execute's panel, so another run must not
-// inherit them.
+// A session is one Chromium keyed by what it is authenticated for — the group, whose every app it
+// is signed in to. A host-owned (Execute) session also carries its run id — its views live under
+// that id in Execute's panel, so another run must not inherit them.
 function _sessionKey(workspace_id, opts, headless) {
-  const appsKey = Array.isArray(opts.requiredAppIds) ? `[${[...opts.requiredAppIds].sort().join(",")}]` : "*";
   const host = !headless && opts.runId && hostBrowser.endpoint() ? `::host:${opts.runId}` : "";
-  return `${workspace_id}::${opts.groupId || ""}::${appsKey}::${headless ? "h" : "w"}${host}`;
+  return `${workspace_id}::${opts.groupId || ""}::${headless ? "h" : "w"}${host}`;
 }
 
 // Registers a new Chromium (or Execute view) for `key`, seeded with `stored`. Reuses a parked one if
@@ -689,7 +595,7 @@ async function getCachedBrowser(workspace_id, authManager, opts = {}) {
   const hit = sessions.reuse(_sessionKey(workspace_id, opts, headless));
   if (hit) return { ..._sessionResult(hit.session, hit.id), cached: true };
   const result = await getAuthContext(workspace_id, authManager, {
-    headless, logFn: opts.logFn, groupId: opts.groupId, requiredAppIds: opts.requiredAppIds, runId: opts.runId, noPrompt: opts.noPrompt,
+    headless, logFn: opts.logFn, groupId: opts.groupId, runId: opts.runId, noPrompt: opts.noPrompt,
   });
   // authPending / refused mean no browser was handed out — nothing to lease.
   return { ...result, cached: false, leaseKey: result.leaseKey || null };
@@ -1148,6 +1054,51 @@ async function _openInteractiveAuthWindow(workspace_id, targetUrl, opts = {}) {
 // How long a login window may sit open before it is given up on.
 const LOGIN_WAIT_MS = 10 * 60 * 1000;
 
+// The poll tick both login waits share: human override → already signed in → lookouts → judge →
+// ladder. Resolves to the reason to save the session, or null to keep waiting. `ownPages()` is
+// only this login's own tabs (never a sibling app's — see _sampleLookouts); `askJudge()` is the
+// caller's before/after re-probe, asked only once a NEW lookout has fired, never while a previous
+// ask is in flight or a pause sign is up. With a learned `authDefinition` the probe REPLACES both
+// the baseline judge and the backup-agreement rule: only a confident "yes" saves.
+function _loginDecider({ key, beforeSnapshot, ticketBaseline, authDefinition, context, ownPages, askJudge }) {
+  const lookoutState = { firedAt: {}, sawPasswordBox: false, ticketBaseline };
+  let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
+  let judging = false;
+  let judgedAtFiredCount = 0;
+  return async function decide() {
+    // AUTH-6: the human said so — an unconditional save, bypassing everything below.
+    if (_checkHumanOverride(key)) return "human_override";
+    if (loginSignals.alreadySignedIn(beforeSnapshot)) return "already_signed_in";
+
+    const nowMs = Date.now();
+    const { paused } = await _sampleLookouts(lookoutState, { ownPages: ownPages(), context }, nowMs);
+    const firedCount = Object.keys(lookoutState.firedAt).length;
+    if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
+      judging = true;
+      judgedAtFiredCount = firedCount;
+      askJudge()
+        .then((v) => { judgeVerdict = v; })
+        .catch(() => {})
+        .finally(() => { judging = false; });
+    }
+    if (authDefinition) return !paused && judgeVerdict === "yes" ? "auth_definition_yes" : null;
+    const verdict = loginSignals.ladderVerdict({
+      paused, judge: judgeVerdict, firedAt: lookoutState.firedAt, nowMs, agreeMs: LOGIN_BACKUP_AGREE_MS,
+    });
+    return verdict.action === "save" ? verdict.reason : null;
+  };
+}
+
+// Poll + hard deadline + the "taking unusually long" diagnostic; the returned function stops all three.
+function _loginTimers({ key, logFn, waitMs, onTick, onTimeout }) {
+  const humanPrompt = setTimeout(() => {
+    if (logFn) logFn("info", "login_signal_inconclusive", { key, waitedMs: LOGIN_HUMAN_PROMPT_MS });
+  }, LOGIN_HUMAN_PROMPT_MS);
+  const poll = setInterval(onTick, LOGIN_POLL_MS);
+  const deadline = setTimeout(onTimeout, waitMs);
+  return () => { clearInterval(poll); clearTimeout(deadline); clearTimeout(humanPrompt); };
+}
+
 // Wait for the user to finish signing in (or close the window) and return the
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
@@ -1171,10 +1122,6 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     if (hostOwned && hostRunId) await hostBrowser.release({ runId: hostRunId, tabId: hostTabId });
   };
 
-  const lookoutState = { firedAt: {}, sawPasswordBox: false, ticketBaseline };
-  let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
-  let judging = false;
-  let judgedAtFiredCount = 0; // only re-ask the judge once a NEW lookout has fired, never on every tick
   let decisionReason = null; // AUTH-7: which ladder rung (or human_override) decided a capture
   const _waitStartMs = Date.now();
 
@@ -1182,6 +1129,14 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     try { return loginCtx.pages().filter((p) => { try { return !p.isClosed(); } catch (_) { return false; } }); }
     catch (_) { return [loginPage]; }
   };
+  // This login's context is dedicated to it alone (never shared with a sibling app's login — see
+  // _waitForSessionLogin's comment on why that distinction matters). If the "before" snapshot never
+  // resolved, the judge stays null and the backup-agreement rule decides instead.
+  const decide = _loginDecider({
+    key: workspace_id, beforeSnapshot, ticketBaseline, context: loginCtx, ownPages: _liveTabPages,
+    askJudge: () => _snapshotLoginEntry({ hostOwned, context: loginCtx, hostRunId }, entryUrl)
+      .then((after) => _judgeVerdict({ hostOwned, browser: loginBrowser }, entryUrl, beforeSnapshot, after)),
+  });
 
   // Runs the multi-signal ladder (see login_signals.js) across every open tab of this login
   // context, then Timekeeper + capture + Prover once it says save. Gated by _finalizing so the
@@ -1194,41 +1149,9 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     if (_autoCloseScheduled || _finalizing || lastState) return;
     _finalizing = true;
     try {
-      // AUTH-6: the human said so — an unconditional save, ahead of everything else below
-      // (bypasses judge/backup-agreement/even a currently-showing pause sign).
-      if (_checkHumanOverride(workspace_id)) {
-        decisionReason = "human_override";
-      } else if (loginSignals.alreadySignedIn(beforeSnapshot)) {
-        decisionReason = "already_signed_in";
-      } else {
-        const pages = _liveTabPages();
-        const nowMs = Date.now();
-        // This login's context is dedicated to it alone (never shared with a sibling app's login —
-        // see _waitForSessionLogin's comment on why that distinction matters).
-        const { paused } = await _sampleLookouts(lookoutState, { ownPages: pages, context: loginCtx }, nowMs);
-
-        // Judge: only once a NEW lookout has fired since the last ask, never while a previous probe
-        // is in flight, and never while paused — gentle with the website, never asked on a timer of
-        // its own. Compares against the "before" snapshot (judgeFromSnapshots); if that snapshot
-        // itself never resolved (or there wasn't one — see beginInteractiveAuth), the judge stays
-        // null and the backup-agreement rule (ladderVerdict below) decides instead.
-        const firedCount = Object.keys(lookoutState.firedAt).length;
-        if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
-          judging = true;
-          judgedAtFiredCount = firedCount;
-          _snapshotLoginEntry({ hostOwned, context: loginCtx, hostRunId }, entryUrl)
-            .then((after) => _judgeVerdict({ hostOwned, browser: loginBrowser }, entryUrl, beforeSnapshot, after))
-            .then((v) => { judgeVerdict = v; })
-            .catch(() => {})
-            .finally(() => { judging = false; });
-        }
-
-        const verdict = loginSignals.ladderVerdict({
-          paused, judge: judgeVerdict, firedAt: lookoutState.firedAt, nowMs, agreeMs: LOGIN_BACKUP_AGREE_MS,
-        });
-        if (verdict.action !== "save") return;
-        decisionReason = verdict.reason;
-      }
+      const reason = await decide();
+      if (!reason) return;
+      decisionReason = reason;
 
       const landedPage = () => {
         const live = _liveTabPages();
@@ -1289,20 +1212,20 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   // deadline that login stays pending forever and _pendingAuth turns every later run into
   // "a login window is already open".
   let timedOut = false;
-  await new Promise(resolve => {
-    const humanPromptTimer = setTimeout(() => {
-      if (logFn) logFn("info", "login_signal_inconclusive", { key: workspace_id, waitedMs: LOGIN_HUMAN_PROMPT_MS });
-    }, LOGIN_HUMAN_PROMPT_MS);
-    const interval = setInterval(() => {
-      _captureIfAuthenticated().catch(() => {});
-      // A host-owned login shares Execute's CDP connection, so closing just this tab never fires
-      // "disconnected" — notice it here instead of waiting out the 10-minute deadline.
-      // ponytail: gives up if the user closes the ORIGINAL page after signing in via an OAuth
-      // popup; beginInteractiveAuth's one-shot reopen covers that.
-      if (hostOwned && loginPage.isClosed()) { clearInterval(interval); clearTimeout(deadline); clearTimeout(humanPromptTimer); resolve(); }
-    }, 1500);
-    const deadline = setTimeout(() => { timedOut = true; clearInterval(interval); clearTimeout(humanPromptTimer); resolve(); }, waitMs);
-    loginBrowser.on("disconnected", () => { clearInterval(interval); clearTimeout(deadline); clearTimeout(humanPromptTimer); resolve(); });
+  await new Promise((resolve) => {
+    const stop = _loginTimers({
+      key: workspace_id, logFn, waitMs,
+      onTick: () => {
+        _captureIfAuthenticated().catch(() => {});
+        // A host-owned login shares Execute's CDP connection, so closing just this tab never fires
+        // "disconnected" — notice it here instead of waiting out the 10-minute deadline.
+        // ponytail: gives up if the user closes the ORIGINAL page after signing in via an OAuth
+        // popup; beginInteractiveAuth's one-shot reopen covers that.
+        if (hostOwned && loginPage.isClosed()) { stop(); resolve(); }
+      },
+      onTimeout: () => { timedOut = true; stop(); resolve(); },
+    });
+    loginBrowser.on("disconnected", () => { stop(); resolve(); });
   });
 
   // Last-resort fallback: try once more in case context is still accessible.
@@ -1363,10 +1286,12 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
   // (_snapshotLoginEntry), which doesn't care which tab the user actually used.
   const myLivePages = () => [...mine].filter((p) => !isClosed(p));
 
-  const lookoutState = { firedAt: {}, sawPasswordBox: false, ticketBaseline };
-  let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
-  let judging = false;
-  let judgedAtFiredCount = 0; // only re-ask the judge once a NEW lookout has fired, never on every tick
+  const decide = _loginDecider({
+    key, beforeSnapshot, ticketBaseline, authDefinition, context: ctx, ownPages: myLivePages,
+    askJudge: () => (authDefinition
+      ? _probeAuthDefinitionVerdict(session, authDefinition).then((r) => (r.verdict === "no" ? "no" : r.verdict === "yes" ? "yes" : null))
+      : _snapshotLoginEntry(session, entryUrl).then((after) => _judgeVerdict(session, entryUrl, beforeSnapshot, after))),
+  });
 
   let outcome = null;
   let decisionReason = null; // AUTH-7: which ladder rung (or human_override) decided a "reached" outcome
@@ -1377,69 +1302,31 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
     const finish = (o) => {
       if (outcome) return;
       outcome = o;
-      clearInterval(poll); clearTimeout(deadline); clearTimeout(humanPromptTimer);
+      stop();
       try { session.browser.off("disconnected", onGone); } catch (_) {}
       resolve();
     };
     const onGone = () => finish("gone");
-    const humanPromptTimer = setTimeout(() => {
-      if (logFn) logFn("info", "login_signal_inconclusive", { key, waitedMs: LOGIN_HUMAN_PROMPT_MS });
-    }, LOGIN_HUMAN_PROMPT_MS);
-    const poll = setInterval(() => {
-      if (outcome || ticking) return; // signal gathering is real async work — never overlap two ticks
-      ticking = true;
-      (async () => {
-        // AUTH-6: the human said so — an unconditional save, ahead of everything else below
-        // (bypasses judge/backup-agreement/even a currently-showing pause sign).
-        if (_checkHumanOverride(key)) { decisionReason = "human_override"; return finish("reached"); }
-        if (loginSignals.alreadySignedIn(beforeSnapshot)) {
-          decisionReason = "already_signed_in";
-          return finish("reached");
-        }
-
-        const nowMs = Date.now();
-        const { paused } = await _sampleLookouts(lookoutState, { ownPages: myLivePages(), context: ctx }, nowMs);
-
-        // Judge: only once a NEW lookout has fired since the last ask, never while a previous probe
-        // is in flight, and never while paused — gentle with the website, never asked on a timer of
-        // its own. With a learned auth definition (authDefinition), the probe REPLACES both the
-        // baseline judge and the backup-agreement rule below (P0: Application Authentication
-        // Recording) — there is no 2-passive-signal save in that case, only a confident "yes" from
-        // evaluateAuthDefinition saves; "no" or "unsure" both mean keep waiting, all the way to
-        // timeout if it never resolves. Without one, behavior is unchanged from before this feature.
-        const firedCount = Object.keys(lookoutState.firedAt).length;
-        if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
-          judging = true;
-          judgedAtFiredCount = firedCount;
-          (authDefinition
-            ? _probeAuthDefinitionVerdict(session, authDefinition).then((r) => (r.verdict === "no" ? "no" : r.verdict === "yes" ? "yes" : null))
-            : _snapshotLoginEntry(session, entryUrl).then((after) => _judgeVerdict(session, entryUrl, beforeSnapshot, after))
-          )
-            .then((v) => { judgeVerdict = v; })
-            .catch(() => {})
-            .finally(() => { judging = false; });
-        }
-
-        if (authDefinition) {
-          if (paused) return; // wait, nothing counts while a pause sign (e.g. OTP) is up
-          if (judgeVerdict === "yes") { decisionReason = "auth_definition_yes"; return finish("reached"); }
-          return; // "no" or still null ("unsure"/not yet asked) — keep waiting, no backup-agreement fallback
-        }
-
-        const verdict = loginSignals.ladderVerdict({
-          paused, judge: judgeVerdict, firedAt: lookoutState.firedAt, nowMs, agreeMs: LOGIN_BACKUP_AGREE_MS,
-        });
-        if (verdict.action === "save") { decisionReason = verdict.reason; return finish("reached"); }
-
-        // The login tab is closed and nothing else got there — but a page that closes itself right
-        // after a redirect can beat the poll, so give a success elsewhere a moment to show up.
-        if (isClosed(loginPage)) {
-          if (!closedAt) closedAt = Date.now();
-          else if (Date.now() - closedAt >= LOGIN_CLOSE_GRACE_MS) finish("closed");
-        }
-      })().catch(() => {}).finally(() => { ticking = false; });
-    }, LOGIN_POLL_MS);
-    const deadline = setTimeout(() => finish("timeout"), waitMs);
+    const stop = _loginTimers({
+      key, logFn, waitMs,
+      onTimeout: () => finish("timeout"),
+      onTick: () => {
+        if (outcome || ticking) return; // signal gathering is real async work — never overlap two ticks
+        ticking = true;
+        (async () => {
+          decisionReason = await decide();
+          if (decisionReason) return finish("reached");
+          // With a learned auth definition a closed tab never ends the wait early — only a "yes" or
+          // the timeout. Otherwise: the login tab is closed and nothing else got there — but a page
+          // that closes itself right after a redirect can beat the poll, so give a success elsewhere
+          // a moment to show up.
+          if (!authDefinition && isClosed(loginPage)) {
+            if (!closedAt) closedAt = Date.now();
+            else if (Date.now() - closedAt >= LOGIN_CLOSE_GRACE_MS) finish("closed");
+          }
+        })().catch(() => {}).finally(() => { ticking = false; });
+      },
+    });
     // A launched session's window/browser being closed; an Execute view closing is caught by the
     // login tab's own isClosed() above (the CDP connection is Execute's whole process).
     try { session.browser.on("disconnected", onGone); } catch (_) {}
@@ -1670,7 +1557,7 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
       `predates Workflow Groups or its group was removed. Rebuild the pack in Build Studio and publish it again.`);
   }
   return getGroupAuthContext(workspace_id, group, authManager, {
-    headless, logFn, requiredAppIds: opts.requiredAppIds, runId: opts.runId, authOnly: opts.authOnly, noPrompt: opts.noPrompt,
+    headless, logFn, runId: opts.runId, authOnly: opts.authOnly, noPrompt: opts.noPrompt,
   });
 }
 
@@ -1731,6 +1618,7 @@ async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, l
       };
     }
     if (logFn) logFn("info", "reauth_app_resolved", { workspace_id, appId: app.id, matchedBy });
+    authCache.clearValidation(_appKey(workspace_id, app));
     return {
       authPending: false,
       loginUrl: app.login_url,
@@ -1784,7 +1672,6 @@ module.exports = {
   teardownExecBrowser,
   getAuthContext,
   getGroupAuthContext,
-  _filterRequiredApps,
   captureReAuth,
   beginInteractiveAuth,
   awaitInteractiveAuth,

@@ -31,7 +31,7 @@ export type Workflow = {
   compile_min_confidence: number | null
   compile_steps_with_warnings: number | null
   /** Group apps this workflow actually touches (start URLs + visited_hosts via the
-   * same matcher as build-time required_apps) — rendered as platform chips. */
+   * same matcher as the recording gate) — rendered as platform chips. */
   used_apps?: { id: string; name: string }[]
   /** Hosts the recording visited that no group app covers (AUTH-1) — the runtime warns about the same list. */
   unclaimed_hosts?: string[]

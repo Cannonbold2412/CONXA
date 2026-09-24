@@ -180,8 +180,8 @@ class SessionMixin:
 
                 # Only the apps this workflow's own URLs actually resolve to gate
                 # recording — a workflow that never navigates to a sibling app in
-                # the group isn't blocked by that app's login (mirrors
-                # skill_package_builder.py's required_apps at build time).
+                # the group isn't blocked by that app's login. (The runtime is stricter — it
+                # gates every run on EVERY app in the group; see TODO.md's recording-gate item.)
                 required = apps_for_workflow(group.apps, workflow.target_url, workflow.protected_url)
                 if not required and group.apps:
                     # apps_for_workflow matches purely by hostname (see its docstring) — a
