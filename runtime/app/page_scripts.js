@@ -462,6 +462,28 @@ function accountNameProbe() {
   return "";
 }
 
+// Learned auth definitions (P0: Application Authentication Recording) — the interactive-marker
+// half of an auth_learning observation (see conxa_compile/auth_learning.py's PROBE_SCRIPT and
+// its module docstring). Role+name pairs only, capped and deduped, same shape both Studio (at
+// learn time) and the runtime (at evaluate time) gather — kept in sync by hand, not by sharing
+// code across languages, since this one has to be re-parsed standalone in the page realm.
+function authDefinitionMarkersProbe() {
+  var markers = [];
+  var seen = {};
+  var els = document.querySelectorAll('button, a, [role="button"], [role="menuitem"]');
+  for (var i = 0; i < els.length && markers.length < 25; i++) {
+    var el = els[i];
+    var name = (el.getAttribute("aria-label") || el.textContent || "").trim().slice(0, 60);
+    if (!name) continue;
+    var role = el.getAttribute("role") || el.tagName.toLowerCase();
+    var key = role + "|" + name;
+    if (seen[key]) continue;
+    seen[key] = true;
+    markers.push({ role: role, name: name });
+  }
+  return markers;
+}
+
 module.exports = {
   extractDescriptor,
   rafStable,
@@ -482,4 +504,5 @@ module.exports = {
   pauseSignProbe,
   storageKeyCounts,
   accountNameProbe,
+  authDefinitionMarkersProbe,
 };

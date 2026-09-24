@@ -9,42 +9,22 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const {
-  isKnownIdpHost,
-  classifyJourney,
   ticketSignature,
   sameTickets,
   ticketsChanged,
   looksPaused,
   looksLikeLoginAnswer,
+  sameAddress,
   judgeFromSnapshots,
+  isSignedInAgainstBaseline,
   shouldAskJudge,
   alreadySignedIn,
   backupAgreementHeldMs,
   ladderVerdict,
+  templatePath,
+  statusMatchesSpec,
+  evaluateAuthDefinition,
 } = require("../../app/login_signals");
-
-test("isKnownIdpHost matches known providers by suffix, not arbitrary hosts", () => {
-  assert.ok(isKnownIdpHost("accounts.google.com"));
-  assert.ok(isKnownIdpHost("mycompany.okta.com"));
-  assert.ok(isKnownIdpHost("MyCompany.Okta.com")); // case-insensitive
-  assert.ok(!isKnownIdpHost("app.acme-cloud.io"));
-  assert.ok(!isKnownIdpHost("notokta.com")); // must be a dot-boundary suffix, not a raw substring
-  assert.ok(!isKnownIdpHost(""));
-});
-
-test("classifyJourney skips the login host and any IdP hop, crediting the first real stop", () => {
-  const hosts = ["login.acme.com", "accounts.google.com", "app.acme-cloud.io"];
-  assert.strictEqual(classifyJourney(hosts, "login.acme.com"), "app.acme-cloud.io");
-});
-
-test("classifyJourney returns null while every host seen so far is the login page or an IdP", () => {
-  assert.strictEqual(classifyJourney(["login.acme.com", "accounts.google.com"], "login.acme.com"), null);
-  assert.strictEqual(classifyJourney([], "login.acme.com"), null);
-});
-
-test("classifyJourney treats a same-host journey (no IdP hop) the same way", () => {
-  assert.strictEqual(classifyJourney(["app.acme.com", "app.acme.com/dashboard"], "app.acme.com"), "app.acme.com/dashboard");
-});
 
 test("ticketSignature sorts names/keys so signature comparison isn't order-sensitive", () => {
   const sig = ticketSignature({ cookieNames: ["b", "a"], storageKeyCounts: { z: 1, a: 2 } });
@@ -79,18 +59,18 @@ test("looksPaused recognises an OTP-style input group or the standard autocomple
 });
 
 test("backupAgreementHeldMs is 0 until a SECOND lookout has fired", () => {
-  assert.strictEqual(backupAgreementHeldMs({ journey: 1000 }, 5000), 0);
+  assert.strictEqual(backupAgreementHeldMs({ passwordGone: 1000 }, 5000), 0);
   assert.strictEqual(backupAgreementHeldMs({}, 5000), 0);
 });
 
 test("backupAgreementHeldMs counts from the second-earliest fire, not the first or the latest", () => {
-  // journey fired at 1000, passwordGone at 3000, newTickets at 3200 — the "two agree" moment is 3000.
-  const firedAt = { journey: 1000, passwordGone: 3000, newTickets: 3200 };
+  // passwordGone fired at 1000, newTickets at 3000 — the "two agree" moment is 3000.
+  const firedAt = { passwordGone: 1000, newTickets: 3000 };
   assert.strictEqual(backupAgreementHeldMs(firedAt, 13000), 10000);
 });
 
 test("ladder: paused overrides everything else, even a judge yes", () => {
-  const v = ladderVerdict({ paused: true, judge: "yes", firedAt: { journey: 0, passwordGone: 0 }, nowMs: 20000 });
+  const v = ladderVerdict({ paused: true, judge: "yes", firedAt: { passwordGone: 0, newTickets: 0 }, nowMs: 20000 });
   assert.deepStrictEqual(v, { action: "wait", reason: "paused" });
 });
 
@@ -100,12 +80,12 @@ test("ladder: judge yes saves immediately regardless of lookout agreement", () =
 });
 
 test("ladder: judge no is a false alarm — keep watching even with lookouts fired", () => {
-  const v = ladderVerdict({ paused: false, judge: "no", firedAt: { journey: 0, passwordGone: 0 }, nowMs: 20000 });
+  const v = ladderVerdict({ paused: false, judge: "no", firedAt: { passwordGone: 0, newTickets: 0 }, nowMs: 20000 });
   assert.deepStrictEqual(v, { action: "wait", reason: "judge_no" });
 });
 
 test("ladder: can't-tell (judge null) falls back to the backup rule once two lookouts agree for 10s", () => {
-  const firedAt = { journey: 1000, passwordGone: 2000 };
+  const firedAt = { passwordGone: 1000, newTickets: 2000 };
   assert.deepStrictEqual(
     ladderVerdict({ paused: false, judge: null, firedAt, nowMs: 11999 }),
     { action: "wait", reason: "insufficient_signal" },
@@ -117,19 +97,17 @@ test("ladder: can't-tell (judge null) falls back to the backup rule once two loo
 });
 
 test("ladder: can't-tell with only one lookout never saves on the backup rule alone", () => {
-  const v = ladderVerdict({ paused: false, judge: null, firedAt: { journey: 1000 }, nowMs: 999999 });
+  const v = ladderVerdict({ paused: false, judge: null, firedAt: { passwordGone: 1000 }, nowMs: 999999 });
   assert.deepStrictEqual(v, { action: "wait", reason: "insufficient_signal" });
 });
 
 // ── looksLikeLoginAnswer / judgeFromSnapshots / alreadySignedIn ─────────────────────────────────
 // docs/artifacts/login-desk.html "Ask for the login page again" — the judge's before/after compare.
+// Deliberately no "known IdP host" concept any more — see login_signals.js's header comment on why
+// a hardcoded provider list was both incomplete and wrong (GitHub is often the app itself).
 
 test("looksLikeLoginAnswer: a password box always counts, regardless of URL", () => {
   assert.ok(looksLikeLoginAnswer({ url: "https://app.acme-cloud.io/dashboard", hasPasswordBox: true }));
-});
-
-test("looksLikeLoginAnswer: a known IdP host always counts, even off a /login-shaped path", () => {
-  assert.ok(looksLikeLoginAnswer({ url: "https://accounts.google.com/signin/v2/identifier", hasPasswordBox: false }));
 });
 
 test("looksLikeLoginAnswer: a login-shaped path counts even with no password box (e.g. email-first)", () => {
@@ -179,6 +157,48 @@ test("alreadySignedIn: a real login page, or no snapshot at all, is not already 
   assert.ok(!alreadySignedIn(null));
 });
 
+// ── sameAddress / isSignedInAgainstBaseline ─────────────────────────────────────────────────────
+// The mechanism that replaced host/redirect/IdP-list matching for pre-flight validation and the
+// prover (browser.js::_isAuthenticated, ::_signedOutBaseline). `baseline` here is a GENUINE
+// signed-out snapshot (fresh, cookie-less context), unlike judgeFromSnapshots's "before" — so
+// "same as baseline" is a definite "still signed out", not merely inconclusive.
+
+test("sameAddress: same origin+path, query/hash ignored", () => {
+  assert.ok(sameAddress({ url: "https://a.test/x" }, { url: "https://a.test/x?y=1#z" }));
+  assert.ok(!sameAddress({ url: "https://a.test/x" }, { url: "https://a.test/y" }));
+  assert.ok(!sameAddress({ url: "https://a.test/x" }, { url: "https://b.test/x" }));
+});
+
+test("isSignedInAgainstBaseline: GitHub-shaped case — www. redirect no longer matters", () => {
+  // The exact bug this replaced: the old check compared exact hostnames, so
+  // https://www.github.com/login redirecting to https://github.com/ always read as "not signed
+  // in", session or not. The baseline compare doesn't care what host either snapshot landed on.
+  const baseline = { url: "https://www.github.com/login", hasPasswordBox: true };
+  const current  = { url: "https://github.com/", hasPasswordBox: false };
+  assert.strictEqual(isSignedInAgainstBaseline(baseline, current), true);
+});
+
+test("isSignedInAgainstBaseline: current equals the genuine signed-out baseline -> not signed in", () => {
+  const baseline = { url: "https://github.com/login", hasPasswordBox: true };
+  const current  = { url: "https://github.com/login", hasPasswordBox: true };
+  assert.strictEqual(isSignedInAgainstBaseline(baseline, current), false);
+});
+
+test("isSignedInAgainstBaseline: current still login-shaped despite differing from baseline (e.g. next credential step) -> false", () => {
+  const baseline = { url: "https://github.com/login", hasPasswordBox: true };
+  const current  = { url: "https://github.com/login/two-factor", hasPasswordBox: false };
+  assert.strictEqual(isSignedInAgainstBaseline(baseline, current), false);
+});
+
+test("isSignedInAgainstBaseline: no baseline (host-owned gap) falls back to best-effort", () => {
+  assert.strictEqual(isSignedInAgainstBaseline(null, { url: "https://github.com/", hasPasswordBox: false }), true);
+  assert.strictEqual(isSignedInAgainstBaseline(null, { url: "https://github.com/login", hasPasswordBox: true }), false);
+});
+
+test("isSignedInAgainstBaseline: no current snapshot (probe failed) -> false", () => {
+  assert.strictEqual(isSignedInAgainstBaseline({ url: "https://github.com/login", hasPasswordBox: true }, null), false);
+});
+
 // ── shouldAskJudge ───────────────────────────────────────────────────────────────────────────
 // The regression this guards: the judge used to be re-asked on EVERY tick once any lookout had
 // fired, hammering the site's login page over and over (docs/artifacts/login-desk.html "Gentle
@@ -202,4 +222,44 @@ test("shouldAskJudge: never while paused, never while a previous ask is still in
   assert.ok(!shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: true }));
   assert.ok(!shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: true, paused: false }));
   assert.ok(!shouldAskJudge({ firedCount: 2, judgedAtFiredCount: 1, judgeVerdict: "yes", judging: false, paused: false }));
+});
+
+// ── templatePath / statusMatchesSpec ────────────────────────────────────────────────────────────
+
+test("templatePath replaces numeric and uuid-shaped segments with :id, leaves the rest alone", () => {
+  assert.strictEqual(templatePath("/api/users/48213/me"), "/api/users/:id/me");
+  assert.strictEqual(templatePath("/api/orders/9c1e2b3a-000a-4b2c-8b1e-1234567890ab"), "/api/orders/:id");
+  assert.strictEqual(templatePath("/api/me"), "/api/me");
+  assert.strictEqual(templatePath(""), "/");
+});
+
+test("statusMatchesSpec matches an Nxx class or an exact status", () => {
+  assert.ok(statusMatchesSpec(200, "2xx"));
+  assert.ok(statusMatchesSpec(204, "2xx"));
+  assert.ok(!statusMatchesSpec(401, "2xx"));
+  assert.ok(statusMatchesSpec(401, "401"));
+  assert.ok(!statusMatchesSpec(403, "401"));
+});
+
+// ── evaluateAuthDefinition — shared fixture with auth_learning.py's Python twin ─────────────────
+// Same cases run through evaluate() in conxa-cloud/tests/test_auth_learning.py. If the two
+// languages ever disagree, a definition Build Studio's self-test approved could still not fire
+// (or wrongly fire) at runtime — see this function's own header comment in login_signals.js.
+
+const fs = require("node:fs");
+const path = require("node:path");
+const AUTH_CASES = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "fixtures", "auth_definition_cases.json"), "utf-8"),
+);
+
+for (const c of AUTH_CASES) {
+  test(`evaluateAuthDefinition fixture: ${c.name}`, () => {
+    const result = evaluateAuthDefinition(c.definition, c.observation);
+    assert.strictEqual(result.verdict, c.expect.verdict, JSON.stringify(result));
+  });
+}
+
+test("evaluateAuthDefinition: no definition or no observation -> unsure, never a false yes", () => {
+  assert.strictEqual(evaluateAuthDefinition(null, { final_url: "https://a.test/" }).verdict, "unsure");
+  assert.strictEqual(evaluateAuthDefinition({ signed_out: {}, signed_in: {} }, null).verdict, "unsure");
 });

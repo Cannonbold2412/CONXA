@@ -1784,10 +1784,13 @@ async function _handleTool(name, args, extra) {
           _phase(`steps_complete:${steps.length}`);
         } catch (runErr) {
           // Auth-failure handling: detect a login redirect and fail immediately, naming the
-          // app whose session died. Authentication is pre-flight only — no re-auth window
-          // opens here. The next execute_skill call's normal pre-flight gate (getGroupAuthContext)
-          // re-validates this exact app and opens its login window then; see captureReAuth's
-          // comment in browser.js for why that's deliberate, not a missing feature.
+          // app whose session died. For an app with no learned auth definition, authentication
+          // stays pre-flight only — no re-auth window opens here; the next execute_skill call's
+          // normal pre-flight gate (getGroupAuthContext) re-validates it and opens a window then.
+          // An app WITH a learned definition (P0: Application Authentication Recording) instead
+          // gets auto-retried right below (see the session_expired handler's hasAuthDefinition
+          // branch) — the confidence that let mid-run auto-login be trusted at all is exactly what
+          // was missing when this was written pre-flight-only; see captureReAuth's own comment.
           const failedStep = runErr.failedAt ?? null;
           // Multi-tab: check auth on the tab the step actually failed on, not always the
           // initial tab — a login redirect in a second tab would otherwise go undetected.
@@ -1820,6 +1823,11 @@ async function _handleTool(name, args, extra) {
                   // session_expired handler below must not tell the user "once signed in", since
                   // nothing has prompted them to sign in yet at this point.
                   authWindowOpened: false,
+                  // P0: Application Authentication Recording — whether the app that died has a
+                  // learned auth definition, which is what lets the session_expired handler
+                  // below auto-retry this run instead of only telling the person to call
+                  // execute_skill again by hand.
+                  hasAuthDefinition: Boolean(refreshResult.hasAuthDefinition),
                 }
               );
             }
@@ -1958,6 +1966,33 @@ async function _handleTool(name, args, extra) {
         releaseCachedBrowser(_leaseKey);
         _hostRelease?.();
         const failedAt = typeof runErr.failedAt === "number" ? runErr.failedAt : null;
+
+        // P0: Application Authentication Recording — a mid-run expiry for an app WITH a learned
+        // auth definition is confident enough to auto-retry instead of only telling the person to
+        // call execute_skill again by hand (spec §11). Fires a fresh call under the SAME run_id
+        // with resume_from set; that call runs the ordinary pre-flight gate above from scratch,
+        // which detects the now-known-expired session, opens a login window, and detaches exactly
+        // like any other pending sign-in already does — no new detach/registry mechanism needed.
+        // Strictly gated: never for the generic detection ladder (hasAuthDefinition — the very
+        // confidence gap that made this pre-flight-only in the first place, see captureReAuth's
+        // comment), never without agent-enabled resume support, and capped to one retry per
+        // original call (_mid_run_reauth) so a pathological repeat expiry can't loop forever.
+        if (runErr.hasAuthDefinition && runErr.authWindowOpened === false && _effAgentEnabled
+            && failedAt !== null && !args._mid_run_reauth) {
+          const retrySlug = (runErr.fromEntry || primary.entry).slug;
+          log("info", "mid_run_reauth_retry", { run_id: _runId, skill: retrySlug, step_index: failedAt });
+          setImmediate(() => {
+            _handleTool(name, { ...args, _run_id: _runId, resume_from: failedAt, _mid_run_reauth: true }, extra).catch(() => {});
+          });
+          return {
+            content: [{ type: "text", text:
+              `${runErr.message} Opening a sign-in window now — finish signing in and "${retrySlug}" resumes on its own ` +
+              `from where it left off; you do not need to call execute_skill again. ` +
+              `Check progress with get_execution_status (run_id: ${_runId}).` }],
+            _meta: { "conxa/awaiting_auth": { run_id: _runId } },
+          };
+        }
+
         // A mid-run failure (authWindowOpened: false — see captureReAuth) never opened a
         // window; runErr.message already tells the caller to call execute_skill again to get
         // prompted. Only add the resume_from mechanics there, not "once signed in" — nobody's

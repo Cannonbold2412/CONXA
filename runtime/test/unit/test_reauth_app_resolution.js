@@ -31,7 +31,12 @@ const browser = require("../../app/browser");
 
 const WORKSPACE_ID = "acme";
 const RENDER = { id: "app_render", name: "Render", login_url: "https://dashboard.render.com/login", success_url: "https://dashboard.render.com/home" };
-const BILLING = { id: "app_billing", name: "Billing", login_url: "https://billing.example.com/login", success_url: "https://billing.example.com/home" };
+const BILLING = {
+  id: "app_billing", name: "Billing", login_url: "https://billing.example.com/login", success_url: "https://billing.example.com/home",
+  // P0: Application Authentication Recording — Billing has a learned definition, Render doesn't,
+  // so hasAuthDefinition below must reflect the RESOLVED app, not a workspace-wide flag.
+  auth_definition: { version: 1, probe_url: "https://billing.example.com/login", signed_out: {}, signed_in: {}, session_keys: [] },
+};
 
 function writePack(groups) {
   const dir = path.join(tmpDataDir, "skill-packs", WORKSPACE_ID);
@@ -55,6 +60,20 @@ async function run() {
     assert.ok(resolved, "expected a reauth_app_resolved log");
     assert.strictEqual(resolved.data.appId, "app_billing");
     assert.strictEqual(resolved.data.matchedBy, "failing-page-host");
+  });
+
+  await check("hasAuthDefinition reflects the RESOLVED app's own learned definition, not a workspace-wide flag", async () => {
+    const withDefinition = await browser.captureReAuth(WORKSPACE_ID, "https://billing.example.com/login", null, tmpDataDir, () => {}, {
+      groupId: "g1",
+      fallbackUrl: "https://dashboard.render.com",
+    });
+    assert.strictEqual(withDefinition.hasAuthDefinition, true, "Billing has a learned definition");
+
+    const withoutDefinition = await browser.captureReAuth(WORKSPACE_ID, "https://dashboard.render.com/login", null, tmpDataDir, () => {}, {
+      groupId: "g1",
+      fallbackUrl: "https://billing.example.com",
+    });
+    assert.strictEqual(withoutDefinition.hasAuthDefinition, false, "Render has no learned definition");
   });
 
   await check("falls back to the manifest's fallback host when the failing-page host matches nothing", async () => {

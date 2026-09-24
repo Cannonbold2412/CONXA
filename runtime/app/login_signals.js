@@ -10,47 +10,14 @@
 // gathered snapshot means, so it is unit-testable offline like target_hosts.js/resolver.js.
 //
 // Vocabulary (matches the "Login Desk" design doc, docs/artifacts/login-desk.html):
-//   lookouts   — passive signals that something happened: journey, password-box-gone, new tickets.
+//   lookouts   — passive signals that something happened: password-box-gone, new tickets.
 //   pause sign — a mid-sign-in screen (OTP code, MFA) is up; nothing below counts while it is.
 //   judge      — the active check: re-request the login URL and see if it still shows a login form.
+//   baseline   — a GENUINE signed-out snapshot of the login URL (fresh, cookie-less context),
+//                used by pre-flight validation and the prover instead of any host/redirect
+//                matching (see browser.js::_signedOutBaseline, isSignedInAgainstBaseline below).
 //   timekeeper — wait for the ticket signature to stop changing before saving (see browser.js).
 //   prover     — verify the saved session actually works (see browser.js::_proveSession).
-
-// A short allow-list of hosts that host a THIRD-PARTY sign-in step, never the app itself, so the
-// journey lookout can skip over an IdP hop and credit the first stop that isn't one of these as
-// "arrived at the app". Mirrors the same handful of providers _loginEntryUrl already special-cases
-// in its own comments — keep this the one place that names them. Hostname-suffix match, so a
-// tenant subdomain (foo.okta.com) still matches its own entry.
-const KNOWN_IDP_HOST_SUFFIXES = [
-  "accounts.google.com",
-  "login.microsoftonline.com",
-  "login.live.com",
-  "login.windows.net",
-  "okta.com",
-  "auth0.com",
-  "appleid.apple.com",
-  "github.com",
-];
-
-function isKnownIdpHost(hostname) {
-  const h = String(hostname || "").toLowerCase();
-  if (!h) return false;
-  return KNOWN_IDP_HOST_SUFFIXES.some((suffix) => h === suffix || h.endsWith("." + suffix));
-}
-
-// First host in `hostsVisitedInOrder` (already deduped consecutive, oldest first) that is neither
-// the login page's own host nor a known IdP — the artifact's "first stop after the login page and
-// those services". Returns null while every host seen so far is the login host or an IdP (still
-// mid-journey, e.g. sitting on accounts.google.com waiting for the person to approve).
-function classifyJourney(hostsVisitedInOrder, loginHost) {
-  const login = String(loginHost || "").toLowerCase();
-  for (const raw of hostsVisitedInOrder || []) {
-    const h = String(raw || "").toLowerCase();
-    if (!h || h === login || isKnownIdpHost(h)) continue;
-    return h;
-  }
-  return null;
-}
 
 // ── Tickets (cookies + storage keys) ────────────────────────────────────────────────────────
 // Names and counts only — never values. Keeps the existing "secrets stay on the machine" rule
@@ -105,16 +72,20 @@ function looksPaused(domProbe) {
 // lives in browser.js::_snapshotLoginEntry; this is the pure "what does it mean" half, same split
 // as the rest of this file.
 //
-// A snapshot "looks like a login answer" when it's on a known IdP host, has a login-shaped path
-// (LOGIN_PATH_RE, hoisted out of browser.js's _reachedProtectedUrl so both call sites share one
-// definition), or still shows a password box. Any of those means "not signed in, as far as this
-// probe can tell".
+// A snapshot "looks like a login answer" when it has a login-shaped path (LOGIN_PATH_RE — a
+// generic pattern, not a per-company list) or still shows a password box. Either means "not
+// signed in, as far as this probe can tell". Deliberately has no notion of "known identity
+// provider hosts": that list was both incomplete (couldn't know every SSO/OAuth provider a
+// customer's stack might use) and wrong when an app IS its own sign-in host under a name that
+// happens to match a general-purpose provider's own domain (e.g. github.com — GitHub is often
+// the app itself, not a third party fronting one). The signed-out baseline compare below
+// (isSignedInAgainstBaseline) is what replaced host-list reasoning; this function only classifies
+// ONE snapshot in isolation, generically.
 const LOGIN_PATH_RE = /^\/(login|signin|sign-in|session-expired)(\/|$|\?)/i;
 function looksLikeLoginAnswer({ url, hasPasswordBox } = {}) {
   if (hasPasswordBox) return true;
   try {
     const u = new URL(url);
-    if (isKnownIdpHost(u.hostname)) return true;
     return LOGIN_PATH_RE.test(u.pathname);
   } catch (_) {
     return true; // no url to read — treat as "can't confirm signed-in", never as a false yes.
@@ -122,7 +93,7 @@ function looksLikeLoginAnswer({ url, hasPasswordBox } = {}) {
 }
 
 // Same origin+path (ignoring query/hash) — "the login address gave the same answer both times".
-function _sameAnswer(a, b) {
+function sameAddress(a, b) {
   try {
     const ua = new URL(a.url);
     const ub = new URL(b.url);
@@ -140,13 +111,27 @@ function _sameAnswer(a, b) {
 //   after no longer looks like login -> "yes"  (bounced off — signed in)
 //   otherwise                        -> "no"   (still looks like a login answer — false alarm)
 // `before` may also be null (the pre-sign-in snapshot itself failed) — in that case there is
-// nothing to compare against, so this always returns null and the caller falls back to its
-// existing protectedUrl-reached check.
+// nothing to compare against, so this always returns null and the caller falls back to the
+// backup-agreement rule (ladderVerdict below).
 function judgeFromSnapshots(before, after) {
   if (!after) return null;
   if (!before) return null;
-  if (_sameAnswer(before, after)) return null;
+  if (sameAddress(before, after)) return null;
   return looksLikeLoginAnswer(after) ? "no" : "yes";
+}
+
+// Pre-flight validation / the prover (browser.js::_isAuthenticated, ::_proveSession): unlike
+// judgeFromSnapshots above — where "before" is merely "whatever this session showed before THIS
+// sign-in attempt," which may itself already be signed in — `baseline` here is a GENUINE
+// signed-out snapshot: the same login URL fetched from a fresh, cookie-less browser context (see
+// browser.js::_signedOutBaseline). So "same as baseline" is a definite "still signed out," not
+// merely inconclusive — no host list, no success_url, no redirect-hostname matching involved.
+function isSignedInAgainstBaseline(baseline, current) {
+  if (!current || looksLikeLoginAnswer(current)) return false;
+  if (!baseline) return true; // host-owned session, no isolated context available — see
+                               // browser.js::_signedOutBaseline's accepted gap (mirrors
+                               // _proveSession's existing host-owned limitation).
+  return !sameAddress(baseline, current);
 }
 
 // Should the judge be re-asked THIS tick? Only once a NEW lookout has fired since the last ask
@@ -167,10 +152,10 @@ function alreadySignedIn(before) {
 }
 
 // ── The decision ladder ──────────────────────────────────────────────────────────────────────
-// `firedAt`: { journey?: ms, passwordGone?: ms, newTickets?: ms } — first-fire timestamp per
-// lookout, or absent/undefined if it hasn't fired. Lookouts are monotonic (once true, always
-// true for the rest of one sign-in wait), so "two or more have agreed for `agreeMs`" reduces to
-// "the SECOND-earliest fire time is at least `agreeMs` in the past".
+// `firedAt`: { passwordGone?: ms, newTickets?: ms } — first-fire timestamp per lookout, or
+// absent/undefined if it hasn't fired. Lookouts are monotonic (once true, always true for the
+// rest of one sign-in wait), so "two or more have agreed for `agreeMs`" reduces to "the
+// SECOND-earliest fire time is at least `agreeMs` in the past".
 function backupAgreementHeldMs(firedAt, nowMs) {
   const times = Object.values(firedAt || {}).filter((t) => typeof t === "number").sort((a, b) => a - b);
   if (times.length < 2) return 0;
@@ -179,9 +164,9 @@ function backupAgreementHeldMs(firedAt, nowMs) {
 
 const DEFAULT_BACKUP_AGREE_MS = 10000;
 
-// `judge` is one of "yes" | "no" | null (not asked yet, or the site can't be told apart before vs.
-// after — see _reachedProtectedUrl called against a fresh probe in browser.js). Mirrors the
-// artifact's "Who do we believe?" ladder exactly:
+// `judge` is one of "yes" | "no" | null (not asked yet, or the before/after snapshots read the
+// same — see judgeFromSnapshots above). Mirrors the artifact's "Who do we believe?" ladder
+// exactly:
 //   paused                                  -> wait, nothing counts
 //   judge yes                               -> save
 //   judge no                                -> wait (false alarm — a lookout fired but the site
@@ -197,19 +182,132 @@ function ladderVerdict({ paused, judge, firedAt, nowMs, agreeMs = DEFAULT_BACKUP
   return { action: "wait", reason: "insufficient_signal" };
 }
 
+// ── Learned auth definitions (P0: Application Authentication Recording) ────────────────────────
+// evaluateAuthDefinition is the RUNTIME half of a definition Build Studio learns at Connect time
+// (see conxa_compile/auth_learning.py::learn/self_test for the Studio half that builds and
+// verifies one). Twinned deliberately: Studio verifies a definition with THIS exact rule before
+// saving it, and the runtime later applies THIS exact rule to decide when a login is done — if
+// the two ever disagreed, a definition that passed Studio's self-test could still not fire at
+// runtime. Kept in sync via one shared fixture,
+// runtime/test/fixtures/auth_definition_cases.json, run by both languages' unit tests.
+//
+// A definition is learned from a contrast (a signed-in observation vs. a genuine signed-out one),
+// not from the sign-in journey — see auth_learning.py's header for why. This function only
+// classifies ONE observation against an already-learned definition; it never inspects live pages
+// itself (that's browser.js's job, same split as the rest of this file).
+
+// "/api/users/:id/me" style templating so a learned endpoint still matches when the live id
+// differs from the one seen while learning. Mirrors auth_learning.py::template_path exactly —
+// covered by the same fixture so the two can't drift silently.
+const _ID_SEGMENT_RE = /^[0-9]+$|^[0-9a-f-]{8,}$/i;
+function templatePath(path) {
+  if (!path) return "/";
+  return path
+    .split("/")
+    .map((seg) => (seg && _ID_SEGMENT_RE.test(seg) ? ":id" : seg))
+    .join("/");
+}
+
+// spec is "2xx".."5xx" or an exact status like "401".
+function statusMatchesSpec(status, spec) {
+  if (!spec) return false;
+  const m = /^([1-5])xx$/.exec(spec);
+  if (m) return Math.floor(Number(status) / 100) === Number(m[1]);
+  return Number(spec) === Number(status);
+}
+
+function _pathOf(url) {
+  try { return new URL(url).pathname || "/"; } catch (_) { return null; }
+}
+
+// Deliberately conservative: a positive only when the path matches the learned signed-in address
+// exactly. "Merely isn't the login path" was tried and rejected — it's the same weak reasoning
+// AUTH-10 flagged in the old generic heuristic (a public, non-login page reads as "yes"), and
+// combined with the equally-weak session class it could out-vote a real signed-out observation.
+// The veto direction has no such risk, so it stays generic: any exact match to the known
+// signed-out address is "no", regardless of what signed_in.final_path says.
+function _urlClass(def, finalPath) {
+  if (finalPath === null) return null;
+  const out = def.signed_out || {};
+  const inn = def.signed_in || {};
+  if (out.final_path && finalPath === out.final_path) return "no";
+  if (inn.final_path && finalPath === inn.final_path) return "yes";
+  return null;
+}
+
+function _networkClass(def, responses) {
+  const endpoints = (def.signed_in && def.signed_in.endpoints) || [];
+  if (!endpoints.length || !responses || !responses.length) return null;
+  let sawOk = false;
+  for (const r of responses) {
+    for (const ep of endpoints) {
+      if ((ep.method || "GET").toUpperCase() !== (r.method || "GET").toUpperCase()) continue;
+      if (templatePath(ep.path) !== templatePath(r.path)) continue;
+      if (ep.denied && statusMatchesSpec(r.status, ep.denied)) return "no";
+      if (ep.ok && statusMatchesSpec(r.status, ep.ok)) sawOk = true;
+    }
+  }
+  return sawOk ? "yes" : null;
+}
+
+function _markerPresent(markers, wanted) {
+  return (markers || []).some((m) => m.role === wanted.role && m.name === wanted.name);
+}
+
+function _domClass(def, observation) {
+  if (observation.password_box) return "no";
+  const outMarkers = (def.signed_out && def.signed_out.markers) || [];
+  if (!outMarkers.length) return null;
+  const anyPresent = outMarkers.some((w) => _markerPresent(observation.markers, w));
+  return anyPresent ? "no" : "yes";
+}
+
+function _sessionClass(def, cookieNames) {
+  const keys = def.session_keys || [];
+  if (!keys.length) return null;
+  const present = (cookieNames || []).some((c) => keys.includes(c));
+  return present ? "yes" : null; // weak signal — never a veto, never counts alone
+}
+
+// { verdict: "yes" | "no" | "unsure", classes: string[] } — classes lists whichever fired
+// positive (diagnostics only; never trusted secrets — class names, not values).
+function evaluateAuthDefinition(definition, observation) {
+  if (!definition || !observation) return { verdict: "unsure", classes: [] };
+  if (observation.otp_like) return { verdict: "unsure", classes: [] };
+
+  const results = {
+    url: _urlClass(definition, _pathOf(observation.final_url)),
+    network: _networkClass(definition, observation.responses),
+    dom: _domClass(definition, observation),
+    session: _sessionClass(definition, observation.cookie_names),
+  };
+
+  if (Object.values(results).includes("no")) {
+    return { verdict: "no", classes: Object.keys(results).filter((k) => results[k] === "no") };
+  }
+  const positives = Object.keys(results).filter((k) => results[k] === "yes");
+  const nonSession = positives.filter((k) => k !== "session");
+  if (positives.length >= 2 && nonSession.length >= 1) {
+    return { verdict: "yes", classes: positives };
+  }
+  return { verdict: "unsure", classes: positives };
+}
+
 module.exports = {
-  KNOWN_IDP_HOST_SUFFIXES,
-  isKnownIdpHost,
-  classifyJourney,
   ticketSignature,
   sameTickets,
   ticketsChanged,
   looksPaused,
   looksLikeLoginAnswer,
+  sameAddress,
   judgeFromSnapshots,
+  isSignedInAgainstBaseline,
   shouldAskJudge,
   alreadySignedIn,
   backupAgreementHeldMs,
   ladderVerdict,
   DEFAULT_BACKUP_AGREE_MS,
+  templatePath,
+  statusMatchesSpec,
+  evaluateAuthDefinition,
 };

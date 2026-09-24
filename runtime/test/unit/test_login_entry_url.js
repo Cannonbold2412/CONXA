@@ -1,24 +1,21 @@
-// AUTH-5: an app whose sign-in lives on a different host than the app itself (Google Drive:
-// accounts.google.com -> drive.google.com) must open its login tab AT THE APP, so the provider's own
-// return-to parameter sends the user back where _reachedProtectedUrl is watching. Same-host apps
-// (GitHub) keep login_url — their success host serves a public logged-out page.
+// The login tab always opens at login_url — AUTH-5 used to special-case an app whose sign-in
+// lives on a different host than the app (Google Drive: accounts.google.com -> drive.google.com)
+// by opening the app's success URL instead, so a host-based check would have something to see
+// there. Detection no longer depends on where the user lands (see _signedOutBaseline /
+// isSignedInAgainstBaseline in login_signals.js): the judge re-probes login_url itself, before vs.
+// after, so opening login_url directly works uniformly — including for an app like GitHub, which
+// IS its own sign-in host, not a third party fronting one.
 const test   = require("node:test");
 const assert = require("node:assert");
 
-const { _loginEntryUrl, _successPrefix, _reachedProtectedUrl, _probeInSession } = require("../../app/browser");
+const { _loginEntryUrl, _successPrefix, _probeInSession } = require("../../app/browser");
 
 const GITHUB = { login_url: "https://github.com/login", success_url: "https://github.com/{}" };
 const DRIVE  = { login_url: "https://accounts.google.com", success_url: "https://drive.google.com/{}" };
 
-test("same-host app keeps login_url", () => {
+test("_loginEntryUrl is always login_url, same-host or cross-host", () => {
   assert.strictEqual(_loginEntryUrl(GITHUB), "https://github.com/login");
-});
-
-test("cross-host app opens at the app, not the identity provider", () => {
-  assert.strictEqual(_loginEntryUrl(DRIVE), "https://drive.google.com/");
-});
-
-test("no success_url falls back to login_url", () => {
+  assert.strictEqual(_loginEntryUrl(DRIVE), "https://accounts.google.com");
   assert.strictEqual(_loginEntryUrl({ login_url: "https://a.test/login", success_url: "" }), "https://a.test/login");
 });
 
@@ -28,35 +25,48 @@ test("_successPrefix strips the {} wildcard and tolerates a missing success_url"
   assert.strictEqual(_successPrefix({}), "");
 });
 
-test("_reachedProtectedUrl: a bare-origin {} pattern is host-only, as before", () => {
-  assert.strictEqual(_reachedProtectedUrl("https://drive.google.com/drive/my-drive", DRIVE.success_url), true);
-  assert.strictEqual(_reachedProtectedUrl("https://accounts.google.com/v3/signin", DRIVE.success_url), false);
-  assert.strictEqual(_reachedProtectedUrl("https://github.com/login", GITHUB.success_url), false);
-});
-
-test("_reachedProtectedUrl: {} after a path prefix requires that prefix", () => {
-  const pattern = "https://vercel.com/dashboard/{}";
-  assert.strictEqual(_reachedProtectedUrl("https://vercel.com/dashboard/team", pattern), true);
-  assert.strictEqual(_reachedProtectedUrl("https://vercel.com/pricing", pattern), false);
-  assert.strictEqual(_reachedProtectedUrl("https://vercel.com/login", pattern), false);
-});
-
-test("_reachedProtectedUrl: a pattern with no {} is hostname-only, as before", () => {
-  assert.strictEqual(_reachedProtectedUrl("https://app.test/anything", "https://app.test/dashboard"), true);
-  assert.strictEqual(_reachedProtectedUrl("https://app.test/login", "https://app.test/dashboard"), false);
-});
-
-test("_probeInSession navigates to the success prefix, never a literal {}", async () => {
-  const visited = [];
-  const page = {
-    goto: async (u) => { visited.push(u); },
-    url: () => visited[visited.length - 1] || "about:blank",
-    isClosed: () => false,
-    close: async () => {},
+// A throwaway page with a fixed url/password-box answer, plus a throwaway incognito context that
+// hands out pages of its own — enough to drive both _probeInSession's own probe tab (via
+// session.context.newPage) and _signedOutBaseline's separate cookie-less fetch (via
+// session.browser.newContext), the two contexts the new baseline compare needs.
+function fakePage(url, hasPasswordBox) {
+  return {
+    goto: async () => {}, url: () => url, isClosed: () => false, close: async () => {},
+    evaluate: async () => hasPasswordBox,
   };
-  const session = { hostOwned: false, context: { newPage: async () => page } };
-  const entry = { key: "ws__drive", navUrl: _successPrefix(DRIVE), protectedUrl: DRIVE.success_url, label: "Drive" };
-  const outcomes = await _probeInSession(session, [entry]);
-  assert.deepStrictEqual(visited, ["https://drive.google.com/"]);
-  assert.strictEqual(outcomes.get("ws__drive"), true);
+}
+function fakeSession({ probeUrl, probeHasPasswordBox, baselineUrl, baselineHasPasswordBox }) {
+  return {
+    hostOwned: false,
+    context: { newPage: async () => fakePage(probeUrl, probeHasPasswordBox) },
+    browser: {
+      newContext: async () => ({
+        newPage: async () => fakePage(baselineUrl, baselineHasPasswordBox),
+        close: async () => {},
+      }),
+    },
+  };
+}
+
+test("_probeInSession navigates to login_url and reports signed-in via the baseline compare", async () => {
+  // A genuinely signed-out baseline still shows the login form; the session's own probe has
+  // bounced off it entirely — that's what "signed in" means now, no host/redirect matching.
+  // A distinct login_url from the next test — _signedOutBaseline caches per entryUrl.
+  const loginUrl = "https://github-signed-in.test/login";
+  const session = fakeSession({
+    probeUrl: "https://github-signed-in.test/", probeHasPasswordBox: false,
+    baselineUrl: loginUrl, baselineHasPasswordBox: true,
+  });
+  const outcomes = await _probeInSession(session, [{ key: "ws__github", navUrl: loginUrl, label: "GitHub" }]);
+  assert.strictEqual(outcomes.get("ws__github"), true);
+});
+
+test("_probeInSession reports NOT signed-in when the probe still shows a password box", async () => {
+  const loginUrl = "https://github-signed-out.test/login";
+  const session = fakeSession({
+    probeUrl: loginUrl, probeHasPasswordBox: true,
+    baselineUrl: loginUrl, baselineHasPasswordBox: true,
+  });
+  const outcomes = await _probeInSession(session, [{ key: "ws__github", navUrl: loginUrl, label: "GitHub" }]);
+  assert.strictEqual(outcomes.get("ws__github"), false);
 });

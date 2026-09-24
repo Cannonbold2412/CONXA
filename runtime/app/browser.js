@@ -42,6 +42,9 @@ const _envInfo       = global.__conxaEnv || require("./env").resolve();
 const CONXA_DIR      = process.env.CONXA_DIR || _envInfo.conxaDir;
 const CONXA_DATA_DIR = process.env.CONXA_DATA_DIR || _envInfo.dataDir;
 const SESSIONS_DIR = path.join(CONXA_DATA_DIR, "cache", "sessions");
+// Used only by _rejectReasonForProtectedUrl (an interactive-login *capture* sanity check — did the
+// window get closed on an obvious login/auth page instead of a real app page?), never by sign-in
+// DETECTION — that's the signed-out baseline compare (_signedOutBaseline / isSignedInAgainstBaseline).
 const LOGIN_URL_PATTERNS = [
   "login", "signin", "sign-in", "auth", "oauth", "sso",
   "session/new", "account/login", "accountchooser", "account-chooser",
@@ -94,46 +97,24 @@ function _loadPack(workspace_id) {
   try { return JSON.parse(fs.readFileSync(packPath, "utf8")); } catch (_) { return {}; }
 }
 
-// Has the page reached protectedUrl's own host and left any login/auth path? Scoped to the
-// target site's hostname so an OAuth leg through a different host (e.g. accounts.google.com,
-// whose URLs contain "auth"/"oauth"/"signin") is never mistaken for "still logging in".
-// Deliberately narrower than run.js's AUTH_FAILURE_URL_RE (no "auth"/"logout", anchored at
-// path start) — this answers "has login-completion happened yet", not "did we just hit a
-// login wall mid-run", so it's intentionally NOT the same pattern; don't merge them.
-const LOGIN_PATH_RE = /^\/(login|signin|sign-in|session-expired)(\/|$|\?)/i;
-function _reachedProtectedUrl(url, protectedUrl) {
-  if (!protectedUrl) return false;
-  try {
-    const u = new URL(url);
-    const p = new URL(protectedUrl.split("{}", 1)[0]);
-    if (u.hostname !== p.hostname) return false;
-    // An explicit {} means "anything under this prefix" (docs/TRD.md success_url wildcard; Python
-    // twin url_matches_pattern). Honour the path so "vercel.com/dashboard/{}" stops matching
-    // vercel.com/login. A bare-origin prefix keeps the hostname-only behaviour.
-    if (protectedUrl.includes("{}") && p.pathname !== "/" && !u.pathname.startsWith(p.pathname)) return false;
-    return !LOGIN_PATH_RE.test(u.pathname);
-  } catch (_) {
-    return false;
-  }
-}
-
 // The navigable prefix of a success_url pattern — "https://drive.google.com/{}" is a matcher, not
 // an address; goto() on it lands on /%7B%7D. Python twin: recorder/session.py::_probe_app_session_sync.
+// Still used to pre-navigate a freshly authenticated run to a sensible starting page (server.js) —
+// NOT for sign-in detection, which no longer needs success_url at all (see _signedOutBaseline).
 function _successPrefix(app) {
   return String(app.success_url || "").split("{}", 1)[0];
 }
 
-// Where to send a login tab. When an app's sign-in lives on a different host than the app itself
-// (accounts.google.com -> drive.google.com, an Okta tenant -> the app), open THE APP: the provider
-// then sets its own return-to parameter (continue= / redirect_uri= / RelayState=) back at the app,
-// so sign-in ends where _reachedProtectedUrl is watching. Opening the IdP directly ends the journey
-// on the IdP and the check can never fire (AUTH-5). Same-host apps keep login_url: their success
-// host often serves a public logged-out page (github.com), and opening there would satisfy the
-// check before anyone signs in.
+// Where to send a login tab: always the app's own login_url. (Previously this special-cased
+// cross-host sign-in — accounts.google.com fronting drive.google.com — by opening the app's
+// success URL instead, on the theory that the provider's own return-to parameter would land the
+// user somewhere a host-based check could see. That reasoning doesn't hold up: it required a
+// hardcoded list of "which hosts are third-party providers" that was necessarily incomplete and,
+// for GitHub, actively wrong — GitHub IS the app here, not a provider fronting one. Detection no
+// longer depends on where the user ends up: it re-probes login_url itself, before vs. after, via
+// the signed-out baseline compare — so opening login_url directly works uniformly for every app.)
 function _loginEntryUrl(app) {
-  const success = _successPrefix(app);
-  if (!success) return app.login_url;
-  return _hostOf(success) === _hostOf(app.login_url) ? app.login_url : success;
+  return app.login_url;
 }
 
 // ─── Multi-app group auth ─────────────────────────────────────────────────
@@ -250,24 +231,26 @@ function _mtimeOrZero(p) {
 
 // ─── Remembered landing address ────────────────────────────────────────────────────────────────
 // docs/artifacts/login-desk.html "Follow the journey": the first real stop after a sign-in (learned
-// from the customer's own login, not typed in) is remembered so later runs — and the judge's
-// snapshots — have a real protectedUrl to check even when the app has no configured success_url.
-// Same read/write shape as the validation cache above, one file, keyed the same way.
+// from the customer's own login, not typed in) is remembered purely as a NAVIGATION HINT for
+// server.js's post-login pre-navigate (a pack with no leading `navigate` step lands here first
+// instead of on the login page) — it plays no part in sign-in detection any more, that's the
+// signed-out baseline compare (_signedOutBaseline / isSignedInAgainstBaseline), which needs no
+// learned or configured address at all. Same read/write shape as the validation cache above, one
+// file, keyed the same way.
 function _landingUrlsPath() {
   return path.join(SESSIONS_DIR, "_landing_urls.json");
 }
 function _readLanding(key) {
   try { return JSON.parse(fs.readFileSync(_landingUrlsPath(), "utf8"))[key] || ""; } catch (_) { return ""; }
 }
-// Stores only the origin — matching (_reachedProtectedUrl, _snapshotLoginEntry's snapshots) is hostname
-// scoped, never path-specific, so there is nothing to gain from keeping a full path and a real risk
-// of it going stale as the app's own routes change. Refuses to learn a sign-in-service host or
-// anything still login-shaped — those are never "the app", they're a hop through it.
+// Stores only the origin — a navigation hint only needs "which site", not a specific path that
+// risks going stale as the app's own routes change. Refuses to learn anything still login-shaped
+// (loginSignals.looksLikeLoginAnswer) — that's never "the app", it's a hop through it.
 function _writeLanding(key, url) {
   if (!url || _rejectReasonForProtectedUrl(url)) return;
   try {
     const u = new URL(url);
-    if (loginSignals.isKnownIdpHost(u.hostname)) return;
+    if (loginSignals.looksLikeLoginAnswer({ url, hasPasswordBox: false })) return;
     let cache = {};
     try { cache = JSON.parse(fs.readFileSync(_landingUrlsPath(), "utf8")); } catch (_) {}
     cache[key] = `${u.origin}/`;
@@ -276,7 +259,8 @@ function _writeLanding(key, url) {
   } catch (_) {}
 }
 // success_url (explicit) beats the learned landing address (observed) beats login_url (the only
-// thing guaranteed to exist) — see docs/artifacts/login-desk.html's "What's typed in" table.
+// thing guaranteed to exist) — a navigation hint only, see the comment above. Sign-in detection
+// never calls this.
 function _protectedUrlOf(app, key) {
   return app.success_url || _readLanding(key) || app.login_url;
 }
@@ -434,8 +418,11 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       results.push({ app, stored, sessionPath, valid: true, fromCache: isRequired });
       return;
     }
-    batch.push({ key, stored, navUrl: _successPrefix(app) || app.login_url,
-      protectedUrl: _protectedUrlOf(app, key), sessionPath, label: app.name });
+    // navUrl is always login_url now — detection re-probes the sign-in address itself (see
+    // _isAuthenticated/_signedOutBaseline), so it no longer matters whether success_url is set.
+    // def: the app's learned auth definition (P0: Application Authentication Recording), if any —
+    // when set, _isAuthenticated evaluates it directly instead of the generic baseline compare.
+    batch.push({ key, stored, navUrl: app.login_url, sessionPath, label: app.name, def: app.auth_definition });
     results.push({ app, stored, sessionPath, valid: null, _batchIndex: batch.length - 1 });
   });
   // The `authenticate` tool with nothing to probe and nothing missing: report success without
@@ -556,6 +543,7 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
         sessionsDir: SESSIONS_DIR,
         logFn,
         runId: opts.runId,
+        authDefinition: r.app.auth_definition,
         ...(inSession ? {
           session,
           hosts: hostsOf(r.app),
@@ -675,15 +663,15 @@ async function _closeSessionPage(session, { page, hostTabId }) {
 }
 
 // Live-check stored sessions in throwaway tabs of the session's own context — no separate browser.
-// Each entry: { key, protectedUrl, label }. A failure on one entry marks just that entry invalid.
+// Each entry: { key, navUrl, label }. A failure on one entry marks just that entry invalid.
 async function _probeInSession(session, entries) {
   const outcomes = new Map();
   await Promise.all(entries.map(async (entry) => {
     let tab;
     try {
       tab = await _newSessionPage(session, { label: entry.label, focus: false });
-      await tab.page.goto(entry.navUrl || entry.protectedUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
-      outcomes.set(entry.key, await _isAuthenticated(tab.page, entry.protectedUrl));
+      await tab.page.goto(entry.navUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+      outcomes.set(entry.key, await _isAuthenticated(session, tab.page, entry.navUrl, entry.def));
     } catch (_) {
       outcomes.set(entry.key, false);
     } finally {
@@ -742,13 +730,128 @@ function _rejectReasonForProtectedUrl(url) {
   return "";
 }
 
-async function _isAuthenticated(page, protectedUrl) {
+// ─── Signed-out baseline ───────────────────────────────────────────────────────────────────────
+// What a login URL genuinely looks like with NO cookies at all — fetched live, from a throwaway
+// incognito context, not guessed from a hostname/redirect/IdP list. This is what replaced host
+// matching for deciding "is this session signed in": compare a probe taken WITH the session's
+// cookies against this baseline (login_signals.js::isSignedInAgainstBaseline). A login page's
+// shape rarely changes, and this runtime process stays up across many execute_skill calls, so the
+// fetch is cached per entryUrl for AUTH_VALIDATION_TTL_MS. ponytail: process-memory cache only,
+// not disk-persisted like _authValidationCachePath — a runtime restart just re-pays one fetch per
+// app; upgrade to a disk cache if cold starts prove costly.
+const _baselineCache = new Map(); // entryUrl -> { snapshot, ts }
+async function _signedOutBaseline(session, entryUrl) {
+  // Execute's shared CDP browser can't create a second isolated context (Target.createBrowserContext
+  // is unsupported — see _proveSession's identical host-owned limitation), so there is no way to
+  // fetch a truly cookie-less snapshot there. isSignedInAgainstBaseline treats a null baseline as
+  // an accepted, weaker fallback (not-login-shaped is all it can tell).
+  if (session.hostOwned) return null;
+  const hit = _baselineCache.get(entryUrl);
+  if (hit && Date.now() - hit.ts < AUTH_VALIDATION_TTL_MS) return hit.snapshot;
+  let ctx;
+  try {
+    ctx = await session.browser.newContext(STEALTH_CONTEXT_OPTIONS); // no storageState = genuinely signed out
+    const page = await ctx.newPage();
+    await page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+    const hasPasswordBox = await evalOn(page, pageScripts.passwordBoxProbe, undefined, 1200);
+    const snapshot = { url: page.url(), hasPasswordBox: hasPasswordBox === true };
+    _baselineCache.set(entryUrl, { snapshot, ts: Date.now() });
+    return snapshot;
+  } catch (_) {
+    return null;
+  } finally {
+    if (ctx) await ctx.close().catch(() => {});
+  }
+}
+
+// ── Learned auth definitions (P0: Application Authentication Recording) ────────────────────────
+// The Playwright-touching half of a login_signals.js::evaluateAuthDefinition observation — mirrors
+// conxa_compile/auth_learning.py's _navigate_and_observe_sync exactly (same three-context contrast
+// idea, see that module's docstring), reading only what evaluate() consumes: no cookie values, no
+// response bodies, no query string/fragment retained anywhere. Owns its own navigation to
+// definition.probe_url so the response listener is attached before anything loads — a caller that
+// already navigated `page` elsewhere gets overridden, which in practice is a no-op since
+// probe_url is always the app's login_url, the same address every existing call site already
+// used as entryUrl.
+async function _gatherDefinitionObservation(page, probeUrl) {
+  const responses = [];
+  const onResponse = (resp) => {
+    try {
+      if (responses.length >= 30) return;
+      const rt = resp.request().resourceType();
+      if (rt !== "xhr" && rt !== "fetch") return;
+      const u = new URL(resp.url());
+      responses.push({ method: resp.request().method(), path: u.pathname || "/", status: resp.status() });
+    } catch (_) {}
+  };
+  page.on("response", onResponse);
+  try {
+    await page.goto(probeUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1500).catch(() => {}); // let SPA XHRs fired on load settle
+  } finally {
+    try { page.off("response", onResponse); } catch (_) {}
+  }
+
+  let passwordBox = false;
+  try { passwordBox = (await evalOn(page, pageScripts.passwordBoxProbe, undefined, 1200)) === true; } catch (_) {}
+  let otpLike = false;
+  try {
+    const pause = await evalOn(page, pageScripts.pauseSignProbe, undefined, 1200);
+    if (pause !== EVAL_TIMED_OUT) otpLike = loginSignals.looksPaused(pause);
+  } catch (_) {}
+  let markers = [];
+  try {
+    const m = await evalOn(page, pageScripts.authDefinitionMarkersProbe, undefined, 1200);
+    if (m !== EVAL_TIMED_OUT && Array.isArray(m)) markers = m;
+  } catch (_) {}
+  let cookieNames = [];
+  try { cookieNames = (await page.context().cookies()).map((c) => c.name); } catch (_) {}
+
+  return {
+    final_url: page.url(),
+    password_box: passwordBox,
+    otp_like: otpLike,
+    markers,
+    responses,
+    cookie_names: cookieNames,
+  };
+}
+
+async function _evaluateAgainstDefinition(page, definition) {
+  const observation = await _gatherDefinitionObservation(page, definition.probe_url || definition.probeUrl);
+  return loginSignals.evaluateAuthDefinition(definition, observation);
+}
+
+// The definition-aware judge: same throwaway-tab-of-the-shared-context shape as
+// _snapshotLoginEntry, but returns a full evaluateAuthDefinition verdict instead of a raw
+// snapshot — _waitForSessionLogin's ladder branch maps "yes"/"no"/"unsure" itself.
+async function _probeAuthDefinitionVerdict(session, definition) {
+  let tab;
+  try {
+    tab = await _newSessionPage(session, { label: "verify", focus: false });
+    return await _evaluateAgainstDefinition(tab.page, definition);
+  } catch (_) {
+    return { verdict: "unsure", classes: [] };
+  } finally {
+    if (tab) await _closeSessionPage(session, tab);
+  }
+}
+
+async function _isAuthenticated(session, page, entryUrl, definition) {
+  if (definition) {
+    try { return (await _evaluateAgainstDefinition(page, definition)).verdict === "yes"; }
+    catch (_) { return false; }
+  }
   const deadline = Date.now() + 3000;
+  let current = null;
   while (Date.now() < deadline) {
-    if (_reachedProtectedUrl(page.url(), protectedUrl)) return true;
+    let hasPasswordBox = false;
+    try { hasPasswordBox = (await evalOn(page, pageScripts.passwordBoxProbe, undefined, 1200)) === true; } catch (_) {}
+    current = { url: page.url(), hasPasswordBox };
+    if (!loginSignals.looksLikeLoginAnswer(current)) break;
     await new Promise(r => setTimeout(r, 200));
   }
-  return false;
+  return loginSignals.isSignedInAgainstBaseline(await _signedOutBaseline(session, entryUrl), current);
 }
 
 // ── Multi-signal login-completion detection ─────────────────────────────────────────────────
@@ -779,39 +882,57 @@ async function _snapshotLoginEntry(session, entryUrl) {
   }
 }
 
-// One tick's lookout read across every currently-live candidate page. Mutates `state` in place
-// (hostsSeen for the journey lookout, firedAt for the backup rule, sawPasswordBox so "gone" can
-// only fire after a box was actually seen) since this runs inside a setInterval tick, where
-// threading a return value back out is more awkward than the mutation it would produce anyway.
-// Returns { paused } — the one signal every caller needs synchronously, right now, to gate saving.
-// `ownPages` are pages we KNOW belong to this one login (the login tab and pages it opened —
-// `mine` in both callers below); `broadPages` is candidates()'s wider set, which for a launched
-// (non-host-owned) session is EVERY page of the shared context — deliberately wide, so a sign-in
-// finished in a tab the user opened themselves still counts. That width is only safe for the
-// precise, hostname+path-scoped protectedUrl check: a sibling app's own login sharing the same
-// launched context (the "cold start, N apps" case) will legitimately navigate to ITS OWN app page
-// mid-poll, and none of the other signals here are hostname-scoped enough to tell that apart from
-// this app's own journey — so password-box, pause-sign and the generic journey fallback all read
-// ONLY `ownPages`, never `broadPages`.
-async function _sampleLookouts(state, { ownPages, broadPages }, { loginHost, protectedUrl }, nowMs) {
+// The judge's actual verdict: judgeFromSnapshots' relative before/after compare, falling back to
+// the ABSOLUTE signed-out baseline compare (_signedOutBaseline / isSignedInAgainstBaseline) when
+// before/after read the same address — the case a fast sign-in (no visible URL change on the login
+// entry itself between the pre-window snapshot and this ask) leaves genuinely inconclusive by the
+// relative compare alone. The baseline fallback only ever resolves "yes", never "no": a wrong or
+// stale cached baseline must not actively BLOCK the backup-agreement rule (ladderVerdict's
+// judge==="no" branch waits outright), it should just leave the ladder to decide some other way.
+async function _judgeVerdict(session, entryUrl, beforeSnapshot, after) {
+  const relative = loginSignals.judgeFromSnapshots(beforeSnapshot, after);
+  if (relative !== null) return relative;
+  if (!after) return null;
+  const baseline = await _signedOutBaseline(session, entryUrl);
+  return loginSignals.isSignedInAgainstBaseline(baseline, after) ? "yes" : null;
+}
+
+// One tick's lookout read across every currently-live candidate page owned by this login. Mutates
+// `state` in place (firedAt for the backup rule, sawPasswordBox so "gone" can only fire after a
+// box was actually seen, ticketBaseline for the newTickets lookout) since this runs inside a
+// setInterval tick, where threading a return value back out is more awkward than the mutation it
+// would produce anyway. Returns { paused } — the one signal every caller needs synchronously,
+// right now, to gate saving.
+// `ownPages` are pages we KNOW belong to this one login (the login tab and pages it opened — see
+// both callers below); password-box, pause-sign and the ticket signature all read ONLY these,
+// never a sibling app's own tabs sharing the same launched context (the "cold start, N apps" case).
+async function _sampleLookouts(state, { ownPages, context }, nowMs) {
   let anyPasswordBox = false;
   let anyPaused = false;
+  let anyLanded = false;
   for (const p of ownPages) {
-    let url = "";
-    try { url = p.url(); } catch (_) { continue; }
-    if (url && !_isBlankUrl(url)) {
-      const host = _hostOf(url);
-      if (host && state.hostsSeen[state.hostsSeen.length - 1] !== host) state.hostsSeen.push(host);
-    }
+    let hasPw = false;
     try {
-      const hasPw = await evalOn(p, pageScripts.passwordBoxProbe, undefined, 1200);
-      if (hasPw === true) anyPasswordBox = true;
+      const probe = await evalOn(p, pageScripts.passwordBoxProbe, undefined, 1200);
+      hasPw = probe === true;
+      if (hasPw) anyPasswordBox = true;
     } catch (_) {}
     try {
       const pauseProbe = await evalOn(p, pageScripts.pauseSignProbe, undefined, 1200);
       if (pauseProbe !== EVAL_TIMED_OUT && loginSignals.looksPaused(pauseProbe)) anyPaused = true;
     } catch (_) {}
+    // Landed: this page's OWN current state doesn't look like a login answer any more — an
+    // instant, LEVEL check (unlike passwordGone/newTickets below, which need to have observed a
+    // PRIOR state to detect a change), so a fast multi-step flow (password -> OTP -> app) that
+    // races past the poll interval before any earlier state gets sampled still gets caught the
+    // first tick that lands on the finished page. This is the generic, host-list-free replacement
+    // for the old "journey" lookout's per-tick absolute check.
+    try {
+      if (!loginSignals.looksLikeLoginAnswer({ url: p.url(), hasPasswordBox: hasPw })) anyLanded = true;
+    } catch (_) {}
   }
+  if (anyLanded && state.firedAt.landed === undefined) state.firedAt.landed = nowMs;
+
   // "Password box gone" only ever fires once a box was actually observed first — a login whose
   // FIRST screen has no password field (email-first, then password on the next screen) must not
   // fire this the instant it loads just because there is no box yet.
@@ -820,34 +941,20 @@ async function _sampleLookouts(state, { ownPages, broadPages }, { loginHost, pro
   }
   if (anyPasswordBox) state.sawPasswordBox = true;
 
-  // Journey. Two ways to fire, tried in order:
-  //  1. The precise check: some page is at protectedUrl's own host, off a login-shaped path
-  //     (_reachedProtectedUrl already does exactly this — the SAME check _waitForSessionLogin used
-  //     as its sole signal before this file existed). This is the common case, including a same-host
-  //     app whose login and dashboard share a hostname, which classifyJourney's host-difference
-  //     logic below cannot see at all (it would find nothing "new" to credit). Broad on purpose —
-  //     this is the one check hostname+path-scoped enough to stay safe across a shared context.
-  //  2. The generic fallback: a new, real (non-login, non-IdP) HOST has appeared, on OWN pages only
-  //     (see the function comment above), and the page currently there doesn't itself look like a
-  //     login/auth page by the generic word-pattern check — covers a cross-host app reached via an
-  //     IdP hop with no success_url configured to name it, and an SSO hop landing on the app's own
-  //     separate re-login prompt.
-  if (state.firedAt.journey === undefined) {
-    const protectedHit = protectedUrl && broadPages.some((p) => {
-      try { return _reachedProtectedUrl(p.url(), protectedUrl); } catch (_) { return false; }
-    });
-    if (protectedHit) {
-      state.firedAt.journey = nowMs;
-    } else {
-      const journeyHost = loginSignals.classifyJourney(state.hostsSeen, loginHost);
-      if (journeyHost) {
-        let urlOnJourneyHost = "";
-        for (let i = ownPages.length - 1; i >= 0; i--) {
-          try { if (_hostOf(ownPages[i].url()) === journeyHost) { urlOnJourneyHost = ownPages[i].url(); break; } } catch (_) {}
-        }
-        if (!urlOnJourneyHost || !_rejectReasonForProtectedUrl(urlOnJourneyHost)) state.firedAt.journey = nowMs;
-      }
-    }
+  // New tickets: the context's cookie jar / storage keys have changed shape since BEFORE the login
+  // window opened — a fully generic backup signal (no host/URL reasoning at all), replacing the
+  // old "journey" lookout's hardcoded identity-provider host list. state.ticketBaseline is seeded
+  // by the caller (beginInteractiveAuth) from a snapshot taken before the window opens, same
+  // timing as beforeSnapshot for the judge — NOT lazily from this function's first sample, which
+  // would race a sign-in finished (in another tab) faster than one poll interval and silently
+  // absorb it as "already there". A session with no pre-window snapshot available (the
+  // standalone-browser fallback, no context yet) falls back to establishing it from the first
+  // sample instead.
+  const ticketsNow = await _ticketSignatureNow(context, ownPages[ownPages.length - 1]);
+  if (!state.ticketBaseline) {
+    state.ticketBaseline = ticketsNow;
+  } else if (state.firedAt.newTickets === undefined && loginSignals.ticketsChanged(state.ticketBaseline, ticketsNow)) {
+    state.firedAt.newTickets = nowMs;
   }
 
   return { paused: anyPaused };
@@ -904,16 +1011,18 @@ async function _waitForTicketsCalm(context, getRepresentativePage, {
 // accepted gap for host-owned logins — see docs/TRD.md §4.5's CDP-context limitation.
 // ponytail: reload-in-shared-context for host-owned, not a true isolated context — upgrade if
 // Electron ever exposes Target.createBrowserContext.
-async function _proveSession(navTarget, protectedUrl, { hostOwned, context, hostRunId, browser, state }) {
-  if (!navTarget) return true;
-  const checkAgainst = protectedUrl || navTarget;
+async function _proveSession(entryUrl, { hostOwned, context, hostRunId, browser, state, definition }) {
+  if (!entryUrl) return true;
   if (hostOwned) {
     let tab;
     try {
       const opened = await hostBrowser.openTab({ context, runId: hostRunId, label: "verify", focus: false });
       tab = opened;
-      await tab.page.goto(navTarget, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
-      return await _isAuthenticated(tab.page, checkAgainst);
+      await tab.page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+      // hostOwned:true short-circuits _signedOutBaseline to null (no isolated context available —
+      // see its own comment); _isAuthenticated falls back to its weaker, accepted best-effort check.
+      // A definition, when present, sidesteps that gap entirely — it needs no isolated baseline.
+      return await _isAuthenticated({ hostOwned: true }, tab.page, entryUrl, definition);
     } catch (_) {
       return false;
     } finally {
@@ -927,8 +1036,8 @@ async function _proveSession(navTarget, protectedUrl, { hostOwned, context, host
   try {
     freshCtx = await browser.newContext({ storageState: state });
     const page = await freshCtx.newPage();
-    await page.goto(navTarget, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
-    return await _isAuthenticated(page, checkAgainst);
+    await page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+    return await _isAuthenticated({ hostOwned: false, browser }, page, entryUrl, definition);
   } catch (_) {
     return false;
   } finally {
@@ -1043,9 +1152,8 @@ const LOGIN_WAIT_MS = 10 * 60 * 1000;
 // captured session. Runs in the background — see beginInteractiveAuth.
 async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
   if (opened.session) return _waitForSessionLogin(workspace_id, opened, opts);
-  const { protectedUrl, waitMs = LOGIN_WAIT_MS, entryUrl = "", logFn, beforeSnapshot = null } = opts;
+  const { waitMs = LOGIN_WAIT_MS, entryUrl = "", logFn, beforeSnapshot = null, ticketBaseline = null } = opts;
   const { loginBrowser, loginCtx, loginPage, hostOwned, hostRunId, hostTabId } = opened;
-  const loginHost = _hostOf(entryUrl) || _hostOf(protectedUrl);
   let lastUrl = "";
   let lastState = null;
   let proveOk = true;
@@ -1063,7 +1171,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
     if (hostOwned && hostRunId) await hostBrowser.release({ runId: hostRunId, tabId: hostTabId });
   };
 
-  const lookoutState = { hostsSeen: [], firedAt: {}, sawPasswordBox: false };
+  const lookoutState = { firedAt: {}, sawPasswordBox: false, ticketBaseline };
   let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
   let judging = false;
   let judgedAtFiredCount = 0; // only re-ask the judge once a NEW lookout has fired, never on every tick
@@ -1096,24 +1204,21 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
         const pages = _liveTabPages();
         const nowMs = Date.now();
         // This login's context is dedicated to it alone (never shared with a sibling app's login —
-        // see _waitForSessionLogin's comment on why that distinction matters), so ownPages/broadPages
-        // are the same set here.
-        const { paused } = await _sampleLookouts(lookoutState, { ownPages: pages, broadPages: pages }, { loginHost, protectedUrl }, nowMs);
+        // see _waitForSessionLogin's comment on why that distinction matters).
+        const { paused } = await _sampleLookouts(lookoutState, { ownPages: pages, context: loginCtx }, nowMs);
 
         // Judge: only once a NEW lookout has fired since the last ask, never while a previous probe
         // is in flight, and never while paused — gentle with the website, never asked on a timer of
         // its own. Compares against the "before" snapshot (judgeFromSnapshots); if that snapshot
-        // itself never resolved (or there wasn't one — see beginInteractiveAuth), fall back to the
-        // plain protectedUrl-reached check this replaces.
+        // itself never resolved (or there wasn't one — see beginInteractiveAuth), the judge stays
+        // null and the backup-agreement rule (ladderVerdict below) decides instead.
         const firedCount = Object.keys(lookoutState.firedAt).length;
         if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
           judging = true;
           judgedAtFiredCount = firedCount;
-          _snapshotLoginEntry({ hostOwned, context: loginCtx, hostRunId }, entryUrl || protectedUrl)
-            .then((after) => {
-              judgeVerdict = loginSignals.judgeFromSnapshots(beforeSnapshot, after)
-                ?? (after ? (_reachedProtectedUrl(after.url, protectedUrl) ? "yes" : "no") : null);
-            })
+          _snapshotLoginEntry({ hostOwned, context: loginCtx, hostRunId }, entryUrl)
+            .then((after) => _judgeVerdict({ hostOwned, browser: loginBrowser }, entryUrl, beforeSnapshot, after))
+            .then((v) => { judgeVerdict = v; })
             .catch(() => {})
             .finally(() => { judging = false; });
         }
@@ -1127,15 +1232,14 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
 
       const landedPage = () => {
         const live = _liveTabPages();
-        return live.find((p) => { try { return protectedUrl && _reachedProtectedUrl(p.url(), protectedUrl); } catch (_) { return false; } })
-          || live[live.length - 1] || loginPage;
+        return live[live.length - 1] || loginPage;
       };
       await _waitForTicketsCalm(loginCtx, landedPage);
       const landed = landedPage();
       try { if (landed) lastUrl = landed.url(); } catch (_) {}
       try { lastState = await loginCtx.storageState(); } catch (_) { return; }
       if (lastState) {
-        proveOk = await _proveSession(entryUrl || protectedUrl, protectedUrl,
+        proveOk = await _proveSession(entryUrl,
           { hostOwned, context: loginCtx, hostRunId, browser: loginBrowser, state: lastState });
         if (logFn && !proveOk) logFn("warn", "login_prove_failed", { key: workspace_id });
         accountName = await _probeAccountName(landed);
@@ -1230,16 +1334,18 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
 // _waitForInteractiveAuth for a sign-in TAB inside a session (see _openInteractiveAuthWindow).
 // Detection is a poll over EVERY page of the shared context rather than events on one window: it
 // is what makes "finished in a different tab", an OAuth popup, a multi-hop SSO redirect and a login
-// page that closes itself all look the same — some page of this context is on the app, off its
-// login path (_reachedProtectedUrl, host-scoped, so an OAuth leg through another host never counts).
+// page that closes itself all look the same — the judge re-probes entryUrl itself (in a throwaway
+// tab, see _snapshotLoginEntry) rather than looking for a page that "arrived" somewhere specific.
 // Only the login tab and pages it opened (page.opener() chain) are closed afterwards; another
 // app's concurrent login tab, and tabs the user opened themselves, are never touched.
 // Resolves { state, protectedUrl } — `state` is already sliced to this app (refreshAppState).
 async function _waitForSessionLogin(key, opened, opts = {}) {
   const { session, loginPage, hostTabId } = opened;
-  const { protectedUrl, waitMs = LOGIN_WAIT_MS, storedState, hosts = [], claimedElsewhere = null, entryUrl = "", logFn, beforeSnapshot = null } = opts;
+  const {
+    waitMs = LOGIN_WAIT_MS, storedState, hosts = [], claimedElsewhere = null, entryUrl = "", logFn,
+    beforeSnapshot = null, ticketBaseline = null, authDefinition = null,
+  } = opts;
   const ctx = session.context;
-  const loginHost = _hostOf(entryUrl) || _hostOf(protectedUrl);
 
   const mine = new Set([loginPage]);
   const adopt = async (page) => {
@@ -1248,19 +1354,16 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
   ctx.on("page", adopt);
 
   const isClosed = (p) => { try { return p.isClosed(); } catch (_) { return true; } };
-  // A launched session's context is private to this run, so any page in it counts (that is what
-  // makes a login finished in another tab work). A host-owned context is Execute's single shared
-  // one — every run's views live in it — so only pages this login created may count, or another
-  // run's already-signed-in page would be mistaken for this sign-in and its session captured (EXEC-45).
-  const candidates = () => (session.hostOwned ? [...mine] : ctx.pages());
-  const livePages = () => candidates().filter((p) => !isClosed(p));
   // Only the login tab and pages it opened — see _sampleLookouts's own comment on why the
-  // password-box/pause-sign/generic-journey signals must never read the shared context's OTHER
-  // pages: a sibling app's login sharing this same launched context (multiple apps missing at
-  // once) would otherwise get credited for this app's own arrival.
+  // password-box/pause-sign/ticket signals must never read the shared context's OTHER pages: a
+  // sibling app's login sharing this same launched context (multiple apps missing at once) would
+  // otherwise get credited for this app's own arrival. A sign-in finished in some OTHER tab (one
+  // the user opened themselves, not one of `mine`) is still caught — not by scanning for it here,
+  // but because the judge re-probes entryUrl itself in its own throwaway tab of the shared context
+  // (_snapshotLoginEntry), which doesn't care which tab the user actually used.
   const myLivePages = () => [...mine].filter((p) => !isClosed(p));
 
-  const lookoutState = { hostsSeen: [], firedAt: {}, sawPasswordBox: false };
+  const lookoutState = { firedAt: {}, sawPasswordBox: false, ticketBaseline };
   let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
   let judging = false;
   let judgedAtFiredCount = 0; // only re-ask the judge once a NEW lookout has fired, never on every tick
@@ -1294,26 +1397,33 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
           return finish("reached");
         }
 
-        const pages = livePages();
         const nowMs = Date.now();
-        const { paused } = await _sampleLookouts(lookoutState,
-          { ownPages: myLivePages(), broadPages: pages }, { loginHost, protectedUrl }, nowMs);
+        const { paused } = await _sampleLookouts(lookoutState, { ownPages: myLivePages(), context: ctx }, nowMs);
 
         // Judge: only once a NEW lookout has fired since the last ask, never while a previous probe
         // is in flight, and never while paused — gentle with the website, never asked on a timer of
-        // its own. Falls back to the plain protectedUrl-reached check when there was no "before"
-        // snapshot to compare against (see beginInteractiveAuth).
+        // its own. With a learned auth definition (authDefinition), the probe REPLACES both the
+        // baseline judge and the backup-agreement rule below (P0: Application Authentication
+        // Recording) — there is no 2-passive-signal save in that case, only a confident "yes" from
+        // evaluateAuthDefinition saves; "no" or "unsure" both mean keep waiting, all the way to
+        // timeout if it never resolves. Without one, behavior is unchanged from before this feature.
         const firedCount = Object.keys(lookoutState.firedAt).length;
         if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
           judging = true;
           judgedAtFiredCount = firedCount;
-          _snapshotLoginEntry(session, entryUrl || protectedUrl)
-            .then((after) => {
-              judgeVerdict = loginSignals.judgeFromSnapshots(beforeSnapshot, after)
-                ?? (after ? (_reachedProtectedUrl(after.url, protectedUrl) ? "yes" : "no") : null);
-            })
+          (authDefinition
+            ? _probeAuthDefinitionVerdict(session, authDefinition).then((r) => (r.verdict === "no" ? "no" : r.verdict === "yes" ? "yes" : null))
+            : _snapshotLoginEntry(session, entryUrl).then((after) => _judgeVerdict(session, entryUrl, beforeSnapshot, after))
+          )
+            .then((v) => { judgeVerdict = v; })
             .catch(() => {})
             .finally(() => { judging = false; });
+        }
+
+        if (authDefinition) {
+          if (paused) return; // wait, nothing counts while a pause sign (e.g. OTP) is up
+          if (judgeVerdict === "yes") { decisionReason = "auth_definition_yes"; return finish("reached"); }
+          return; // "no" or still null ("unsure"/not yet asked) — keep waiting, no backup-agreement fallback
         }
 
         const verdict = loginSignals.ladderVerdict({
@@ -1341,22 +1451,17 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
   let proveOk = true;
   let accountName = "";
   if (outcome === "reached") {
-    // Prefer the page that actually satisfies protectedUrl (this app's own landed page) as the
-    // timekeeper's representative page — never just "whatever's last in the broad set", which in
-    // a shared multi-app context could be a sibling app's tab (see _sampleLookouts's ownPages
-    // comment for why that distinction matters throughout this function).
-    const landedPage = () => {
-      const pages = livePages();
-      return pages.find((p) => { try { return protectedUrl && _reachedProtectedUrl(p.url(), protectedUrl); } catch (_) { return false; } })
-        || myLivePages()[myLivePages().length - 1] || loginPage;
-    };
+    // The timekeeper's representative page: the most recently active page owned by this login
+    // (never a sibling app's tab — see _sampleLookouts's ownPages comment for why that distinction
+    // matters throughout this function). The judge, not page selection, is what decided sign-in.
+    const landedPage = () => myLivePages()[myLivePages().length - 1] || loginPage;
     await _waitForTicketsCalm(ctx, landedPage);
     const page = landedPage();
     landedUrl = page ? page.url() : "";
     try { state = await ctx.storageState(); } catch (_) {}
     if (state) {
-      proveOk = await _proveSession(entryUrl || protectedUrl, protectedUrl,
-        { hostOwned: session.hostOwned, context: ctx, hostRunId: session.hostRunId, browser: session.browser, state });
+      proveOk = await _proveSession(entryUrl,
+        { hostOwned: session.hostOwned, context: ctx, hostRunId: session.hostRunId, browser: session.browser, state, definition: authDefinition });
       if (logFn && !proveOk) logFn("warn", "login_prove_failed", { key });
       accountName = await _probeAccountName(page);
     }
@@ -1395,7 +1500,7 @@ const _pendingAuth = new Map();
 // with no session captured (user closed it before signing in) reopens once, then gives
 // up — the next call to this function starts a fresh attempt.
 async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
-  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId, label, session, hosts, claimedElsewhere, onSettled } = opts;
+  const { storedState, protectedUrl, authManager, sessionsDir, logFn, runId, label, session, hosts, claimedElsewhere, onSettled, authDefinition } = opts;
 
   const existing = _pendingAuth.get(workspace_id);
   if (existing && existing.status === "pending") {
@@ -1408,10 +1513,16 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
   // in a throwaway tab BEFORE the visible login window opens — so it can never race the person's
   // own sign-in and misread an already-fresh session as "before". Only possible for the in-session
   // case: the launched-browser fallback (an unattended run with no session yet) has no context to
-  // borrow a throwaway tab from at this point, so it skips the snapshot and the judge below falls
-  // back to its plain protectedUrl-reached check. ponytail: no before-snapshot for that fallback —
-  // add one (its own short-lived browser) if that path turns out to need the judge's precision too.
+  // borrow a throwaway tab from at this point, so it skips the snapshot and the judge stays null,
+  // leaving the backup-agreement rule (password-box-gone + new-tickets) to decide alone.
+  // ponytail: no before-snapshot for that fallback — add one (its own short-lived browser) if that
+  // path turns out to need the judge's precision too.
   const beforeSnapshot = session ? await _snapshotLoginEntry(session, targetUrl).catch(() => null) : null;
+  // Same reasoning for the newTickets lookout's own baseline: captured HERE, before the window
+  // opens, not lazily on the wait loop's first poll tick. A sign-in finished in some OTHER tab
+  // (elsewhere in the shared context) can complete faster than one poll interval — the ticket
+  // baseline must predate that possibility or it silently absorbs the change as "already there".
+  const ticketBaseline = session ? await _ticketSignatureNow(session.context, null).catch(() => null) : null;
 
   let opened;
   try {
@@ -1436,7 +1547,7 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { state, protectedUrl: landedUrl, proveOk, accountName } = await _waitForInteractiveAuth(workspace_id, currentlyOpen,
-          { protectedUrl, storedState, hosts, claimedElsewhere, entryUrl: targetUrl, logFn, beforeSnapshot });
+          { protectedUrl, storedState, hosts, claimedElsewhere, entryUrl: targetUrl, logFn, beforeSnapshot, ticketBaseline, authDefinition });
         await _persistSession(workspace_id, state, authManager, sessionsDir, logFn);
         // docs/artifacts/login-desk.html "Follow the journey": remember where THIS sign-in actually
         // landed, so a later run (or the judge's own snapshot) has a real address to check even
@@ -1579,8 +1690,13 @@ async function getAuthContext(workspace_id, authManager, opts = {}) {
 // primary hint matches nothing — e.g. an OAuth hop landed on a third-party host — before
 // giving up to the legacy group.apps[0] guess. Falls back to the non-group single-session
 // behavior when there's no group at all.
+// Strips a leading "www." — used only for ATTRIBUTION (which configured app does this page
+// belong to, for error messages and cookie-ownership splitting: captureReAuth, refreshAppState's
+// `hosts`/`claimedElsewhere`), never for sign-in DETECTION any more (see _signedOutBaseline /
+// isSignedInAgainstBaseline). A redirect between a bare and www.-prefixed hostname shouldn't make
+// an app unrecognizable for either purpose.
 function _hostOf(url) {
-  try { return new URL(url).hostname; } catch (_) { return ""; }
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
 }
 
 async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, logFn, opts = {}) {
@@ -1618,6 +1734,13 @@ async function captureReAuth(workspace_id, loginUrl, authManager, sessionsDir, l
     return {
       authPending: false,
       loginUrl: app.login_url,
+      // hasAuthDefinition: whether server.js should AUTO-retry this run (see its session_expired
+      // handler) instead of only telling the person to call execute_skill again by hand — see
+      // server.js's own comment on why that's safe now, but only for an app whose sign-in is
+      // detected via a learned definition (P0: Application Authentication Recording), never the
+      // generic ladder: the whole reason mid-run auto-login was deliberately left out before was
+      // that generic detection wasn't confident enough to trust unattended.
+      hasAuthDefinition: Boolean(app.auth_definition),
       message: `${app.name}'s saved sign-in expired mid-run. Call execute_skill again — ` +
         `you'll be prompted to sign back in to ${app.name}, then can resume from where this left off.`,
     };
@@ -1673,10 +1796,11 @@ module.exports = {
   mergeStorageStates,
   refreshAppState,
   _rejectReasonForProtectedUrl,
-  _reachedProtectedUrl,
   _loginEntryUrl,
   _successPrefix,
   _probeInSession,
+  _isAuthenticated,
+  _signedOutBaseline,
   _resolveGroup,
   _loadGroupAppSession,
   _loadSessionForKey,

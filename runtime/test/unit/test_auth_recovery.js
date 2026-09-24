@@ -4,7 +4,6 @@
 
 const assert = require("assert");
 const { isAuthFailure } = require("../../app/run");
-const { _reachedProtectedUrl } = require("../../app/browser");
 
 let passed = 0;
 let failed = 0;
@@ -109,36 +108,10 @@ function makePage(url, title = "My App") {
     assert.equal(await isAuthFailure(makePage("https://app.example.com/settings/login-history")), false);
   });
 
-  console.log("\n_reachedProtectedUrl (interactive-login capture gate):");
-
-  await test("lands on protectedUrl's host, off any login path → reached", async () => {
-    assert.equal(_reachedProtectedUrl("https://dashboard.render.com/services", "https://dashboard.render.com/"), true);
-  });
-
-  await test("still on protectedUrl's own /login path → not reached", async () => {
-    assert.equal(_reachedProtectedUrl("https://dashboard.render.com/login", "https://dashboard.render.com/"), false);
-  });
-
-  await test("mid-flow on Google OAuth host → not reached (but not a rejection either — different host)", async () => {
-    // This is the bug this fix addresses: an OAuth leg's URL contains "auth"/"oauth"/"signin",
-    // which the old whole-URL substring check flagged as "still on the login page" even after
-    // the user finished signing in and Google redirected back. Hostname-scoping fixes that by
-    // simply not treating an unrelated host as a verdict either way — capture waits for the
-    // redirect back to protectedUrl's host instead.
-    assert.equal(_reachedProtectedUrl("https://accounts.google.com/o/oauth2/v2/auth?client_id=x", "https://dashboard.render.com/"), false);
-  });
-
-  await test("redirected back to protectedUrl's host after OAuth → reached", async () => {
-    assert.equal(_reachedProtectedUrl("https://dashboard.render.com/?authuser=0", "https://dashboard.render.com/"), true);
-  });
-
-  await test("different host entirely → not reached", async () => {
-    assert.equal(_reachedProtectedUrl("https://example.com/", "https://dashboard.render.com/"), false);
-  });
-
-  await test("no protectedUrl known yet → never reached", async () => {
-    assert.equal(_reachedProtectedUrl("https://dashboard.render.com/", ""), false);
-  });
+  // Interactive-login capture detection (_reachedProtectedUrl, host/redirect matching) was
+  // replaced by a signed-out baseline compare — see login_signals.js::isSignedInAgainstBaseline
+  // and its coverage in test_login_signals.js, including the GitHub www./redirect case that
+  // exposed the old hostname-equality bug.
 
   console.log("\nsession encryption fallback logging (SG-11):");
   const authManager = require("../../app/auth_manager");

@@ -1,0 +1,174 @@
+[
+  {
+    "name": "all three classes agree -> yes",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [{ "role": "button", "name": "Sign in" }], "password_box": true },
+      "signed_in": { "final_path": "/home", "endpoints": [{ "method": "GET", "path": "/api/me", "ok": "2xx", "denied": "401" }] },
+      "session_keys": ["_app_session"]
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/home",
+      "password_box": false,
+      "otp_like": false,
+      "markers": [],
+      "responses": [{ "method": "GET", "path": "/api/me", "status": 200 }],
+      "cookie_names": ["_app_session", "csrf"]
+    },
+    "expect": { "verdict": "yes" }
+  },
+  {
+    "name": "signed-out page evaluated against its own definition -> no (password box veto)",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [{ "role": "button", "name": "Sign in" }], "password_box": true },
+      "signed_in": { "final_path": "/home", "endpoints": [{ "method": "GET", "path": "/api/me", "ok": "2xx", "denied": "401" }] },
+      "session_keys": ["_app_session"]
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/login",
+      "password_box": true,
+      "otp_like": false,
+      "markers": [{ "role": "button", "name": "Sign in" }],
+      "responses": [{ "method": "GET", "path": "/api/me", "status": 401 }],
+      "cookie_names": []
+    },
+    "expect": { "verdict": "no" }
+  },
+  {
+    "name": "only the session cookie shows up -> unsure (session alone never counts)",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [], "password_box": false },
+      "signed_in": { "final_path": "", "endpoints": [] },
+      "session_keys": ["_app_session"]
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/somewhere",
+      "password_box": false,
+      "otp_like": false,
+      "markers": [],
+      "responses": [],
+      "cookie_names": ["_app_session"]
+    },
+    "expect": { "verdict": "unsure" }
+  },
+  {
+    "name": "OTP screen showing -> unsure regardless of everything else",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [], "password_box": true },
+      "signed_in": { "final_path": "/home", "endpoints": [{ "method": "GET", "path": "/api/me", "ok": "2xx", "denied": "401" }] },
+      "session_keys": ["_app_session"]
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/home",
+      "password_box": false,
+      "otp_like": true,
+      "markers": [],
+      "responses": [{ "method": "GET", "path": "/api/me", "status": 200 }],
+      "cookie_names": ["_app_session"]
+    },
+    "expect": { "verdict": "unsure" }
+  },
+  {
+    "name": "a denied network response vetoes even with a matching url",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [], "password_box": false },
+      "signed_in": { "final_path": "/home", "endpoints": [{ "method": "GET", "path": "/api/me", "ok": "2xx", "denied": "401" }] },
+      "session_keys": []
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/home",
+      "password_box": false,
+      "otp_like": false,
+      "markers": [],
+      "responses": [{ "method": "GET", "path": "/api/me", "status": 401 }],
+      "cookie_names": []
+    },
+    "expect": { "verdict": "no" }
+  },
+  {
+    "name": "numeric path segment in a network endpoint is templated before matching",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [], "password_box": false },
+      "signed_in": { "final_path": "", "endpoints": [{ "method": "GET", "path": "/api/users/:id/me", "ok": "2xx", "denied": "401" }] },
+      "session_keys": ["_app_session"]
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/dashboard",
+      "password_box": false,
+      "otp_like": false,
+      "markers": [],
+      "responses": [{ "method": "GET", "path": "/api/users/48213/me", "status": 200 }],
+      "cookie_names": ["_app_session"]
+    },
+    "expect": { "verdict": "yes" }
+  },
+  {
+    "name": "only one class (url) fires -> unsure, needs a second class",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [], "password_box": false },
+      "signed_in": { "final_path": "", "endpoints": [] },
+      "session_keys": []
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/dashboard",
+      "password_box": false,
+      "otp_like": false,
+      "markers": [],
+      "responses": [],
+      "cookie_names": []
+    },
+    "expect": { "verdict": "unsure" }
+  },
+  {
+    "name": "on the known signed-out path -> no, even with a session cookie present",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://app.acme.com/login",
+      "signed_out": { "final_path": "/login", "markers": [], "password_box": false },
+      "signed_in": { "final_path": "/home", "endpoints": [] },
+      "session_keys": ["_app_session"]
+    },
+    "observation": {
+      "final_url": "https://app.acme.com/login",
+      "password_box": false,
+      "otp_like": false,
+      "markers": [],
+      "responses": [],
+      "cookie_names": ["_app_session"]
+    },
+    "expect": { "verdict": "no" }
+  },
+  {
+    "name": "cross-host SSO: final url on the app host, not the identity provider, with a dom marker match",
+    "definition": {
+      "version": 1,
+      "probe_url": "https://drive.example.com/",
+      "signed_out": { "final_path": "/login", "markers": [{ "role": "button", "name": "Sign in with Google" }], "password_box": false },
+      "signed_in": { "final_path": "/home", "endpoints": [] },
+      "session_keys": ["session_token"],
+      "journey_hosts": ["drive.example.com", "accounts.example-idp.com", "drive.example.com"]
+    },
+    "observation": {
+      "final_url": "https://drive.example.com/home",
+      "password_box": false,
+      "otp_like": false,
+      "markers": [],
+      "responses": [],
+      "cookie_names": ["session_token"]
+    },
+    "expect": { "verdict": "yes" }
+  }
+]
