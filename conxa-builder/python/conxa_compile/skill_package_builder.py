@@ -221,7 +221,19 @@ def build_skill_package(
             "id": group.id,
             "name": group.name,
             "apps": [
-                {"id": a.id, "name": a.name, "login_url": a.login_url, "success_url": a.success_url}
+                {
+                    "id": a.id,
+                    "name": a.name,
+                    "login_url": a.login_url,
+                    "success_url": a.success_url,
+                    # Learned at Connect time (P0: Application Authentication Recording) — see
+                    # conxa_compile.auth_learning's module docstring. None for an app connected
+                    # before this feature, or whose self-test never passed: the runtime falls
+                    # back to its generic detection ladder for that app, same as before this
+                    # field existed. Never carries cookie values, response bodies, or a query
+                    # string/fragment — enforced by auth_learning.learn()/self_test(), not here.
+                    "auth_definition": getattr(a, "auth_definition", None),
+                }
                 for a in group.apps
             ],
         }

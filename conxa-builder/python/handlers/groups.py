@@ -55,15 +55,27 @@ def _has_captured_session(auth_path: Path) -> bool:
     return False
 
 
-def _detect_warning(success_url: str, reached: bool) -> str:
-    """Why this sign-in may not be detected on its own at run time, or "" if it will be. The runtime
-    watches for the same success_url the recorder does, so a login the recorder never saw reach it
-    (closed by hand) is the earliest sign of a wrong or missing success_url."""
+def _detect_warning(success_url: str, reached: bool, has_definition: bool) -> str:
+    """Why this sign-in may not be detected confidently at run time, or "" if it will be.
+
+    When a learned auth definition exists (has_definition — see conxa_compile.auth_learning),
+    detection no longer depends on success_url or reached at all: the runtime evaluates the
+    learned definition directly (runtime/app/login_signals.js::evaluateAuthDefinition), so
+    there's nothing to warn about here regardless of how success_url is configured.
+
+    Without one (a re-connect that was force-saved past a failed self-test, or a login window
+    closed by hand — see cmd_finish_group_app_auth), the runtime falls back to its generic
+    detection ladder, which itself doesn't require success_url either — but a missing success_url
+    also means Build Studio's own "Check now" probe (check_app_session_sync) has no target to
+    verify against beyond the login page itself, so it's still worth flagging.
+    """
+    if has_definition:
+        return ""
     if not success_url:
-        return "No success URL is set, so a run can't tell when sign-in has finished. Set it to the page you land on once signed in."
+        return "No success URL is set, so \"Check now\" has nothing but the login page to verify against. Set it to the page you land on once signed in."
     if not reached:
-        return (f"Sign-in was saved, but the login never reached {success_url} on its own — you closed it by hand. "
-                "A run watches for that page too, so check it is where you land after signing in.")
+        return (f"Sign-in was saved, but the login never reached {success_url} on its own — you closed it by hand, "
+                "and no sign-in signals were learned from it. \"Check now\" will fall back to a generic check.")
     return ""
 
 
@@ -103,6 +115,9 @@ def group_auth_status(group) -> dict[str, Any]:
             "verified": verified,
             "last_error": app.last_error,
             "detect_warning": app.detect_warning,
+            # Boolean only — never the definition itself (which is diagnostics-adjacent, not a
+            # secret, but has no reason to round-trip through the group-status polling response).
+            "has_auth_definition": app.auth_definition is not None,
         })
         if state != "ready" and first_missing is None:
             first_missing = app.id
@@ -296,19 +311,33 @@ class GroupsMixin:
         return {"group": group.model_dump(mode="json")}
 
     def cmd_update_group_app(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        from conxa_core.storage.group_store import update_app
+        from conxa_core.storage.group_store import get_group, set_group_app_auth_definition, update_app
 
         group_id = _safe_id(payload.get("group_id"), "group_id")
         app_id = _safe_id(payload.get("app_id"), "app_id")
+        new_login_url = payload.get("login_url")
+
+        # A learned definition is a probe against a SPECIFIC login_url — see
+        # auth_learning.py's module docstring. Changing that url makes any saved definition
+        # stale (it was learned from a different page), so drop it rather than let the runtime
+        # keep evaluating a probe against a page nothing points at any more.
+        existing = get_group(group_id)
+        existing_app = next((a for a in existing.apps if a.id == app_id), None) if existing else None
+        login_url_changed = (
+            existing_app is not None and new_login_url is not None and new_login_url != existing_app.login_url
+        )
+
         group = update_app(
             group_id,
             app_id,
             name=payload.get("name"),
-            login_url=payload.get("login_url"),
+            login_url=new_login_url,
             success_url=payload.get("success_url"),
         )
         if group is None:
             raise _CommandError("group_or_app_not_found", "No such group or app")
+        if login_url_changed:
+            group = set_group_app_auth_definition(group_id, app_id, None) or group
         return {"group": group.model_dump(mode="json")}
 
     def cmd_remove_group_app(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
@@ -376,20 +405,52 @@ class GroupsMixin:
             return {"session_id": sess.session_id, "group_id": group_id, "app_id": app_id, "login_url": app.login_url}
 
     def cmd_finish_group_app_auth(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
-        """Stop a group-app login session and persist the captured state,
-        whether the recorder self-detected success_url or the user closed the
-        browser manually. Widens workflow status for every workflow in the
-        group once this app (and all its siblings) are authenticated."""
-        from conxa_core.storage.group_store import set_group_app_auth, set_group_app_error, group_auth_dir, update_app
+        """Stop a group-app login session and persist the captured state — the user's Done click
+        (or a browser closed by hand). Widens workflow status for every workflow in the group
+        once this app (and all its siblings) are authenticated.
+
+        P0 (Application Authentication Recording): while the browser is still open, this first
+        tries to LEARN a structured auth definition from the just-completed sign-in (see
+        conxa_compile.auth_learning's module docstring) and self-tests it. A definition that
+        fails the self-test does NOT end the session — the login window stays open and the
+        renderer shows why, so the user can keep signing in and click Done again (spec §3: only
+        the user's own Done ends this, never an automatic detection). Passing `force: true`
+        (the renderer's "Save anyway" action) skips straight to saving the session with no
+        definition, falling back to the runtime's generic detection ladder for this app.
+        A browser closed by hand (no learning possible — nothing left to observe) keeps today's
+        behavior unchanged: save the session, no definition, detect_warning as before.
+        """
+        from conxa_core.storage.group_store import (
+            get_group,
+            group_auth_dir,
+            set_group_app_auth,
+            set_group_app_auth_definition,
+            set_group_app_error,
+            update_app,
+        )
         from conxa_core.storage.workflow_store import list_workflows, set_workflow_status_from_group_auth
 
         session_id = _safe_id(payload.get("session_id"), "session_id")
         group_id = _safe_id(payload.get("group_id"), "group_id")
         app_id = _safe_id(payload.get("app_id"), "app_id")
+        force = bool(payload.get("force"))
 
         sess = _recorder_registry.get(session_id)
         if sess is None:
             raise _CommandError("session_not_found", f"No session {session_id}")
+
+        group_before = get_group(group_id)
+        app_before = next((a for a in group_before.apps if a.id == app_id), None) if group_before else None
+
+        definition: dict[str, Any] | None = None
+        learn_reason = ""
+        if sess.browser_open and app_before is not None and not force:
+            definition, learn_reason = self._loop.run(sess.learn_auth(app_before.login_url))
+            if definition is None:
+                # Keep the window open — this is NOT a failure, it's "not yet". The renderer
+                # polls status normally and offers "Save anyway" (force=true) as the escape
+                # hatch for a site this generic learning can't confidently characterize.
+                return {"confirmed": False, "reason": learn_reason or "Couldn't confirm sign-in yet. Finish signing in, then click Done again."}
 
         reached_success_url = bool(sess.reached_wait_url)  # read before stop() tears the session down
         self._loop.run(sess.stop())
@@ -409,13 +470,15 @@ class GroupsMixin:
             raise _CommandError("group_or_app_not_found", "No such group or app")
 
         app = next((a for a in group.apps if a.id == app_id), None)
-        group = update_app(group_id, app_id, detect_warning=_detect_warning(app.success_url if app else "", reached_success_url)) or group
+        warning = _detect_warning(app.success_url if app else "", reached_success_url, definition is not None)
+        group = update_app(group_id, app_id, detect_warning=warning) or group
+        group = set_group_app_auth_definition(group_id, app_id, definition) or group
 
         status = group_auth_status(group)
         for wf in list_workflows(group.workspace_id):
             if wf.group_id == group_id:
                 set_workflow_status_from_group_auth(wf.id, status["ready"])
-        return {"group": group.model_dump(mode="json"), "auth": status}
+        return {"confirmed": True, "group": group.model_dump(mode="json"), "auth": status}
 
     def cmd_cancel_group_app_auth(self, payload: dict[str, Any], _rid: str) -> dict[str, Any]:
         session_id = _safe_id(payload.get("session_id"), "session_id")

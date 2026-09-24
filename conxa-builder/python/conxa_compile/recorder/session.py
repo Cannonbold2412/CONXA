@@ -24,6 +24,7 @@ from conxa_core.config import settings
 from conxa_core.metrics.store import metrics
 from conxa_core.models.events import RecordedEvent
 from conxa_core.models.workflow import GroupApp
+from conxa_compile import auth_learning
 from conxa_compile.policy.bundle import get_policy_bundle
 from conxa_compile.policy.timing import resolve_event_timing
 from conxa_core.sanitize import scrub_surrogates as _sanitize_surrogates
@@ -126,9 +127,88 @@ def extract_visited_hosts(events: list[dict[str, Any]]) -> list[str]:
     return sorted(hosts)
 
 
+def _gather_page_observation_sync(page: Any, context: Any, responses: list[dict]) -> dict:
+    """The Playwright-touching half of an auth_learning observation — reads exactly what
+    evaluate()/learn() consume (see auth_learning.py's module docstring) and nothing else.
+    `responses` is filled by the caller via a page.on("response") listener attached BEFORE
+    navigating; this only reads the page/cookies once navigation has settled."""
+    try:
+        probe = page.evaluate(auth_learning.PROBE_SCRIPT)
+    except Exception:  # noqa: BLE001
+        probe = {"passwordBox": False, "otpLike": False, "markers": []}
+    try:
+        cookie_names = [c["name"] for c in context.cookies()]
+    except Exception:  # noqa: BLE001
+        cookie_names = []
+    return {
+        "final_url": page.url,
+        "password_box": bool(probe.get("passwordBox")),
+        "otp_like": bool(probe.get("otpLike")),
+        "markers": probe.get("markers") or [],
+        "responses": responses,
+        "cookie_names": cookie_names,
+    }
+
+
+def _navigate_and_observe_sync(page: Any, context: Any, url: str, *, timeout_ms: int = 8000) -> dict:
+    """Navigate `page` to `url`, capturing same-origin XHR/fetch responses along the way, then
+    gather one auth_learning observation. Used for all three of learn_auth's LIVE/OUT/RELOAD
+    captures — same probe, different browser context each time."""
+    responses: list[dict] = []
+
+    def _on_response(resp: Any) -> None:
+        try:
+            if len(responses) >= 30:
+                return
+            if resp.request.resource_type not in ("xhr", "fetch"):
+                return
+            from urllib.parse import urlsplit as _urlsplit
+
+            responses.append({
+                "method": resp.request.method,
+                "path": _urlsplit(resp.url).path or "/",
+                "status": resp.status,
+            })
+        except Exception:  # noqa: BLE001
+            pass
+
+    page.on("response", _on_response)
+    try:
+        page.goto(url, wait_until="load", timeout=timeout_ms)
+        page.wait_for_timeout(1500)  # let SPA XHRs fired on load settle before reading responses
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        try:
+            page.remove_listener("response", _on_response)
+        except Exception:  # noqa: BLE001
+            pass
+    return _gather_page_observation_sync(page, context, responses)
+
+
 def _probe_app_session_sync(app: GroupApp) -> Literal["ready", "expired"]:
     """The actual headless probe body — see check_app_session_sync for the
     policy this implements. Split out so it can be run on a bounded thread."""
+    definition = app.auth_definition
+    if definition:
+        probe_url = definition.get("probe_url") or app.login_url
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                try:
+                    context = browser.new_context(storage_state=app.storage_state_path)
+                    page = context.new_page()
+                    observation = _navigate_and_observe_sync(page, context, probe_url)
+                finally:
+                    browser.close()
+        except Exception:  # noqa: BLE001 — a probe failure is inconclusive, not a verdict
+            return "ready"
+        verdict = auth_learning.evaluate(definition, observation)["verdict"]
+        # "unsure" is genuinely ambiguous, same policy as the legacy path below: never lock a
+        # user out on an inconclusive read. Only a confident "no" (a real veto — see evaluate())
+        # counts as expired.
+        return "expired" if verdict == "no" else "ready"
+
     target = (app.success_url.split("{}", 1)[0] if app.success_url else "") or app.login_url
     login_base = app.login_url.split("?")[0].split("#")[0]
     try:
@@ -255,6 +335,21 @@ class RecordingSession:
     # sweep below saves once per post-login navigation rather than repeatedly.
     _auth_saved_url: str = ""
     current_url: str = ""
+    # auth_mode only: every distinct host the login tab's own page visited, in order — a
+    # diagnostic breadcrumb (e.g. ["app.acme.com", "accounts.google.com", "app.acme.com"])
+    # stored on the learned definition (auth_learning.learn's journey_hosts) but never consulted
+    # by evaluate(). ponytail: main-tab host list only, not a full per-tab/per-popup graph — good
+    # enough to explain a cross-host SSO hop; widen if a real multi-tab flow needs more detail.
+    journey_hosts: list[str] = field(default_factory=list)
+    _journey_last_url: str = ""
+    # Cross-thread bridge for learn_auth() (see its own docstring below) — same polling-flag
+    # pattern as _stop_requested/_startup_done above: the recorder THREAD (not the caller's
+    # asyncio loop) is the only thread allowed to touch self._context/self._playwright, so a
+    # request/result pair plus an Event is how the async method hands work to that thread and
+    # waits for it.
+    _learn_auth_pending: dict | None = None
+    _learn_auth_done: threading.Event = field(default_factory=threading.Event)
+    _learn_auth_result: tuple = (None, "")
     # Phase 2: dedup state for DOM snapshots. Maps short bridge signature -> snapshot_ref.
     _snapshot_refs_by_sig: dict[str, str] = field(default_factory=dict)
     _last_snapshot_hash: str = ""
@@ -548,6 +643,86 @@ class RecordingSession:
                 self.auth_captured = True
         except Exception as exc:  # noqa: BLE001
             self.binding_errors.append(f"storage_state_autosave_error: {exc!s}")
+
+    def _standalone_probe_observation_sync(self, url: str, *, storage_state: str | None) -> dict | None:
+        """A throwaway headless browser, launched from this session's already-running
+        sync_playwright driver (self._playwright) without disturbing the live login browser —
+        same pattern check_app_session_sync/_probe_app_session_sync use standalone. `storage_state`
+        is a path to load (the RELOAD capture) or None for a genuinely fresh, cookie-less context
+        (the OUT capture)."""
+        if self._playwright is None:
+            return None
+        try:
+            browser = self._playwright.chromium.launch(headless=True)
+            try:
+                context = (
+                    browser.new_context(storage_state=storage_state) if storage_state else browser.new_context()
+                )
+                page = context.new_page()
+                return _navigate_and_observe_sync(page, context, url)
+            finally:
+                browser.close()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _perform_learn_auth_sync(self, login_url: str) -> tuple[dict | None, str]:
+        """Runs on the recorder's OWN thread (called from the pump loop — see the
+        _learn_auth_pending check above) because it touches self._context, which only that
+        thread may touch. See learn_auth() below for the public, cross-thread-safe entry point.
+
+        Observes the SAME probe url (login_url — the existing "login entry" concept the runtime
+        already keys off, see runtime/app/browser.js::_loginEntryUrl) three ways — LIVE (a new
+        tab in the just-authenticated context), OUT (a fresh, cookie-less context) and RELOAD (a
+        fresh context restored from the just-saved session) — and only returns a definition that
+        passes auth_learning.self_test. See auth_learning.py's module docstring for why."""
+        if self._context is None or not self.browser_open:
+            return None, "The login window closed before this could be confirmed."
+
+        self._autosave_storage_state_sync(force=True)
+        if not self.storage_state_autosave_path or not Path(self.storage_state_autosave_path).is_file():
+            return None, "Nothing was captured to learn from yet."
+
+        try:
+            live_page = self._context.new_page()
+            try:
+                live_obs = _navigate_and_observe_sync(live_page, self._context, login_url)
+            finally:
+                live_page.close()
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Couldn't check the signed-in page just now: {exc}"
+
+        out_obs = self._standalone_probe_observation_sync(login_url, storage_state=None)
+        if out_obs is None:
+            return None, "Couldn't open a private check of the sign-in page."
+
+        reload_obs = self._standalone_probe_observation_sync(
+            login_url, storage_state=self.storage_state_autosave_path
+        )
+        if reload_obs is None:
+            return None, "Couldn't confirm the saved session on its own."
+
+        definition = auth_learning.learn(
+            live_obs, out_obs, journey_hosts=list(self.journey_hosts), probe_url=login_url
+        )
+        ok, reason = auth_learning.self_test(definition, live_obs, out_obs, reload_obs)
+        if not ok:
+            return None, reason
+        return definition, ""
+
+    async def learn_auth(self, login_url: str) -> tuple[dict | None, str]:
+        """Cross-thread entry point for cmd_finish_group_app_auth (handlers/groups.py), called
+        from the Backend's own asyncio loop while the login browser is still open — same
+        request/poll bridge start()/stop() use to reach across into the recorder thread. Returns
+        (definition, "") on success, or (None, human-readable reason) when the self-test failed
+        or the browser was in no state to check."""
+        if self._context is None or not self.browser_open:
+            return None, "The login window closed before this could be confirmed."
+        self._learn_auth_done.clear()
+        self._learn_auth_pending = {"login_url": login_url}
+        while not self._learn_auth_done.is_set():
+            await asyncio.sleep(0.05)
+        self._learn_auth_pending = None
+        return self._learn_auth_result
 
     def _open_pages_sync(self) -> list[Any]:
         if self._context is None:
@@ -2087,9 +2262,31 @@ class RecordingSession:
                             self._remember_current_url(current_url)
                             if self._url_matches_wait_target(current_url):
                                 self._autosave_storage_state_sync(force=True)
+                                # reached_wait_url is a passive UI hint only, no longer an
+                                # auto-stop trigger — spec P0 §3: only the user's own Done click
+                                # (cmd_finish_group_app_auth) ends an auth-mode session, so a
+                                # transient page that merely LOOKS like success_url (a redirect
+                                # hop, an MFA interstitial that briefly matches) can't close the
+                                # window out from under a login the human hasn't finished yet.
                                 self.reached_wait_url = True
-                                self._stop_requested.set()
                                 break
+                    except Exception:  # noqa: BLE001
+                        pass
+                # auth_mode only: breadcrumb the hosts the login tab's own page visits, in
+                # order — see journey_hosts's field comment. Cheap: reuses the page/url already
+                # read for the auth-mode autosave check just below, no extra Playwright call.
+                if self.auth_mode:
+                    try:
+                        from urllib.parse import urlparse as _urlparse
+
+                        pages = self._open_pages_sync()
+                        if pages:
+                            url_now = pages[0].url
+                            if url_now and not is_blank_url(url_now) and url_now != self._journey_last_url:
+                                self._journey_last_url = url_now
+                                host = _urlparse(url_now).hostname or ""
+                                if host and (not self.journey_hosts or self.journey_hosts[-1] != host):
+                                    self.journey_hosts.append(host)
                     except Exception:  # noqa: BLE001
                         pass
                 # auth_mode only: save the session the moment the browser navigates away
@@ -2117,6 +2314,16 @@ class RecordingSession:
                             break
                     except Exception:  # noqa: BLE001
                         pass
+                # learn_auth()'s cross-thread request, if one is pending — see that method's
+                # docstring for why this can only run here, on the recorder's own thread.
+                if self._learn_auth_pending is not None and not self._learn_auth_done.is_set():
+                    login_url = self._learn_auth_pending.get("login_url", "")
+                    try:
+                        self._learn_auth_result = self._perform_learn_auth_sync(login_url)
+                    except Exception as exc:  # noqa: BLE001
+                        self._learn_auth_result = (None, f"Couldn't learn sign-in signals: {exc}")
+                    finally:
+                        self._learn_auth_done.set()
                 if not self.auth_mode:
                     try:
                         payload, src_page, src_frame = self._pending_payloads.get_nowait()

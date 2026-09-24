@@ -33,6 +33,14 @@ class GroupApp(BaseModel):
     # that same URL, so a run may never see this app as signed in. Advisory only: the session itself
     # is still valid, so it never affects `state`. Cleared on the next sign-in that self-detects.
     detect_warning: str = ""
+    # Learned at Connect time (P0: Application Authentication Recording) from a contrast between
+    # a signed-in and a genuine signed-out observation of the same probe url, then proven by a
+    # three-way self-test before being saved — see conxa_compile.auth_learning's module docstring.
+    # None means "not learned" (an app connected before this feature, or whose self-test never
+    # passed): the runtime falls back to its generic detection ladder (login_signals.js) exactly
+    # as it did before this field existed. Shipped into pack.json — see skill_package_builder.py —
+    # but never carries cookie values, response bodies, or any query string/fragment.
+    auth_definition: dict[str, Any] | None = None
 
 
 class WorkflowGroup(BaseModel):

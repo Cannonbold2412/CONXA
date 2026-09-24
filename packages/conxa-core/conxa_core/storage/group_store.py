@@ -299,6 +299,21 @@ def set_group_app_auth(group_id: str, app_id: str, storage_state_path: str) -> W
     return save_group(group)
 
 
+def set_group_app_auth_definition(group_id: str, app_id: str, definition: dict[str, Any] | None) -> WorkflowGroup | None:
+    """Sets auth_definition directly. Unlike update_app's **fields (which skips None values on
+    purpose — right for an ordinary partial edit), this allows clearing a definition back to
+    None: a re-connect whose self-test failed, or a login_url edit, must be able to drop a stale
+    definition rather than silently keep an old one that no longer matches this app."""
+    group = get_group(group_id)
+    if group is None:
+        return None
+    app = _find_app(group, app_id)
+    if app is None:
+        return None
+    app.auth_definition = definition
+    return save_group(group)
+
+
 def set_group_app_error(group_id: str, app_id: str, error: str) -> WorkflowGroup | None:
     group = get_group(group_id)
     if group is None:
