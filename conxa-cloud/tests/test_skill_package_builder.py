@@ -1408,6 +1408,73 @@ class TestSavedSkillJsonBuild:
         render_manifest = json.loads((pack_dir / "grp_sales" / "sync_contact_to_crm" / "manifest.json").read_text())
         assert render_manifest["required_apps"] == ["app_render"]
 
+    def test_pack_json_carries_the_learned_auth_definition_and_no_secrets(self, tmp_path, monkeypatch):
+        """P0: a learned auth_definition ships with its app in pack.json's groups block, and
+        never carries a cookie value, a response body, or a query string/fragment in any of its
+        stored urls — the runtime is the only place a definition should ever be evaluated
+        against a live page, never distributed with anything sensitive baked in."""
+        from types import SimpleNamespace
+        import conxa_compile.skill_package_builder as skill_package_builder
+        from conxa_core.config import settings
+
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+        workspace_id = "wrk_test"
+        pack = SimpleNamespace(display_name="Acme")
+
+        learned = {
+            "version": 1,
+            "probe_url": "https://dashboard.render.com/login",
+            "signed_out": {"final_path": "/login", "markers": [{"role": "button", "name": "Sign in"}], "password_box": True},
+            "signed_in": {"final_path": "/home", "endpoints": [{"method": "GET", "path": "/api/me", "ok": "2xx", "denied": "401"}]},
+            "session_keys": ["_render_session"],
+            "journey_hosts": ["dashboard.render.com"],
+        }
+        render_app = SimpleNamespace(
+            id="app_render", name="Render",
+            login_url="https://dashboard.render.com/login",
+            success_url="https://dashboard.render.com",
+            auth_definition=learned,
+        )
+        no_def_app = SimpleNamespace(
+            id="app_legacy", name="Legacy", login_url="https://legacy.test/login", success_url="",
+        )  # no auth_definition attribute at all — an app connected before this field existed
+        sales_group = SimpleNamespace(id="grp_sales", name="Sales", apps=[render_app, no_def_app])
+
+        render_wf = SimpleNamespace(
+            id="wf_render", workspace_id=workspace_id, group_id="grp_sales",
+            slug="sync_contact_to_crm", name="Sync contact to CRM", session_id="s2",
+            skill_id="skill_render", edited_at=1,
+            target_url="https://dashboard.render.com", protected_url="https://dashboard.render.com/",
+        )
+
+        saved_skill = {
+            "meta": {"id": "skill_render", "title": "sync_contact_to_crm"},
+            "inputs": [],
+            "skills": [{"steps": [{"action": {"action": "navigate", "url": "https://example.com"}}]}],
+        }
+
+        monkeypatch.setattr(skill_package_builder, "get_or_create_skill_pack", lambda _workspace_id, display_name=None: pack)
+        monkeypatch.setattr(skill_package_builder, "list_workflows", lambda _workspace_id: [render_wf])
+        monkeypatch.setattr(skill_package_builder, "read_skill", lambda skill_id: saved_skill if skill_id == "skill_render" else None)
+        monkeypatch.setattr(skill_package_builder, "_bundle_root", lambda _bundle_slug: tmp_path)
+        monkeypatch.setattr(skill_package_builder, "set_build", lambda *args, **kwargs: None)
+        monkeypatch.setattr("conxa_core.storage.group_store.get_group", lambda _group_id: sales_group)
+
+        build_skill_package(workspace_id, company_name="Acme")
+
+        pack_json = json.loads((tmp_path / "skill-packs" / "wrk_test" / "pack.json").read_text(encoding="utf-8"))
+        apps_by_id = {a["id"]: a for a in pack_json["groups"][0]["apps"]}
+
+        assert apps_by_id["app_render"]["auth_definition"] == learned
+        assert apps_by_id["app_legacy"]["auth_definition"] is None
+
+        # No secrets, ever, in whatever ships: no cookie values (only names, under session_keys),
+        # no response bodies, no query string or fragment on any stored url.
+        blob = json.dumps(apps_by_id["app_render"]["auth_definition"])
+        assert "?" not in blob and "#" not in blob
+        assert all(isinstance(k, str) for k in apps_by_id["app_render"]["auth_definition"]["session_keys"])
+
     def test_visited_hosts_widen_required_apps_beyond_start_url(self, tmp_path, monkeypatch):
         """A workflow that STARTS in one app but links into a sibling mid-recording
         must gate on both at execution time — not just the app its start URL happens

@@ -105,18 +105,26 @@ def test_ready_app_with_stale_checked_at_is_unverified() -> None:
 
 
 def test_detect_warning_is_empty_when_the_login_reached_success_url() -> None:
-    assert _detect_warning("https://drive.google.com/{}", True) == ""
+    assert _detect_warning("https://drive.google.com/{}", True, False) == ""
 
 
 def test_detect_warning_names_success_url_when_login_was_closed_by_hand() -> None:
-    warning = _detect_warning("https://drive.google.com/{}", False)
+    warning = _detect_warning("https://drive.google.com/{}", False, False)
 
     assert "https://drive.google.com/{}" in warning
 
 
 def test_detect_warning_flags_a_missing_success_url() -> None:
-    assert "No success URL" in _detect_warning("", False)
-    assert "No success URL" in _detect_warning("", True)
+    assert "No success URL" in _detect_warning("", False, False)
+    assert "No success URL" in _detect_warning("", True, False)
+
+
+def test_detect_warning_is_empty_when_a_definition_was_learned() -> None:
+    """A learned auth definition detects sign-in on its own — nothing to warn about, no matter
+    what success_url says or whether the login self-detected it (P0: Application Authentication
+    Recording)."""
+    assert _detect_warning("", False, True) == ""
+    assert _detect_warning("https://drive.google.com/{}", False, True) == ""
 
 
 def test_detect_warning_is_surfaced_but_never_changes_state() -> None:

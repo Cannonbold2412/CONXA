@@ -529,6 +529,7 @@ def test_finish_group_app_auth_marks_group_and_workflows_ready(backend, monkeypa
 
     class FakeSession:
         reached_wait_url = False  # RecordingSession always has it; False = the user closed the window by hand
+        browser_open = False  # by the time finish is called, the window is already gone -> no learn_auth attempt
         async def stop(self):
             # Mirrors RecordingSession.stop(): the recorder thread forces a final
             # storage_state autosave right before it tears down (session.py L1074).
@@ -583,6 +584,7 @@ def test_finish_group_app_auth_has_no_warning_when_success_url_was_reached(backe
 
     class FakeSession:
         reached_wait_url = True
+        browser_open = False  # by the time finish is called, the window is already gone -> no learn_auth attempt
 
         async def stop(self):
             auth_path.parent.mkdir(parents=True, exist_ok=True)
@@ -624,6 +626,7 @@ def test_finish_group_app_auth_fails_when_browser_closed_before_save(backend, mo
 
     class FakeSession:
         reached_wait_url = False  # RecordingSession always has it; False = the user closed the window by hand
+        browser_open = False  # by the time finish is called, the window is already gone -> no learn_auth attempt
         async def stop(self):
             return None  # no auth file ever written — browser closed before login completed
 
@@ -666,6 +669,7 @@ def test_finish_group_app_auth_fails_when_saved_state_has_no_session(backend, mo
 
     class FakeSession:
         reached_wait_url = False  # RecordingSession always has it; False = the user closed the window by hand
+        browser_open = False  # by the time finish is called, the window is already gone -> no learn_auth attempt
         async def stop(self):
             auth_path.parent.mkdir(parents=True, exist_ok=True)
             auth_path.write_text(json.dumps({"cookies": [], "origins": []}), encoding="utf-8")
@@ -688,6 +692,156 @@ def test_finish_group_app_auth_fails_when_saved_state_has_no_session(backend, mo
         )
     assert exc_info.value.code == "auth_capture_failed"
     assert "closed the login window" in str(exc_info.value)
+
+
+def test_finish_group_app_auth_saves_a_definition_that_passes_self_test(backend, monkeypatch, tmp_path):
+    """P0: while the browser is still open, finish tries to learn a definition first — one
+    whose self-test passes gets saved onto the app and clears detect_warning outright."""
+    b, _out = backend
+    globals_ = b.cmd_finish_group_app_auth.__globals__
+
+    from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app, get_group
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "")
+    app_id = group.apps[0].id
+    auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
+
+    learned = {"version": 1, "probe_url": "https://example.test/login", "signed_out": {}, "signed_in": {}, "session_keys": []}
+
+    class FakeSession:
+        reached_wait_url = False
+        browser_open = True
+
+        async def learn_auth(self, login_url):
+            assert login_url == "https://example.test/login"
+            return learned, ""
+
+        async def stop(self):
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(
+                json.dumps({"cookies": [{"name": "session", "value": "abc"}], "origins": []}),
+                encoding="utf-8",
+            )
+
+    class FakeRegistry:
+        def get(self, session_id: str):
+            return FakeSession() if session_id == "sess-1" else None
+
+        def pop(self, session_id: str):
+            return None
+
+    monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
+
+    result = b.cmd_finish_group_app_auth(
+        {"session_id": "sess-1", "group_id": group.id, "app_id": app_id},
+        "rid",
+    )
+
+    assert result["confirmed"] is True
+    assert result["auth"]["apps"][0]["detect_warning"] == ""
+    saved = get_group(group.id)
+    assert saved.apps[0].auth_definition == learned
+
+
+def test_finish_group_app_auth_keeps_window_open_when_self_test_fails(backend, monkeypatch, tmp_path):
+    """A failed self-test is NOT an error — the window stays open (stop() never runs) so the
+    user can keep signing in and click Done again, per spec: only Done ends an auth session."""
+    b, _out = backend
+    globals_ = b.cmd_finish_group_app_auth.__globals__
+
+    from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "")
+    app_id = group.apps[0].id
+
+    stopped = []
+
+    class FakeSession:
+        reached_wait_url = False
+        browser_open = True
+
+        async def learn_auth(self, login_url):
+            return None, "A signed-out browser also read as signed in."
+
+        async def stop(self):
+            stopped.append(True)
+
+    class FakeRegistry:
+        def get(self, session_id: str):
+            return FakeSession() if session_id == "sess-1" else None
+
+        def pop(self, session_id: str):
+            raise AssertionError("should not pop a session that never stopped")
+
+    monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
+
+    result = b.cmd_finish_group_app_auth(
+        {"session_id": "sess-1", "group_id": group.id, "app_id": app_id},
+        "rid",
+    )
+
+    assert result == {"confirmed": False, "reason": "A signed-out browser also read as signed in."}
+    assert stopped == []
+
+
+def test_finish_group_app_auth_force_skips_learning_and_saves_with_no_definition(backend, monkeypatch, tmp_path):
+    """force=true (the renderer's "Save anyway") skips learning entirely — the app falls back
+    to the runtime's generic detection ladder, same as before this feature existed."""
+    b, _out = backend
+    globals_ = b.cmd_finish_group_app_auth.__globals__
+
+    from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app, get_group
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "")
+    app_id = group.apps[0].id
+    auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
+
+    class FakeSession:
+        reached_wait_url = False
+        browser_open = True
+
+        async def learn_auth(self, login_url):
+            raise AssertionError("force=true must skip learning entirely")
+
+        async def stop(self):
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(
+                json.dumps({"cookies": [{"name": "session", "value": "abc"}], "origins": []}),
+                encoding="utf-8",
+            )
+
+    class FakeRegistry:
+        def get(self, session_id: str):
+            return FakeSession() if session_id == "sess-1" else None
+
+        def pop(self, session_id: str):
+            return None
+
+    monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
+
+    result = b.cmd_finish_group_app_auth(
+        {"session_id": "sess-1", "group_id": group.id, "app_id": app_id, "force": True},
+        "rid",
+    )
+
+    assert result["confirmed"] is True
+    saved = get_group(group.id)
+    assert saved.apps[0].auth_definition is None
 
 
 def test_delete_workflow_removes_metadata_and_artifact_dir(monkeypatch, tmp_path):
