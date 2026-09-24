@@ -193,10 +193,23 @@ class GroupApp(BaseModel):
                                 # exists") — group_auth_status derives a `verified` flag
                                 # from this (set + within a 600s TTL), so a `ready` badge
                                 # doesn't silently mean "never actually tested."
-    detect_warning: str        # Advisory. Set when the last sign-in was saved without the recorder
-                                # reaching success_url (closed by hand, or none set) — a run watches
-                                # for the same URL, so it may not detect this app as signed in.
-                                # Never affects `state`; cleared by a sign-in that self-detects.
+    detect_warning: str        # Advisory. "" when auth_definition is set (below) — a learned
+                                # definition detects sign-in on its own, success_url or not. Otherwise
+                                # set when the last sign-in was saved without the recorder reaching
+                                # success_url (closed by hand, or none set) — the runtime's generic
+                                # ladder then has less to go on. Never affects `state`.
+    auth_definition: dict | None  # Learned at Connect's Done (P0: Application Authentication
+                                # Recording) — a contrast between a signed-in and a genuine
+                                # signed-out observation of `login_url`, proven by a 3-way self-test
+                                # before being saved. None for an app connected before this feature,
+                                # or whose self-test never passed (the runtime falls back to its
+                                # generic detection ladder for that app). See docs/TRD.md §5.2a
+                                # ("Learned per-app authentication definitions") and
+                                # conxa_compile.auth_learning's module docstring for the shape:
+                                # {version, probe_url, signed_out: {final_path, markers,
+                                # password_box}, signed_in: {final_path, endpoints}, session_keys,
+                                # journey_hosts}. Never a cookie value, a response body, or a query
+                                # string/fragment — cookie *names* and method+path+status shapes only.
 
 class WorkflowGroup(BaseModel):
     id: str

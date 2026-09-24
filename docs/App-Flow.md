@@ -129,17 +129,23 @@ flowchart TD
     C --> D[Backend: cmd_start_group_app_auth]
     D --> E[Playwright launches Chromium at app.login_url]
     E --> F[User logs into the target website]
-    F --> G["Recorder self-detects app.success_url (wait_for_url) and closes the browser"]
-    G --> H[Renderer polls get_recording_status, sees reached_wait_url]
+    F --> G["reached_wait_url is a passive hint only — the browser stays open"]
+    G --> H[User clicks Done — the ONLY thing that ends the session]
     H --> I[Backend: cmd_finish_group_app_auth]
-    I --> J[Playwright's storageState saved to data/groups/{group_id}/auth/{app_id}.json]
-    J --> K[Every workflow in the group flips to status=ready once all its apps are authenticated]
-    K --> L{More unauthenticated apps in the group?}
-    L -->|Yes| B
-    L -->|No| M[Group ready — every workflow in it can record/run immediately]
+    I --> J["learn_auth observes LIVE / OUT / RELOAD, then self-tests the result"]
+    J --> K{Self-test passed?}
+    K -->|No| L["Window stays open — 'not confirmed yet, keep signing in' (or Save anyway)"]
+    L --> H
+    K -->|Yes| M[storageState + auth_definition saved to data/groups/group_id/auth/app_id.json]
+    M --> N[Every workflow in the group flips to status=ready once all its apps are authenticated]
+    N --> O{More unauthenticated apps in the group?}
+    O -->|Yes| B
+    O -->|No| P[Group ready — every workflow in it can record/run immediately]
 ```
 
 **Key invariant:** each app's captured session lives at `data/groups/{group_id}/auth/{app_id}.json`. It is NEVER copied into the skill pack build output.
+
+**Learning the sign-in signals (P0: Application Authentication Recording, 2026-09-25).** Step J above — `RecordingSession.learn_auth` — observes the app's `login_url` three ways (signed in, a fresh cookie-less context, and the just-saved session reloaded fresh) and keeps only the signals that differ between "signed in" and "genuinely signed out." That learned definition is what the runtime later evaluates directly, instead of guessing from a generic page-shape heuristic — see `docs/TRD.md` §5.2a ("Learned per-app authentication definitions") for the full mechanism, the definition's shape, and how a failed self-test surfaces in the wizard.
 
 ### 4.1a Recording a workflow starts pre-authenticated to every app in its group
 
@@ -150,6 +156,8 @@ Recording no longer discards what happens to the session while it's open: it aut
 ### 4.1b Testing/running a workflow only asks for the apps it actually visited — and never fails mid-run for a gap recording papered over
 
 Being pre-authenticated to every group app during recording does **not** mean every one of those apps has to be signed in before the workflow can *run*. At build time, each workflow's own start URL, the URL it lands on after auth (if any), **and every hostname the recording actually visited mid-flow** are matched by hostname against the group's apps, and only the apps that match are written into that workflow's compiled skill as `required_apps` — so a workflow that starts in one app but clicks through to a sibling app partway through gates on both, not just the one its start URL happens to resolve to. Testing or executing a workflow only *requires* signing in to an app in `required_apps` — a workflow that never touches a given app is never blocked on it — but it still *seeds* the browser session from every other app in the group that's currently signed in, the same "seed everything, require only what's needed" split recording already uses, so a workflow that unexpectedly wanders into an ungated sibling app still arrives signed in instead of hitting a login wall mid-run. If more than one required app needs signing in, every login window opens together with one message naming all of them, rather than one window per run attempt. See `docs/TRD.md` §5.2a ("Per-workflow app scoping").
+
+A session that expires **mid-run** normally fails the run outright and asks the person to call the skill again — re-authentication happens on that next call's own pre-flight check. An app whose sign-in was learned (has a saved `auth_definition`) is the one exception: the run instead opens a sign-in window automatically and resumes itself once the person finishes signing in, with no second call needed. See `docs/TRD.md` §5.2a ("Mid-run expiry now auto-retries").
 
 ### 4.2 Record a Workflow (inline action)
 
