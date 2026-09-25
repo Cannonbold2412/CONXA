@@ -47,7 +47,7 @@ function shownInput(name: string, value: unknown) {
 
 // CONXA's replies use plain **bold** markdown; render it instead of showing the literal asterisks.
 function renderBold(text: string) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  const parts = text.replace(/^([ \t]*)[-*] /gm, "$1• ").split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, i) =>
     part.startsWith("**") && part.endsWith("**") ? (
       <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>
