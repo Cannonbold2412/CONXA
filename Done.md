@@ -15,7 +15,7 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | MCP — MCP | 1 | MCP-4 |
 | TEST — Testing & Cleanup | 1 | TEST-6 |
 | REC — Recorder | 1 | REC-STALE-1 |
-| AUTH — Authentication | 14 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 18, 19 |
+| AUTH — Authentication | 15 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 18, 19, 20 |
 | DEAD — Tech debt | 1 | DEAD-1 |
 | **Total** | **83** | |
 
@@ -1493,6 +1493,13 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Resolution:** AUTH-18 gated only the judge; the backup-agreement rung of `login_signals.js::ladderVerdict` still saved on "two lookouts agreed for 10 s". On Google's "check your phone" screen both lookouts are true (password box gone, email step wrote cookies) while the person is still signing in — `~/.conxa/logs/login_signals.log` showed `lookouts_agreed` 24 s in, the half-done session saved, the tab closed, and the run reopened sign-in from the first page. Fix, generic (no per-site word or host lists — a first cut with a 2FA keyword list was replaced at the user's request): (1) `onSignIn` gates every rung (`ladderVerdict` → `on_sign_in`; the `authDefinition` path too). It means *mid-flow*: an own tab still on a sign-in page that has moved past its first screen (origin+path or password-box state changed, latched), so an untouched login tab stays probe-able and a sign-in finished in another tab is still caught. (2) For a second-factor page whose address doesn't look like a login (GitHub's `/sessions/two-factor/app`), the judge decides: `judgeFromSnapshots` now answers "no" when the login entry URL still shows a login answer even at the same address (was "can't tell", which handed it to the backup rule); the backup rule only counts once the judge has answered for the page the person is on now (`judgeSettled`, else `judging`); and `shouldAskJudge` re-asks when the own tab moves to a different page, so the "no" from the 2FA page is revisited when they land in the app. Tests: `test_login_signals.js`; `test_session_login_scope.js` (Google shape: email → password → phone screen held, never saves); `test_login_multisignal.js` real-Chromium "approve on your phone" page at a non-login address — no decision in 30 poll ticks, tab never touched, then `judge_yes` once in the app (fails with the old same-address rule).
 - **Category:** Authentication
 - **Description:** Github→Drive in Execute: email → password → "Yes it's me" on the phone; while waiting on the approval screen the panel went back to the Google email page.
+- **Complexity:** S
+
+### AUTH-20 — Signed in fine in Execute, then the tab closed, nothing ran, and the next call asked to sign in again
+**Resolved:** 2026-09-25
+- **Resolution:** `context.storageState()` throws on Execute's Electron CDP context (`Target.createTarget: Not supported`, confirmed against real Electron) whenever a visited origin's page has closed, because Playwright opens a hidden page to read that origin's `localStorage`. After sign-in there is always such an origin: the judge's probe tabs and the identity provider's redirect hops. The capture threw, and the error was swallowed. `beginInteractiveAuth` then opened a second sign-in tab, which failed the same way and gave up. Nothing was saved (the last write under `%APPDATA%\Conxa\cache\sessions` was Sep 20), the waiting run never started, and the next `authenticate` saw 0/2 signed in. The same double decision appears in every earlier Execute run in `login_signals.log`. Fix: `browser.js::_captureState` reads cookies from the context plus `localStorage` from open pages for host-owned contexts; launched ones keep `storageState()`. A capture or save failure after sign-in is tagged `captureFailed` and never reopens a sign-in tab. Every failed attempt is logged (`login_capture_failed`, `login_attempt_failed`). Test: `test_session_login_scope.js`, where a host-owned context whose `storageState()` throws still captures, and which fails without the fix.
+- **Category:** Authentication
+- **Description:** Github→Drive in Execute on app v3.2.92: both sign-ins completed and their tabs closed, but the transfer never started, and saying "I've already signed in" got another sign-in request.
 - **Complexity:** S
 
 ## DEAD — Tech debt (1 done)

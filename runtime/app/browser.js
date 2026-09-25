@@ -501,6 +501,28 @@ async function _persistSession(workspace_id, state, authManager, sessionsDir, lo
   }
 }
 
+// The signed-in state of a login context, in storageState shape. A host-owned (Conxa Execute)
+// context can't use context.storageState(): for every origin visited by a page that has since
+// closed (the judge's probe tabs, an identity provider's redirect hops) Playwright opens a hidden
+// page to read its localStorage, and Electron's CDP can't create one (host_browser.js header) —
+// it threw, the sign-in was never saved, and the run never started (AUTH-20). Read cookies from
+// the context and localStorage from the pages still open instead.
+// ponytail: localStorage only from still-open pages on host-owned contexts — an app that keeps its
+// login in localStorage of an origin whose page already closed loses it; open a background tab per
+// origin (hostBrowser.openTab) if one ever needs that.
+async function _captureState(context, hostOwned) {
+  if (!hostOwned) return context.storageState();
+  const origins = new Map();
+  for (const p of context.pages()) {
+    try {
+      if (p.isClosed()) continue;
+      const o = await evalOn(p, pageScripts.originStorage, undefined, 2000);
+      if (o && o !== EVAL_TIMED_OUT && o.origin && o.origin !== "null" && o.localStorage.length) origins.set(o.origin, o);
+    } catch (_) {}
+  }
+  return { cookies: await context.cookies(), origins: [...origins.values()] };
+}
+
 // ─── Browser sessions (registry in browser_session.js) ─────────────────────────
 // EVERY live Chromium — headless or visible — is a registered session, so the 5-instance cap holds
 // for all of them. A session is a LEASE (RT-3): a run holds it `busy` for the whole execution (and
@@ -1182,7 +1204,10 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
       await _waitForTicketsCalm(loginCtx, landedPage);
       const landed = landedPage();
       try { if (landed) lastUrl = landed.url(); } catch (_) {}
-      try { lastState = await loginCtx.storageState(); } catch (_) { return; }
+      try { lastState = await _captureState(loginCtx, hostOwned); } catch (e) {
+        if (logFn) logFn("warn", "login_capture_failed", { key: workspace_id, error: e.message });
+        return;
+      }
       if (lastState) {
         proveOk = await _proveSession(entryUrl,
           { hostOwned, context: loginCtx, hostRunId, browser: loginBrowser, state: lastState });
@@ -1252,7 +1277,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
 
   // Last-resort fallback: try once more in case context is still accessible.
   if (lastState === null) {
-    try { lastState = await loginCtx.storageState(); } catch (_) {}
+    try { lastState = await _captureState(loginCtx, hostOwned); } catch (_) {}
   }
 
   await _closeLoginBrowser();
@@ -1367,7 +1392,9 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
     await _waitForTicketsCalm(ctx, landedPage);
     const page = landedPage();
     landedUrl = page ? page.url() : "";
-    try { state = await ctx.storageState(); } catch (_) {}
+    try { state = await _captureState(ctx, session.hostOwned); } catch (e) {
+      if (logFn) logFn("warn", "login_capture_failed", { key, error: e.message });
+    }
     if (state) {
       proveOk = await _proveSession(entryUrl,
         { hostOwned: session.hostOwned, context: ctx, hostRunId: session.hostRunId, browser: session.browser, state, definition: authDefinition });
@@ -1383,7 +1410,7 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
   }
 
   if (outcome === "reached") {
-    if (!state) throw new Error(`Authentication session was not captured for ${key}. Please try again.`);
+    if (!state) throw Object.assign(new Error(`Authentication session was not captured for ${key}. Please try again.`), { captureFailed: true });
     return { state: refreshAppState(storedState, state, hosts, claimedElsewhere), protectedUrl: landedUrl, proveOk, accountName };
   }
   if (outcome === "timeout") {
@@ -1457,7 +1484,8 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
       try {
         const { state, protectedUrl: landedUrl, proveOk, accountName } = await _waitForInteractiveAuth(workspace_id, currentlyOpen,
           { protectedUrl, storedState, hosts, claimedElsewhere, entryUrl: targetUrl, logFn, beforeSnapshot, ticketBaseline, authDefinition });
-        await _persistSession(workspace_id, state, authManager, sessionsDir, logFn);
+        try { await _persistSession(workspace_id, state, authManager, sessionsDir, logFn); }
+        catch (e) { throw Object.assign(e, { captureFailed: true }); }
         // docs/artifacts/login-desk.html "Follow the journey": remember where THIS sign-in actually
         // landed, so a later run (or the judge's own snapshot) has a real address to check even
         // when the app was configured with no success_url at all.
@@ -1486,10 +1514,13 @@ async function beginInteractiveAuth(workspace_id, targetUrl, opts = {}) {
         return;
       } catch (e) {
         lastErr = e;
+        if (logFn) logFn("warn", "login_attempt_failed", { key: workspace_id, attempt, error: e.message });
         // Reopen a fresh window for the retry — the previous one is already closed
         // (disconnected is what got us here). A timeout is different: nobody is there, so
-        // reopening would just put another unattended window up.
-        if (e.loginTimedOut) break;
+        // reopening would just put another unattended window up. So is a failure AFTER the person
+        // signed in (capturing or saving it): a fresh sign-in tab would just ask them again for
+        // something they already did — the AUTH-20 "signed in, then asked to sign in again" loop.
+        if (e.loginTimedOut || e.captureFailed) break;
         if (attempt === 0) {
           try {
             currentlyOpen = await _openInteractiveAuthWindow(workspace_id, targetUrl, { storedState, runId, logFn, label, session });

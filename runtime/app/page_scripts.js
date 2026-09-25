@@ -434,6 +434,19 @@ function storageKeyCounts() {
   return { localStorageKeys: countKeys(window.localStorage), sessionStorageKeys: countKeys(window.sessionStorage) };
 }
 
+// One page's own origin + localStorage, in Playwright storageState's `origins[]` entry shape —
+// browser.js::_captureState reads a host-owned (Conxa Execute) context page by page with this.
+function originStorage() {
+  const localStorage = [];
+  try {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const name = window.localStorage.key(i);
+      localStorage.push({ name, value: window.localStorage.getItem(name) });
+    }
+  } catch (_) {}
+  return { origin: location.origin, localStorage };
+}
+
 // AUTH-8 — "Signed in as ___". Unlike every probe above, this one is DELIBERATELY text-reading:
 // the whole point is to surface the actual account name as a positive confirmation, best-effort
 // and never blocking (see browser.js's call site — a miss is silent, never a warning). Looks for
@@ -503,6 +516,7 @@ module.exports = {
   passwordBoxProbe,
   pauseSignProbe,
   storageKeyCounts,
+  originStorage,
   accountNameProbe,
   authDefinitionMarkersProbe,
 };

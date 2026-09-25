@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Fixed signing in successfully but the workflow never starting — 2026-09-25
+In the Execute app, you could finish signing in to Google and GitHub, watch the sign-in window close, and then nothing would happen, and saying "I've already signed in" just got you asked to sign in again. The app was failing to save your sign-in, because of a limit in the app's built-in browser that it didn't account for, and it hid that failure. It now saves your sign-in in a way that works inside the app, so the workflow starts on its own right after you sign in. If saving ever fails again, it is now recorded instead of silently asking you to sign in a second time.
+
 ## Fixed sign-in restarting while you approve it on your phone — 2026-09-25
 After typing your Google password and tapping "Yes, it's me" on your phone, the sign-in window jumped back to the email page. While you were waiting on the phone screen, the app wrongly decided you were already signed in, saved an unfinished sign-in, closed the window and started over. Now the app waits until you have actually left the sign-in pages, then double-checks with the website itself before deciding anything. That works the same way on any website, with no list of page names to keep up to date, so extra security steps (codes, phone approvals, "verify it's you") are simply waited out. You sign in once, however many steps it takes.
 

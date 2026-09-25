@@ -106,6 +106,18 @@ test("waiting on a second-factor screen is never read as signed in", async () =>
   );
 });
 
+// AUTH-20: in Conxa Execute, context.storageState() throws once any visited origin's page has closed
+// (it needs a hidden new page; Electron's CDP can't make one). The sign-in must still be saved.
+test("host-owned: the sign-in is captured even though Execute's browser can't run storageState()", async () => {
+  hostBrowser.openTab = async () => ({ page: page("https://app.test/home", { pwSequence: [false] }), tabId: "probe" });
+  hostBrowser.release = async () => {};
+  const loginPage = page("https://app.test/login", { pwSequence: [true, false], landUrl: "https://app.test/home" });
+  const s = session({ hostOwned: true, pages: [loginPage] });
+  s.context.storageState = async () => { throw new Error("Protocol error (Target.createTarget): Not supported"); };
+  const r = await _waitForInteractiveAuth("ws__app", { session: s, loginPage, hostTabId: "t1" }, opts);
+  assert.ok(r.state.cookies.some((c) => c.name === "sid"));
+});
+
 test("launched session: the login tab's own password box going away completes it", async () => {
   hostBrowser.openTab = async () => ({ page: page("https://app.test/home", { pwSequence: [false] }), tabId: "probe" });
   hostBrowser.release = async () => {};
