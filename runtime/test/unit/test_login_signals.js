@@ -232,6 +232,11 @@ test("shouldAskJudge: does NOT re-fire tick after tick with no NEW lookout, even
   assert.ok(!shouldAskJudge(opts), "still no on a later tick — nothing changed");
 });
 
+test("shouldAskJudge: never while the person's own tab is still on a sign-in page", () => {
+  assert.ok(!shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: false, onSignIn: true }));
+  assert.ok(shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: false, onSignIn: false }));
+});
+
 test("shouldAskJudge: fires again once a SECOND, different lookout fires", () => {
   assert.ok(shouldAskJudge({ firedCount: 2, judgedAtFiredCount: 1, judgeVerdict: "no", judging: false, paused: false }));
 });

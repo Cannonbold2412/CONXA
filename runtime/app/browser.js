@@ -313,6 +313,25 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
   const _groupAuthT0 = Date.now();
   if (logFn) logFn("info", "test_phase", { phase: `group_auth_validate_start:${group.apps.map((a) => a.name).join(",")}`, ms: 0 });
   const loaded = await Promise.all(group.apps.map((app) => _loadGroupAppSession(workspace_id, app, authManager, logFn)));
+  // A sign-in for this group is already open and waiting on the person: a repeat call (the agent
+  // "checking again") must not open another session or probe the login pages behind their back —
+  // just point at the open window. Restarting anything here is what made sign-in look like a loop.
+  const waiting = opts.noPrompt ? [] : group.apps.filter((a) => {
+    const h = _pendingAuth.get(_appKey(workspace_id, a));
+    return h && h.status === "pending";
+  });
+  if (waiting.length > 0) {
+    const names = waiting.map((a) => a.name).join(", ");
+    return {
+      authPending: true,
+      loginUrl: _loginEntryUrl(waiting[0]),
+      message: `Sign-in for ${names} is already waiting in ${waiting.length === 1 ? "an open window" : "open windows"} — finish signing in there, then run the skill again.`,
+      apps: waiting.map((a) => ({
+        id: a.id, name: a.name, loginUrl: a.login_url, authPending: true,
+        key: _appKey(workspace_id, a), reason: "already_open",
+      })),
+    };
+  }
   const results = [];
   const batch = [];
   group.apps.forEach((app, i) => {
@@ -816,6 +835,7 @@ async function _sampleLookouts(state, { ownPages, context }, nowMs) {
   let anyPasswordBox = false;
   let anyPaused = false;
   let anyLanded = false;
+  let anyOnSignIn = false;
   for (const p of ownPages) {
     let hasPw = false;
     try {
@@ -835,6 +855,7 @@ async function _sampleLookouts(state, { ownPages, context }, nowMs) {
     // for the old "journey" lookout's per-tick absolute check.
     try {
       if (!loginSignals.looksLikeLoginAnswer({ url: p.url(), hasPasswordBox: hasPw })) anyLanded = true;
+      else anyOnSignIn = true;
     } catch (_) {}
   }
   if (anyLanded && state.firedAt.landed === undefined) state.firedAt.landed = nowMs;
@@ -863,7 +884,7 @@ async function _sampleLookouts(state, { ownPages, context }, nowMs) {
     state.firedAt.newTickets = nowMs;
   }
 
-  return { paused: anyPaused };
+  return { paused: anyPaused, onSignIn: anyOnSignIn };
 }
 
 // Tickets signature for ONE representative page (whichever live candidate is passed in) plus the
@@ -1071,9 +1092,9 @@ function _loginDecider({ key, beforeSnapshot, ticketBaseline, authDefinition, co
     if (loginSignals.alreadySignedIn(beforeSnapshot)) return "already_signed_in";
 
     const nowMs = Date.now();
-    const { paused } = await _sampleLookouts(lookoutState, { ownPages: ownPages(), context }, nowMs);
+    const { paused, onSignIn } = await _sampleLookouts(lookoutState, { ownPages: ownPages(), context }, nowMs);
     const firedCount = Object.keys(lookoutState.firedAt).length;
-    if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
+    if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused, onSignIn })) {
       judging = true;
       judgedAtFiredCount = firedCount;
       askJudge()

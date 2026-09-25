@@ -144,8 +144,11 @@ function isSignedInAgainstBaseline(baseline, current) {
 // never once the judge has already said yes. This is what stops the judge being hit on every single
 // poll tick once one lookout has fired and stays fired — gentle with the website, per the artifact's
 // own "Safety" section.
-function shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused }) {
-  return firedCount > judgedAtFiredCount && judgeVerdict !== "yes" && !judging && !paused;
+// `onSignIn`: one of this login's own tabs is still on a sign-in page. Never probe then — the probe
+// loads the login entry URL in the SAME cookie jar, which can reset a multi-step flow (Google's
+// identifier -> password) while the person is mid-typing. Ask only once they've left the flow.
+function shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused, onSignIn = false }) {
+  return firedCount > judgedAtFiredCount && judgeVerdict !== "yes" && !judging && !paused && !onSignIn;
 }
 
 // "Already signed in" — the very first thing checked, before any window is even shown: if the
