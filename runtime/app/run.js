@@ -54,7 +54,6 @@ const {
   needsStateChangedBaseline,
 } = require("./assertions");
 const {
-  tryLocator,
   baseSelector,
 } = require("./locators");
 const {
@@ -808,7 +807,6 @@ module.exports = {
   interpolate,
   resolveUploadPaths,
   extractZipOnce,
-  tryLocator,
   enrichStepsWithRecovery,
   applyStepOverrides,
   executeStep,

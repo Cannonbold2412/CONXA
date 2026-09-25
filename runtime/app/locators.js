@@ -8,7 +8,6 @@ const { countOn, EVAL_TIMED_OUT } = require("./page_eval");
 const {
   ACTION_TIMEOUT_MS,
   SECONDARY_ACTION_TIMEOUT_MS,
-  RECOVERY_LOCATOR_TIMEOUT_MS,
   VIRTUAL_SCROLL_BUDGET_MS,
 } = require("./run_config");
 const { asObject, asArray, unique, isNonIdempotent } = require("./step_utils");
@@ -197,37 +196,17 @@ async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, tim
   throw lastErr || new Error(`Locator pair not found: ${src} -> ${dst}`);
 }
 
-async function locatorEvaluateAll(page, step, inputs, selector, arg, fn) {
-  let lastErr = null;
-  for (const locator of await locatorCandidates(page, step, inputs, selector)) {
-    try {
-      return await locator.evaluateAll(fn, arg);
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-
-  if (lastErr) throw lastErr;
-  return -1;
-}
-
-async function tryLocator(page, selector, timeout, step = {}, inputs = {}) {
-  try {
-    await withLocator(page, step, inputs, selector, timeout || RECOVERY_LOCATOR_TIMEOUT_MS, async locator => locator.first());
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
 function compiledSelectors(step, inputs) {
   return asArray(step.compiled_selectors)
     .filter(selector => typeof selector === "string" && selector.trim())
     .map(selector => interpolate(selector, inputs));
 }
 
+// step.selector is the only field the compiler emits (the display form of
+// target.primary_selector — skill_package_builder_saved_skill.py). css_selector/target.css
+// were an older pack shape nothing current writes.
 function baseSelector(step, inputs) {
-  return interpolate(step.selector || step.css_selector || (step.target && step.target.css) || "", inputs);
+  return interpolate(step.selector || "", inputs);
 }
 
 function stepSelector(step, inputs) {
@@ -291,19 +270,14 @@ async function walkHoverChain(page, step, inputs) {
   }
 }
 
+// The compiler resolves src/dst at build time and always emits them as src_selector/
+// dst_selector directly (saved_skill.py) — the JSON-in-step.value shape this used to also parse
+// as a fallback is never produced.
 function parseDragSelectors(step, inputs) {
-  let srcSelector = interpolate(step.src_selector || "", inputs);
-  let dstSelector = interpolate(step.dst_selector || stepSelector(step, inputs), inputs);
-
-  if (!srcSelector && step.value) {
-    try {
-      const parsed = JSON.parse(step.value);
-      srcSelector = parsed.src_css || "";
-      if (!dstSelector) dstSelector = parsed.dst_css || "";
-    } catch (_) {}
-  }
-
-  return { srcSelector, dstSelector };
+  return {
+    srcSelector: interpolate(step.src_selector || "", inputs),
+    dstSelector: interpolate(step.dst_selector || stepSelector(step, inputs), inputs),
+  };
 }
 
 function parseKeyboardShortcut(value) {
@@ -327,8 +301,6 @@ module.exports = {
   markMayHaveActed,
   withLocator,
   withLocatorPair,
-  locatorEvaluateAll,
-  tryLocator,
   compiledSelectors,
   baseSelector,
   stepSelector,
