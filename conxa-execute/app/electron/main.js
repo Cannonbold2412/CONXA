@@ -326,6 +326,7 @@ Rules:
 const pendingConfirms = new Map(); // confirmId -> resolve(boolean)
 
 function confirmRun(requestId, args) {
+  if (settings.loadSettings().runPermission === "auto") return Promise.resolve(true);
   return new Promise((resolve) => {
     if (!mainWindow || mainWindow.isDestroyed()) return resolve(false);
     const id = crypto.randomUUID();
@@ -384,8 +385,10 @@ handle("chat:send", async (_e, payload) => {
 
   const tools = await mcp.listChatTools();
   const requestId = payload.requestId;
+  let reasoning = "";
   const onDelta = requestId
     ? (chunk) => {
+        if (chunk.type === "reasoning") reasoning += chunk.text || "";
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send("chat:delta", { requestId, ...chunk });
         }
@@ -421,6 +424,10 @@ handle("chat:send", async (_e, payload) => {
   });
   if (!result.ok) return fail("model_error", result.error);
 
+  if (reasoning) {
+    const last = result.messages[result.messages.length - 1];
+    if (last && last.role === "assistant" && !last.tool_calls) last.thinking = reasoning;
+  }
   await sessionsStore.saveSessionMessages(sessionId, result.messages);
   return { ok: true, text: result.text };
 });

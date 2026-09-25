@@ -96,6 +96,11 @@ function looksLikeLoginAnswer({ url, hasPasswordBox } = {}) {
   }
 }
 
+// origin+path, ignoring query/hash (Google's per-step TL= token would otherwise read as a new page).
+function addressOf(url) {
+  try { const u = new URL(url); return u.origin + u.pathname; } catch (_) { return String(url || ""); }
+}
+
 // Same origin+path (ignoring query/hash) — "the login address gave the same answer both times".
 function sameAddress(a, b) {
   try {
@@ -109,19 +114,25 @@ function sameAddress(a, b) {
 
 // The artifact's "Ask for the login page again" trick: compare what the login entry URL showed
 // before sign-in against what it shows now.
-//   after is null                    -> null   (the probe itself failed — can't tell)
-//   before and after read the same   -> null   (can't tell — the site shows its login page either
-//                                                way; the backup rule takes over)
-//   after no longer looks like login -> "yes"  (bounced off — signed in)
-//   otherwise                        -> "no"   (still looks like a login answer — false alarm)
+//   after is null                        -> null   (the probe itself failed — can't tell)
+//   after still looks like login         -> "no"   (the site still asks for sign-in — at the same
+//                                                    address or another; mid-flow on a second
+//                                                    factor reads exactly like this)
+//   same address, no longer login-shaped -> null   (can't tell — e.g. a root URL that serves a
+//                                                    landing page either way; backup rule decides)
+//   otherwise                            -> "yes"  (bounced off to the app — signed in)
+// Same-address-still-login used to be "can't tell", which handed a half-finished second-factor
+// sign-in to the backup rule; pre-flight (isSignedInAgainstBaseline) already reads a login answer
+// as signed out, so a site whose login page never moves a signed-in visitor on was never
+// supportable anyway.
 // `before` may also be null (the pre-sign-in snapshot itself failed) — in that case there is
 // nothing to compare against, so this always returns null and the caller falls back to the
 // backup-agreement rule (ladderVerdict below).
 function judgeFromSnapshots(before, after) {
   if (!after) return null;
   if (!before) return null;
-  if (sameAddress(before, after)) return null;
-  return looksLikeLoginAnswer(after) ? "no" : "yes";
+  if (looksLikeLoginAnswer(after)) return "no";
+  return sameAddress(before, after) ? null : "yes";
 }
 
 // Pre-flight validation / the prover (browser.js::_isAuthenticated, ::_proveSession): unlike
@@ -138,14 +149,23 @@ function isSignedInAgainstBaseline(baseline, current) {
   return !sameAddress(baseline, current);
 }
 
-// Should the judge be re-asked THIS tick? Only once a NEW lookout has fired since the last ask
-// (firedCount > judgedAtFiredCount — lookouts are monotonic, so this is exactly "something changed
-// since we last asked"), never while a previous probe is still in flight, never while paused, and
-// never once the judge has already said yes. This is what stops the judge being hit on every single
-// poll tick once one lookout has fired and stays fired — gentle with the website, per the artifact's
-// own "Safety" section.
-function shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused }) {
-  return firedCount > judgedAtFiredCount && judgeVerdict !== "yes" && !judging && !paused;
+// Should the judge be re-asked THIS tick? Only once something changed since the last ask — a NEW
+// lookout fired (firedCount > judgedAtFiredCount; lookouts are monotonic), or, once any lookout has
+// fired, this login's own tabs moved to a different page (`address` !== `judgedAtAddress`) — never
+// while a previous probe is still in flight, never while paused, and never once the judge has
+// already said yes. Gentle with the website (per the artifact's own "Safety" section): one probe
+// per change, never one per poll tick. The address trigger is what lets a "no" given on a
+// second-factor screen be revisited when the person finally lands in the app — no lookout is left
+// to fire by then.
+// `onSignIn`: one of this login's own tabs is part-way through the sign-in (moved past its first
+// screen, still on a sign-in page — see browser.js::_sampleLookouts). Never probe then — the probe
+// loads the login entry URL in the SAME cookie jar, which can reset a multi-step flow (Google's
+// identifier -> password) while the person is mid-typing. Ask only once they've left the flow.
+function shouldAskJudge({
+  firedCount, judgedAtFiredCount, judgeVerdict, judging, paused, onSignIn = false, address = "", judgedAtAddress = "",
+}) {
+  const changed = firedCount > judgedAtFiredCount || (firedCount > 0 && address !== judgedAtAddress);
+  return changed && judgeVerdict !== "yes" && !judging && !paused && !onSignIn;
 }
 
 // "Already signed in" — the very first thing checked, before any window is even shown: if the
@@ -177,10 +197,22 @@ const DEFAULT_BACKUP_AGREE_MS = 10000;
 //                                               still shows its login form)
 //   judge null + 2 lookouts agreed >= agreeMs -> save (backup rule, for sites the judge can't read)
 //   otherwise                               -> wait
-function ladderVerdict({ paused, judge, firedAt, nowMs, agreeMs = DEFAULT_BACKUP_AGREE_MS }) {
+// `onSignIn` (one of this login's own tabs is part-way through the sign-in) beats every rung: a
+// sign-in is never finished while the person is still on it. Without this, a phone-approval screen —
+// cookies already written, password box already gone — read as "two lookouts agree", the half-done
+// session was saved, the tab closed, and the run reopened sign-in from the first page.
+// `judgeSettled`: the judge has actually ANSWERED for the page the person is on now. The backup
+// rule is for a judge that answered "can't tell" — never for one not yet asked or still probing,
+// which is where the lookouts (they fire on every intermediate sign-in step) would otherwise win
+// the race on a second-factor page whose address doesn't look like a login.
+function ladderVerdict({
+  paused, onSignIn = false, judge, judgeSettled = true, firedAt, nowMs, agreeMs = DEFAULT_BACKUP_AGREE_MS,
+}) {
   if (paused) return { action: "wait", reason: "paused" };
+  if (onSignIn) return { action: "wait", reason: "on_sign_in" };
   if (judge === "yes") return { action: "save", reason: "judge_yes" };
   if (judge === "no") return { action: "wait", reason: "judge_no" };
+  if (!judgeSettled) return { action: "wait", reason: "judging" };
   const held = backupAgreementHeldMs(firedAt, nowMs);
   if (held >= agreeMs) return { action: "save", reason: "lookouts_agreed" };
   return { action: "wait", reason: "insufficient_signal" };
@@ -303,6 +335,7 @@ module.exports = {
   ticketsChanged,
   looksPaused,
   looksLikeLoginAnswer,
+  addressOf,
   sameAddress,
   judgeFromSnapshots,
   isSignedInAgainstBaseline,

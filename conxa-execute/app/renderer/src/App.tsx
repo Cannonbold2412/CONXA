@@ -114,6 +114,10 @@ export function App() {
   const [attachError, setAttachError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const [pendingRun, setPendingRun] = useState<ConfirmRun | null>(null);
+  const [runPermission, setRunPermission] = useState<"ask" | "auto">("ask");
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+  const [openThinking, setOpenThinking] = useState<Set<number>>(new Set());
   const [chatInput, setChatInput] = useState("");
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -168,6 +172,20 @@ export function App() {
     setPendingRun(null);
   }
 
+  function changeRunPermission(next: "ask" | "auto") {
+    setRunPermission(next);
+    api.saveSettings({ runPermission: next });
+  }
+
+  useEffect(() => {
+    if (!plusMenuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) setPlusMenuOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [plusMenuOpen]);
+
   useEffect(() => {
     document.documentElement.classList.remove("light", "dark");
     document.documentElement.classList.add(theme);
@@ -196,6 +214,7 @@ export function App() {
       return;
     }
     const [settingsRes, contextsRes] = await Promise.all([api.getSettings(), api.getContexts()]);
+    setRunPermission(settingsRes.runPermission === "auto" ? "auto" : "ask");
     const list = contextsRes.contexts || [];
     setContexts(list);
     const stored = settingsRes.activeWorkspaceId || "";
@@ -556,15 +575,51 @@ export function App() {
         <div className="mt-1 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
             <input ref={fileInput} type="file" multiple hidden onChange={(e) => addFiles(e.target.files)} />
-            <button
-              type="button"
-              className="flex h-7 w-7 items-center justify-center rounded-full text-fg-muted hover:bg-bg-hover hover:text-fg"
-              aria-label="Attach files"
-              title="Attach images or text files (up to 10 MB)"
-              onClick={() => fileInput.current?.click()}
-            >
-              <Icon d={paths.plus} size={16} />
-            </button>
+            <div ref={plusMenuRef} className="relative">
+              <button
+                type="button"
+                className="flex h-7 w-7 items-center justify-center rounded-full text-fg-muted hover:bg-bg-hover hover:text-fg"
+                aria-label="Attach files or run permissions"
+                aria-expanded={plusMenuOpen}
+                onClick={() => setPlusMenuOpen((v) => !v)}
+              >
+                <Icon d={paths.plus} size={16} />
+              </button>
+              {plusMenuOpen && (
+                <div className="absolute bottom-full left-0 z-20 mb-1.5 w-56 rounded-xl border border-line bg-bg-elevated p-1.5 text-[13px] shadow-xl">
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left hover:bg-bg-hover"
+                    onClick={() => {
+                      setPlusMenuOpen(false);
+                      fileInput.current?.click();
+                    }}
+                    title="Attach images or text files (up to 10 MB)"
+                  >
+                    Attach files
+                  </button>
+                  <div className="mt-1 border-t border-line px-2.5 pt-2">
+                    <div className="mb-1.5 text-[11px] text-fg-dim">Run permission</div>
+                    <div className="flex rounded-lg border border-line bg-bg p-0.5">
+                      <button
+                        type="button"
+                        className={`flex-1 rounded-md px-2 py-1 text-xs ${runPermission === "ask" ? "bg-bg-active text-fg" : "text-fg-dim hover:text-fg"}`}
+                        onClick={() => changeRunPermission("ask")}
+                      >
+                        Ask
+                      </button>
+                      <button
+                        type="button"
+                        className={`flex-1 rounded-md px-2 py-1 text-xs ${runPermission === "auto" ? "bg-bg-active text-fg" : "text-fg-dim hover:text-fg"}`}
+                        onClick={() => changeRunPermission("auto")}
+                      >
+                        Auto-approve
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="flex rounded-full bg-bg p-0.5 text-[12px]">
               <button type="button" className={`rounded-full px-3 py-1 ${mode === "chat" ? "bg-bg-active text-fg" : "text-fg-dim"}`} onClick={() => setMode("chat")}>Chat</button>
               <button type="button" className={`rounded-full px-3 py-1 ${mode === "form" ? "bg-bg-active text-fg" : "text-fg-dim"}`} onClick={() => setMode("form")}>Form</button>
@@ -761,7 +816,27 @@ export function App() {
                   </div>
                 ) : (
                   <div key={idx} className="group mx-auto max-w-[900px]">
-                    <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
+                    {m.thinking ? (
+                      <button
+                        type="button"
+                        className="mb-1 flex items-center gap-1 text-[11px] text-fg-dim hover:text-fg"
+                        onClick={() => setOpenThinking((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(idx)) next.delete(idx); else next.add(idx);
+                          return next;
+                        })}
+                      >
+                        CONXA
+                        <span className={openThinking.has(idx) ? "rotate-180" : ""}>
+                          <Icon d={paths.chevron} size={10} />
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
+                    )}
+                    {m.thinking && openThinking.has(idx) && (
+                      <pre className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-dim">{m.thinking}</pre>
+                    )}
                     <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{renderBold(msgText(m))}</div>
                     <MsgActions className="mt-1" text={msgText(m)} />
                   </div>

@@ -67,7 +67,8 @@ export type Bridge = {
   execute: (p: { skill: string; workspace_id?: string; inputs: Record<string, string> }) => Promise<{ ok: boolean; status?: string; run_id?: string | null; text?: string; message?: string }>;
   history: () => Promise<{ ok: boolean; items?: HistoryRow[] }>;
   deleteHistory: (p: { at: string }) => Promise<{ ok: boolean; items?: HistoryRow[]; message?: string }>;
-  getSettings: () => Promise<{ ok: boolean; activeWorkspaceId?: string; error?: string }>;
+  getSettings: () => Promise<{ ok: boolean; activeWorkspaceId?: string; runPermission?: "ask" | "auto"; error?: string }>;
+  saveSettings: (p: { activeWorkspaceId?: string; runPermission?: "ask" | "auto" }) => Promise<{ ok: boolean; activeWorkspaceId?: string; runPermission?: "ask" | "auto"; error?: string }>;
   update: {
     check: () => Promise<UpdateCheckResult>;
     install: () => Promise<void>;

@@ -63,7 +63,15 @@ function startApp() {
         return res.end("<body><input type=password></body>");
       }
       if (req.url.startsWith("/auth-start")) {
-        res.writeHead(302, { "Set-Cookie": "pending=1; Path=/", Location: "/mfa" }); return res.end();
+        const next = new URL(req.url, "http://x").searchParams.get("next") || "/mfa";
+        res.writeHead(302, { "Set-Cookie": "pending=1; Path=/", Location: next }); return res.end();
+      }
+      if (req.url.startsWith("/device-approval")) {
+        // "Approve on your phone": no inputs at all (no pause sign), an address with no sign-in
+        // word in it — GitHub's /sessions/two-factor/app shape. Only the judge can tell.
+        if (!pending) { res.writeHead(302, { Location: "/login" }); return res.end(); }
+        res.writeHead(200, { "content-type": "text/html" });
+        return res.end("<body>Check your phone and tap Yes</body>");
       }
       if (req.url.startsWith("/mfa-complete")) {
         // `dest` lets a test land somewhere other than plain /home (e.g. /home-named, AUTH-8's
@@ -139,6 +147,35 @@ async function run() {
     const waited = await awaitAuthPending(r1, { timeoutMs: 15000 });
     assert.deepStrictEqual(waited.map((w) => w.outcome), ["captured"]);
     assert.ok(!waited[0].accountName, "AUTH-8: a plain landed page has no account marker — must stay silent, not guess");
+  });
+
+  await check("AUTH-19: waiting on an 'approve on your phone' page is never read as signed in, and the tab is never reset", async () => {
+    // Password done (new cookie, password box gone, page no longer login-shaped: every lookout has
+    // fired) — but the site's own login page still asks for sign-in, so the judge says no.
+    await reset();
+    const ws = workspace("phone");
+    const key = `${ws}__a`;
+    const r1 = await getCachedBrowser(ws, null, opts(ws));
+    const ctx = launched[0].contexts()[0];
+    await waitFor(() => loginTabs(ctx).length === 1, "login tab");
+    const tab = loginTabs(ctx)[0];
+    await tab.goto(`${ORIGIN}/auth-start?next=/device-approval`);
+    // The decision log is written the instant the ladder decides (before the save's own timekeeper
+    // and prover run), so it — not the pending status — is what proves nothing decided mid-wait.
+    const decisionsFor = () => {
+      const file = path.join(tmp, "logs", "login_signals.log");
+      if (!fs.existsSync(file)) return [];
+      return fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)).filter((d) => d.key === key);
+    };
+    await sleep(1500); // 30 poll ticks, 15x the backup agreement window
+    assert.deepStrictEqual(decisionsFor(), [], "must not decide anything while the person is still approving on their phone");
+    assert.strictEqual(authAppStatus(key), "waiting");
+    assert.ok(!tab.isClosed() && tab.url().endsWith("/device-approval"), `the tab stayed put, got ${tab.isClosed() ? "(closed)" : tab.url()}`);
+
+    await tab.goto(`${ORIGIN}/mfa-complete`); // "tapped Yes" -> lands in the app
+    const waited = await awaitAuthPending(r1, { timeoutMs: 15000 });
+    assert.deepStrictEqual(waited.map((w) => w.outcome), ["captured"]);
+    assert.deepStrictEqual(decisionsFor().map((d) => d.decision), ["judge_yes"], "decided once, by the judge, once in the app");
   });
 
   await check("AUTH-8: an account marker on the landed page surfaces as a positive \"Signed in as\" confirmation", async () => {

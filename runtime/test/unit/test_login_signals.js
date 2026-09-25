@@ -96,6 +96,25 @@ test("ladder: can't-tell (judge null) falls back to the backup rule once two loo
   );
 });
 
+// The phone-approval screen: cookies written, password box gone, still on the sign-in pages.
+test("ladder: never saves while the person is still on a sign-in page, even with a judge yes or agreed lookouts", () => {
+  const firedAt = { passwordGone: 1000, newTickets: 2000 };
+  assert.deepStrictEqual(ladderVerdict({ paused: false, onSignIn: true, judge: null, firedAt, nowMs: 999999 }),
+    { action: "wait", reason: "on_sign_in" });
+  assert.deepStrictEqual(ladderVerdict({ paused: false, onSignIn: true, judge: "yes", firedAt, nowMs: 999999 }),
+    { action: "wait", reason: "on_sign_in" });
+});
+
+// A second-factor page whose address says nothing about signing in (GitHub's
+// /sessions/two-factor/app): the lookouts all fired, the judge is still probing — never save yet.
+test("ladder: the backup rule waits for the judge to ANSWER for the current page, never races it", () => {
+  const firedAt = { passwordGone: 1000, newTickets: 2000, landed: 3000 };
+  assert.deepStrictEqual(ladderVerdict({ paused: false, judge: null, judgeSettled: false, firedAt, nowMs: 999999 }),
+    { action: "wait", reason: "judging" });
+  assert.deepStrictEqual(ladderVerdict({ paused: false, judge: null, judgeSettled: true, firedAt, nowMs: 999999 }),
+    { action: "save", reason: "lookouts_agreed" });
+});
+
 test("ladder: can't-tell with only one lookout never saves on the backup rule alone", () => {
   const v = ladderVerdict({ paused: false, judge: null, firedAt: { passwordGone: 1000 }, nowMs: 999999 });
   assert.deepStrictEqual(v, { action: "wait", reason: "insufficient_signal" });
@@ -148,9 +167,17 @@ test("judgeFromSnapshots: before is null (pre-sign-in probe failed) -> can't tel
   assert.strictEqual(judgeFromSnapshots(null, { url: "https://app.acme.com/dashboard", hasPasswordBox: false }), null);
 });
 
-test("judgeFromSnapshots: same origin+path both times -> can't tell (site shows its login page either way)", () => {
+// Mid-second-factor, the login address still asks for sign-in exactly as before — that is a "no",
+// not "can't tell" (which used to hand the half-done sign-in to the backup rule).
+test("judgeFromSnapshots: same address, still a login answer -> no", () => {
   const before = { url: "https://app.acme.com/login", hasPasswordBox: true };
   const after = { url: "https://app.acme.com/login?x=1", hasPasswordBox: true }; // query ignored
+  assert.strictEqual(judgeFromSnapshots(before, after), "no");
+});
+
+test("judgeFromSnapshots: same address, no longer login-shaped -> can't tell (e.g. a root URL serving a page either way)", () => {
+  const before = { url: "https://app.acme.com/", hasPasswordBox: false };
+  const after = { url: "https://app.acme.com/", hasPasswordBox: false };
   assert.strictEqual(judgeFromSnapshots(before, after), null);
 });
 
@@ -230,6 +257,20 @@ test("shouldAskJudge: does NOT re-fire tick after tick with no NEW lookout, even
   const opts = { firedCount: 1, judgedAtFiredCount: 1, judgeVerdict: "no", judging: false, paused: false };
   assert.ok(!shouldAskJudge(opts));
   assert.ok(!shouldAskJudge(opts), "still no on a later tick — nothing changed");
+});
+
+test("shouldAskJudge: never while the person's own tab is still on a sign-in page", () => {
+  assert.ok(!shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: false, onSignIn: true }));
+  assert.ok(shouldAskJudge({ firedCount: 1, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: false, onSignIn: false }));
+});
+
+// The judge said "no" on the second-factor page; the person then lands in the app — no lookout is
+// left to fire, so the page change itself must trigger the re-ask.
+test("shouldAskJudge: re-asks when the person's own tab moves to another page, not before any lookout fired", () => {
+  const base = { firedCount: 3, judgedAtFiredCount: 3, judgeVerdict: "no", judging: false, paused: false };
+  assert.ok(!shouldAskJudge({ ...base, address: "https://github.com/sessions/two-factor/app", judgedAtAddress: "https://github.com/sessions/two-factor/app" }));
+  assert.ok(shouldAskJudge({ ...base, address: "https://github.com/", judgedAtAddress: "https://github.com/sessions/two-factor/app" }));
+  assert.ok(!shouldAskJudge({ firedCount: 0, judgedAtFiredCount: 0, judgeVerdict: null, judging: false, paused: false, address: "b", judgedAtAddress: "a" }));
 });
 
 test("shouldAskJudge: fires again once a SECOND, different lookout fires", () => {

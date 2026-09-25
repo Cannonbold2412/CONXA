@@ -816,7 +816,10 @@ async function _sampleLookouts(state, { ownPages, context }, nowMs) {
   let anyPasswordBox = false;
   let anyPaused = false;
   let anyLanded = false;
+  let anyOnSignIn = false;
+  const addresses = [];
   for (const p of ownPages) {
+    try { addresses.push(loginSignals.addressOf(p.url())); } catch (_) {}
     let hasPw = false;
     try {
       const probe = await evalOn(p, pageScripts.passwordBoxProbe, undefined, 1200);
@@ -834,7 +837,20 @@ async function _sampleLookouts(state, { ownPages, context }, nowMs) {
     // first tick that lands on the finished page. This is the generic, host-list-free replacement
     // for the old "journey" lookout's per-tick absolute check.
     try {
-      if (!loginSignals.looksLikeLoginAnswer({ url: p.url(), hasPasswordBox: hasPw })) anyLanded = true;
+      const url = p.url();
+      if (!loginSignals.looksLikeLoginAnswer({ url, hasPasswordBox: hasPw })) anyLanded = true;
+      else {
+        anyOnSignIn = true;
+        // Mid-flow = this sign-in tab has moved on from its first screen (next step, password box
+        // shown or gone) and is still on the sign-in. Latched: once the person has started, only
+        // leaving the sign-in pages clears it. An untouched tab stays probe-able, so a sign-in
+        // finished in some other tab is still caught by the judge.
+        const sig = `${loginSignals.addressOf(url)}|${hasPw}`;
+        if (!url.startsWith("about:")) {
+          if (!state.startSig.has(p)) state.startSig.set(p, sig);
+          else if (state.startSig.get(p) !== sig) state.progressed = true;
+        }
+      }
     } catch (_) {}
   }
   if (anyLanded && state.firedAt.landed === undefined) state.firedAt.landed = nowMs;
@@ -863,7 +879,7 @@ async function _sampleLookouts(state, { ownPages, context }, nowMs) {
     state.firedAt.newTickets = nowMs;
   }
 
-  return { paused: anyPaused };
+  return { paused: anyPaused, onSignIn: anyOnSignIn && state.progressed, address: addresses.join(" ") };
 }
 
 // Tickets signature for ONE representative page (whichever live candidate is passed in) plus the
@@ -1057,33 +1073,39 @@ const LOGIN_WAIT_MS = 10 * 60 * 1000;
 // The poll tick both login waits share: human override → already signed in → lookouts → judge →
 // ladder. Resolves to the reason to save the session, or null to keep waiting. `ownPages()` is
 // only this login's own tabs (never a sibling app's — see _sampleLookouts); `askJudge()` is the
-// caller's before/after re-probe, asked only once a NEW lookout has fired, never while a previous
-// ask is in flight or a pause sign is up. With a learned `authDefinition` the probe REPLACES both
+// caller's before/after re-probe, asked once a NEW lookout has fired or this login's tabs moved to
+// another page, never while a previous ask is in flight, a pause sign is up, or the person is
+// part-way through the sign-in. The backup rule only counts once the judge has answered for the
+// page they are on now (ladderVerdict's judgeSettled). With a learned `authDefinition` the probe REPLACES both
 // the baseline judge and the backup-agreement rule: only a confident "yes" saves.
 function _loginDecider({ key, beforeSnapshot, ticketBaseline, authDefinition, context, ownPages, askJudge }) {
-  const lookoutState = { firedAt: {}, sawPasswordBox: false, ticketBaseline };
+  const lookoutState = { firedAt: {}, sawPasswordBox: false, ticketBaseline, startSig: new Map(), progressed: false };
   let judgeVerdict = null; // "yes" | "no" | null ("can't tell" — see login_signals.js)
   let judging = false;
   let judgedAtFiredCount = 0;
+  let judgedAtAddress = "";
+  let answeredAtAddress = null; // the own-tab address the judge's latest answer is about
   return async function decide() {
     // AUTH-6: the human said so — an unconditional save, bypassing everything below.
     if (_checkHumanOverride(key)) return "human_override";
     if (loginSignals.alreadySignedIn(beforeSnapshot)) return "already_signed_in";
 
     const nowMs = Date.now();
-    const { paused } = await _sampleLookouts(lookoutState, { ownPages: ownPages(), context }, nowMs);
+    const { paused, onSignIn, address } = await _sampleLookouts(lookoutState, { ownPages: ownPages(), context }, nowMs);
     const firedCount = Object.keys(lookoutState.firedAt).length;
-    if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused })) {
+    if (loginSignals.shouldAskJudge({ firedCount, judgedAtFiredCount, judgeVerdict, judging, paused, onSignIn, address, judgedAtAddress })) {
       judging = true;
       judgedAtFiredCount = firedCount;
+      judgedAtAddress = address;
       askJudge()
         .then((v) => { judgeVerdict = v; })
         .catch(() => {})
-        .finally(() => { judging = false; });
+        .finally(() => { judging = false; answeredAtAddress = judgedAtAddress; });
     }
-    if (authDefinition) return !paused && judgeVerdict === "yes" ? "auth_definition_yes" : null;
+    if (authDefinition) return !paused && !onSignIn && judgeVerdict === "yes" ? "auth_definition_yes" : null;
     const verdict = loginSignals.ladderVerdict({
-      paused, judge: judgeVerdict, firedAt: lookoutState.firedAt, nowMs, agreeMs: LOGIN_BACKUP_AGREE_MS,
+      paused, onSignIn, judge: judgeVerdict, judgeSettled: !judging && answeredAtAddress === address,
+      firedAt: lookoutState.firedAt, nowMs, agreeMs: LOGIN_BACKUP_AGREE_MS,
     });
     return verdict.action === "save" ? verdict.reason : null;
   };

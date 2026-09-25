@@ -76,6 +76,36 @@ test("host-owned: the login tab's own password box going away completes it", asy
   assert.ok(r.state.cookies.some((c) => c.name === "sid"));
 });
 
+// AUTH-19, the real Google report: email -> password -> "check your phone". On the phone screen the
+// password box is gone and the email step already wrote new cookies — two lookouts agree — but the
+// person is still signing in. Must keep waiting (here: until the timeout), never save half-done.
+test("waiting on a second-factor screen is never read as signed in", async () => {
+  hostBrowser.openTab = async () => ({ page: page("https://app.test/login", { pwSequence: [true] }), tabId: "probe" });
+  hostBrowser.release = async () => {};
+  const steps = [
+    ["https://accounts.test/v3/signin/identifier", false],
+    ["https://accounts.test/v3/signin/challenge/pwd", true],
+    ["https://accounts.test/v3/signin/challenge/dp", false], // held: waiting for the phone
+  ];
+  let calls = 0;
+  const at = () => steps[Math.min(Math.floor(calls / 2), steps.length - 1)];
+  const loginPage = {
+    url: () => at()[0], isClosed: () => false, close: async () => {}, opener: async () => null, goto: async () => {},
+    evaluate: async (script) => {
+      if (script === pageScripts.passwordBoxProbe) { const v = at()[1]; calls++; return v; }
+      if (script === pageScripts.pauseSignProbe) return { otpLikeInputCount: 0, hasOneTimeCodeAutocomplete: false };
+      return {};
+    },
+  };
+  const s = session({ hostOwned: true, pages: [loginPage] });
+  s.context.cookies = async () => (calls > 1 ? [{ name: "sid" }, { name: "flow" }] : [{ name: "sid" }]);
+  await assert.rejects(
+    _waitForInteractiveAuth("ws__app", { session: s, loginPage, hostTabId: "t1" },
+      { ...opts, entryUrl: "https://accounts.test/v3/signin/identifier" }),
+    (e) => e.loginTimedOut === true,
+  );
+});
+
 test("launched session: the login tab's own password box going away completes it", async () => {
   hostBrowser.openTab = async () => ({ page: page("https://app.test/home", { pwSequence: [false] }), tabId: "probe" });
   hostBrowser.release = async () => {};
