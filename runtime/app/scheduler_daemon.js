@@ -242,6 +242,22 @@ function start(opts = {}) {
   async function _fire(schedule, slotIso) {
     const id = schedule.id;
     const startedAt = new Date().toISOString();
+    // The schedule had inputs configured, but this run couldn't decrypt them (a lost/rotated
+    // keychain entry — see scheduler_store.js's _decryptedInputs) — firing anyway would run
+    // with every input blank, silently. Record the slot as errored and skip firing rather than
+    // guessing empty values into whatever the schedule was supposed to type.
+    if (schedule.inputs_decrypt_failed) {
+      log("error", "scheduled_run_inputs_undecryptable", { schedule_id: id, slug: schedule.slug, slot: slotIso });
+      try {
+        await store.update(id, {
+          last_run: { at: startedAt, slot: slotIso || null, status: "error", run_id: null,
+            message: "stored inputs could not be decrypted — re-create the schedule" },
+        });
+      } catch (_) {}
+      inflight.delete(id);
+      writeStateSafe();
+      return;
+    }
     log("info", "scheduled_run_start", { schedule_id: id, slug: schedule.slug, slot: slotIso, ad_hoc: !slotIso });
     writeStateSafe();
     try {

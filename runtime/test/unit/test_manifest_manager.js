@@ -99,6 +99,36 @@ test("decideUpdate: 0% rollout excludes every install", () => {
   assert.strictEqual(d.reason, "rollout_out");
 });
 
+test("decideUpdate: a string percentage (e.g. an admin form field that never got coerced) is honored, not treated as 100%", () => {
+  // 0% as a string must exclude, exactly like the numeric 0 case above — this used to fall
+  // through `typeof === "number"` straight to the 100 default and update every install.
+  const zero = mm.decideUpdate({
+    componentName: "conxa_app",
+    manifestEntry: { version: "2.0.0", rollout: { percentage: "0" } },
+    currentVersion: "1.0.0", installId: "any-install-id",
+  });
+  assert.strictEqual(zero.update, false);
+  assert.strictEqual(zero.reason, "rollout_out");
+
+  const full = mm.decideUpdate({
+    componentName: "conxa_app",
+    manifestEntry: { version: "2.0.0", rollout: { percentage: "100" } },
+    currentVersion: "1.0.0", installId: "any-install-id",
+  });
+  assert.strictEqual(full.update, true);
+  assert.strictEqual(full.reason, "rollout_100");
+});
+
+test("decideUpdate: a genuinely unparseable percentage falls back to the 100% default", () => {
+  const d = mm.decideUpdate({
+    componentName: "conxa_app",
+    manifestEntry: { version: "2.0.0", rollout: { percentage: "not-a-number" } },
+    currentVersion: "1.0.0", installId: "any-install-id",
+  });
+  assert.strictEqual(d.update, true);
+  assert.strictEqual(d.reason, "rollout_100");
+});
+
 test("decideUpdate: 100% rollout includes every install without hashing", () => {
   const d = mm.decideUpdate({
     componentName: "conxa_app",

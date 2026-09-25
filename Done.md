@@ -1393,7 +1393,7 @@ question — that compile produced inputs named `sports` and `react_select_3_lis
 dropdown's enum is also frozen from the recording (picking a different State still offers the
 recorded State's cities). None of these block a run; all deserve their own item.
 
-## AUTH — Authentication (12 done)
+## AUTH — Authentication (14 done)
 
 ### AUTH-1 — Warn at pre-flight when a workflow visits a host that has no sign-in app configured
 **Resolved:** 2026-09-21

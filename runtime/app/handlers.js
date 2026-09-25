@@ -324,6 +324,61 @@ async function _runDatePickerGrid(page, step, inputs, parsed, hints) {
   throw markMayHaveActed(lastErr || new Error("date_pick: calendar grid could not be driven"));
 }
 
+// Shared by the check/assert handlers below — see their comment for why they're one function.
+async function _evaluateCheckLikeStep(page, step, inputs) {
+  const kind = String(step.kind || "").toLowerCase();
+  const timeout = Number(step.timeout) || SECONDARY_ACTION_TIMEOUT_MS;
+
+  if (kind === "url") {
+    const pattern = interpolate(step.pattern || "", inputs);
+    if (!pattern) throw new Error(`${step.type} step has no URL pattern to check`);
+    let re;
+    try { re = new RegExp(pattern); } catch (e) {
+      throw new Error(`${step.type} step's URL pattern isn't a valid pattern: ${pattern}`);
+    }
+    const ok = await pollPositive(() => re.test(page.url()), timeout);
+    if (!ok) throw new Error(`URL check failed: ${page.url()} does not match ${pattern}`);
+    return;
+  }
+
+  if (kind === "url_exact") {
+    const url = interpolate(step.url || "", inputs);
+    if (!url) throw new Error(`${step.type} step has no exact URL to check`);
+    const ok = await pollPositive(() => page.url() === url, timeout);
+    if (!ok) throw new Error(`URL check failed: ${page.url()} is not ${url}`);
+    return;
+  }
+
+  if (kind === "selector") {
+    const selector = interpolate(step.selector || "", inputs);
+    if (!selector) throw new Error(`${step.type} step has no element selector to check`);
+    await withLocator(page, step, inputs, selector, timeout, async locator => locator.first());
+    return;
+  }
+
+  if (kind === "text") {
+    const selector = interpolate(step.selector || "", inputs);
+    const expected = interpolate(step.text || "", inputs);
+    if (!selector) throw new Error(`${step.type} step has no element selector to read text from`);
+    if (!expected) throw new Error(`${step.type} step has no expected text to check for`);
+    let actual;
+    try {
+      actual = await withLocator(page, step, inputs, selector, timeout, locator =>
+        locator.first().innerText({ timeout }));
+    } catch (e) {
+      throw new Error(`${step.type} text: element not found (${selector})`);
+    }
+    if (!actual.includes(expected)) {
+      throw new Error(`${step.type} text: "${actual}" does not include "${expected}"`);
+    }
+    return;
+  }
+
+  // "snapshot" is not implemented at runtime (no visual-diff engine here) and anything else is
+  // a compiler/runtime version mismatch — either way, refuse rather than silently passing.
+  throw new Error(`${step.type} step has an unsupported check type "${kind || "(none)"}" — republish this skill`);
+}
+
 const HANDLERS = {
   wait: async (page, step) => {
     await page.waitForTimeout(Math.min(Number(step.ms) || 250, 1000));
@@ -595,41 +650,12 @@ const HANDLERS = {
     }
   },
 
-  check: async (page, step, inputs) => {
-    const pattern = interpolate(step.pattern || step.check_pattern || "", inputs);
-    if (pattern && !new RegExp(pattern).test(page.url())) {
-      throw new Error(`URL check failed: ${page.url()} does not match ${pattern}`);
-    }
-  },
-
-  assert: async (page, step, inputs) => {
-    const kind = step.assert_kind || step.kind || "url";
-    if (kind === "url") {
-      const pattern = interpolate(step.pattern || step.value || "", inputs);
-      if (pattern && !new RegExp(pattern).test(page.url())) {
-        throw new Error(`Assert failed: URL ${page.url()} does not match ${pattern}`);
-      }
-      return;
-    }
-
-    const hasTgt = hasTarget(step, inputs);
-    if ((kind === "selector" || kind === "visible") && hasTgt) {
-      await withLocator(page, step, inputs, PRIMARY, step.timeout || SECONDARY_ACTION_TIMEOUT_MS, async locator => locator.first());
-      return;
-    }
-
-    if (kind === "text" && hasTgt) {
-      const expected = interpolate(step.value || "", inputs);
-      if (!expected) return;
-
-      const actual = await withLocator(page, step, inputs, PRIMARY, 0, locator => {
-        return locator.first().innerText({ timeout: SECONDARY_ACTION_TIMEOUT_MS });
-      }).catch(() => "");
-      if (!actual.includes(expected)) {
-        throw new Error(`Assert text: "${actual}" does not include "${expected}"`);
-      }
-    }
-  },
+  // check/assert compile to the identical {kind, pattern|url|selector|text} shape via
+  // _saved_check_like_step (skill_package_builder_saved_skill.py) — "check" and "assert" are two
+  // step types only for the editor's own UI wording; the runtime evaluates them the same way.
+  // An unrecognized kind is a compiler/runtime version mismatch, never a silent pass.
+  check: (page, step, inputs) => _evaluateCheckLikeStep(page, step, inputs),
+  assert: (page, step, inputs) => _evaluateCheckLikeStep(page, step, inputs),
 
   screenshot: async (page) => {
     await page.screenshot({ type: "png", timeout: SECONDARY_ACTION_TIMEOUT_MS }).catch(() => null);

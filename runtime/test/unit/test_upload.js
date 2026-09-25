@@ -102,6 +102,7 @@ function mockUploadPage(sel, multiple = true) {
       locator: (s) => {
         assert.strictEqual(s, sel);
         return {
+          count: async () => 1,
           first: () => ({
             setInputFiles: async (path, opts) => { calls.push(path); },
             evaluate: async (fn) => {

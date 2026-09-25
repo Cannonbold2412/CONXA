@@ -4,9 +4,9 @@
 //
 // Layer 1 classifies a thrown error into a deterministic remedy so the runner can apply a
 // targeted retry (re-resolve / scroll / wait-stable / wait-enabled / dismiss-overlay) instead
-// of blindly re-running the whole cascade. Layer 2 mechanisms (a11y re-probe, anchor re-find,
-// scroll-until-found, re-hover) live in run.js, which already has the locator plumbing; this
-// module supplies the classifier and the structured repair_event payload builder.
+// of blindly re-running the whole cascade. Layer 2 mechanisms (a11y re-probe, re-hover,
+// dialog-scope) live in cascade.js, which already has the locator plumbing; this module
+// supplies the classifier and the structured repair_event payload builder.
 
 const CLASS = {
   STALE: "stale",            // element detached between resolve and act
@@ -82,7 +82,7 @@ function buildRepairEvent(step, stepIndex, opts = {}) {
     stable_hash_match: !!opts.stableHashMatch,
     stable_hash: bundle.stable_hash || "",
     drift_hint: opts.driftHint || remedyFor(opts.klass || CLASS.UNKNOWN),
-    app_version_fingerprint: bundle.compat_fingerprint || (step && step.app_version_fingerprint) || "",
+    app_version_fingerprint: bundle.compat_fingerprint || "",
   };
 }
 

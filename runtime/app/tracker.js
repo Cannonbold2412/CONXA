@@ -43,10 +43,13 @@ function _spillAppend(envelope, dest) {
 
 // Raw HTTP POST, independent of any createTracker closure — used both by _post (via the
 // closure, for its logging) and directly by drainSpill (which has no bound workspace).
+// `status` is the real HTTP status when a response came back, or 0 for a network/timeout
+// failure that never got one — callers use this to tell "will never succeed" (4xx: bad token,
+// wrong route) apart from "might succeed later" (network blip, 5xx).
 function _rawPost(destUrl, token, runtimeVersion, envelope, timeoutMs) {
   return new Promise((resolve) => {
     let trackingUrl;
-    try { trackingUrl = new url.URL(destUrl); } catch (_) { return resolve({ ok: false }); }
+    try { trackingUrl = new url.URL(destUrl); } catch (_) { return resolve({ ok: false, status: 0 }); }
     const payload = JSON.stringify(envelope);
     const lib = trackingUrl.protocol === "https:" ? https : http;
     try {
@@ -64,16 +67,23 @@ function _rawPost(destUrl, token, runtimeVersion, envelope, timeoutMs) {
       }, (res) => {
         const ok = res.statusCode >= 200 && res.statusCode < 300;
         res.resume();
-        resolve({ ok });
+        resolve({ ok, status: res.statusCode });
       });
-      req.on("error", () => resolve({ ok: false }));
-      req.setTimeout(timeoutMs || 5000, () => { req.destroy(); resolve({ ok: false }); });
+      req.on("error", () => resolve({ ok: false, status: 0 }));
+      req.setTimeout(timeoutMs || 5000, () => { req.destroy(); resolve({ ok: false, status: 0 }); });
       req.write(payload);
       req.end();
     } catch (_) {
-      resolve({ ok: false });
+      resolve({ ok: false, status: 0 });
     }
   });
+}
+
+// A 4xx means the request itself is invalid (bad/rotated token, wrong route, malformed body) —
+// retrying it, whether live or from the spill file, gets the same 4xx forever. Only a network
+// failure (status 0) or a 5xx (server-side, may recover) is worth holding onto.
+function _isPermanentRejection(status) {
+  return status >= 400 && status < 500;
 }
 
 // Drain every spilled batch, best-effort, using each line's own recorded destination.
@@ -84,20 +94,28 @@ async function drainSpill(log) {
   try { lines = fs.readFileSync(p, "utf8").split("\n").filter(Boolean); } catch (_) { return; }
   if (lines.length === 0) return;
   const remaining = [];
+  let dropped = 0;
   for (const line of lines) {
     let record;
     try { record = JSON.parse(line); } catch (_) { continue; } // drop unparsable lines
     const { _dest, ...envelope } = record;
     const dest = _dest || {};
     const result = await _rawPost(dest.url, dest.token, dest.rv, envelope, 5000);
-    if (!result.ok) remaining.push(line);
+    if (!result.ok) {
+      // Without this, one permanently-rejected batch (a rotated tracking token, a route that no
+      // longer exists) never leaves the file: it's retried and re-fails on every drain forever,
+      // and once SPILL_MAX_LINES fills up with dead lines, all NEWER real evidence is dropped
+      // instead (see _spillAppend's "drop newest" comment above).
+      if (_isPermanentRejection(result.status)) dropped++;
+      else remaining.push(line);
+    }
   }
   try {
     if (remaining.length) fs.writeFileSync(p, `${remaining.join("\n")}\n`);
     else fs.unlinkSync(p);
   } catch (_) {}
   if (log) {
-    try { log("info", "telemetry_spill_drained", { attempted: lines.length, remaining: remaining.length }); } catch (_) {}
+    try { log("info", "telemetry_spill_drained", { attempted: lines.length, remaining: remaining.length, dropped }); } catch (_) {}
   }
 }
 
@@ -111,7 +129,11 @@ function mapErrorToCode(err) {
   if (/timeout/i.test(msg))                  return "timeout";
   if (/net::|ERR_|navigation/i.test(msg))    return "navigation_failed";
   if (/cancel/i.test(msg))                   return "cancelled";
-  return "selector_missing";
+  if (/locator not found|missing selector|element not found/i.test(msg)) return "selector_missing";
+  // Anything unrecognized — permissions, a crash, an auth failure, a plain bug — used to be
+  // silently reported as "selector_missing", which is misleading on the fleet dashboard's drift
+  // signal (a real selector problem looks the same as one that never was).
+  return "unknown";
 }
 
 /**
@@ -150,11 +172,21 @@ function createTracker(trackingConfig, runtimeContext) {
     };
   }
 
+  // Enabled but nothing to send to: every flush this tracker would ever do is doomed before it
+  // starts, and used to still spill each failed batch with `url: undefined` — silently filling
+  // the spill file with lines that can never be delivered. Log it loudly (this is a config bug,
+  // not routine offline telemetry) and return the same no-op tracker `!cfg.enabled` does.
   if (!cfg.tracking_url) {
-    _warn("tracking_url_missing", {
+    if (log) { try { log("error", "tracking_url_missing", {
       workspace_id: cfg.workspace_id || ctx.workspace_id || "",
       workflow_id: ctx.workflow_id || "",
-    });
+    }); } catch (_) {} }
+    const noop = () => {};
+    return {
+      forRun:  () => ({ emit: noop }),
+      flush:   () => Promise.resolve({ ok: false }),
+      destroy: noop,
+    };
   }
   if (!cfg.tracking_token) {
     _warn("tracking_token_missing", {
@@ -219,7 +251,9 @@ function createTracker(trackingConfig, runtimeContext) {
     } finally {
       _flushing = false;
     }
-    if (!result.ok) {
+    // A 4xx here would never succeed on a later drain either — same reasoning as drainSpill's
+    // own drop-on-permanent-rejection.
+    if (!result.ok && !_isPermanentRejection(result.status)) {
       _spillAppend(envelope, {
         url: cfg.tracking_url, token: cfg.tracking_token, rv: ctx.runtime_version,
       });

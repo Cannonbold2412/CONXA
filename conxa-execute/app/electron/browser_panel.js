@@ -80,7 +80,7 @@ function _emitTabsChanged(runId, meta) {
 // becomes the active one and the renderer is told — this is the only place that happens, so a
 // window.open() popup (an OAuth "Sign in with Google" leg) is shown exactly like a tab the
 // runtime asked for, instead of sitting at 0x0 unannounced.
-function _createTab(run, runId, label, meta, loginKey) {
+function _createTab(run, runId, label, meta, loginKey, background = false) {
   const tabId = crypto.randomBytes(4).toString("hex");
   const view = new WebContentsView({
     webPreferences: { partition: run.partition, sandbox: true },
@@ -102,7 +102,9 @@ function _createTab(run, runId, label, meta, loginKey) {
   view.webContents.loadURL(_markerUrl(runId, tabId)).catch(() => {});
   run.tabs.push({ id: tabId, view, markerUrl: _markerUrl(runId, tabId), label: label || null, loginKey: loginKey || null });
   if (_win) _win.contentView.addChildView(view);
-  run.activeTabId = tabId;
+  // A background tab (a judge/prover probe, focus:false) must not steal the shown view from the
+  // sign-in the user is typing into — it stays parked at 0x0 until closed.
+  if (!background || run.activeTabId === null) run.activeTabId = tabId;
   _emitTabsChanged(runId, meta);
   return tabId;
 }
@@ -125,7 +127,7 @@ function newView(runId, { label, focus, loginKey } = {}) {
 function newTab(runId, { label, focus, loginKey } = {}) {
   const run = _runs.get(runId);
   if (!run) throw new Error(`browser_panel: no run ${runId} to add a tab to`);
-  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined, loginKey);
+  const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined, loginKey, focus === false);
   return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
 }
 

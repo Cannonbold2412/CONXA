@@ -110,11 +110,17 @@ async function resolveStepPage(registry, step, opts = {}) {
 
   const existing = registry.pages.get(tabId);
   if (existing) {
-    try {
-      if (!existing.isClosed()) {
-        return _settleIfSwitched(registry, existing, step, opts);
-      }
-    } catch (_) { /* fall through to re-resolve */ }
+    let closed = true;
+    try { closed = existing.isClosed(); } catch (_) { closed = true; }
+    if (!closed) return _settleIfSwitched(registry, existing, step, opts);
+    // This tab WAS already resolved earlier in the run and is now closed — do not fall through
+    // to the "never resolved yet" search below. That search binds whatever page opens/is
+    // pending NEXT, with no check that it has anything to do with this tab; on a site with an
+    // unrelated popup this silently rebinds a step to the wrong tab entirely, which is worse
+    // than a clean, diagnosable failure (see the module header's invariant).
+    const err = new Error(`Tab not found: step recorded on ${tabId} was open earlier in this run but has since closed`);
+    err.tabNotFound = true;
+    throw err;
   }
 
   let page = null;

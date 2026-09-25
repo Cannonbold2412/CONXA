@@ -10,6 +10,7 @@ const { loadInstallId } = require("./install_identity");
 const { installedSkillVersions } = require("./installed_versions");
 const { collectSyncErrors } = require("./sync_errors");
 const pageScripts = require("./page_scripts");
+const { plainCause } = require("./errors");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
 // env.js is the single source of truth for dev/prod path roots. Under the host exe,
@@ -306,8 +307,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   try {
     return await _handleTool(name, args || {}, extra);
   } catch (e) {
-    log("error", "tool_error", { tool: name, error: e.message });
-    return { content: [{ type: "text", text: `Internal error: ${e.message}` }] };
+    log("error", "tool_error", { tool: name, error: e.message, stack: e.stack });
+    const { summary, detail } = plainCause(e);
+    return { content: [{ type: "text", text: `Internal error: ${summary} (${detail})` }], isError: true };
   }
 });
 
@@ -502,6 +504,11 @@ function _resolveSkill(skillSlug, workspace_id) {
     for (const v of Object.values(skillIndex)) {
       if (v.workspace_id === workspace_id && v.slug.replace(/-/g, "_") === normalSlug) return v;
     }
+    // A workspace_id was given but nothing in it matches — do NOT fall through to a slug-only
+    // search across every other workspace below. Running a same-named skill from the wrong
+    // workspace is worse than a clean "not found" (wrong company's pack.json, wrong sync
+    // token, wrong tracking target).
+    return null;
   }
 
   // Slug-only match across all workspaces
@@ -562,6 +569,10 @@ async function _buildFailureResponse(page, errObj, resolvedEntry, runTracker, st
       appendRecoveryEvent,
       stepAssertions,
       frameScopedInventory,
+      // Lets _resolveVisualRef reach the synced content-addressed artifact store for the
+      // recording-time reference image (see failure_response.js) — without this the
+      // step's `visual_ref` can never resolve and the armed round loses its ground-truth image.
+      skillPacksDir: SKILL_PACKS_DIR,
       // BUILD-26 stage (a1): lets the Studio-ceiling branch file failure evidence under this
       // run's own workspace — `exec` already carries both, no new plumbing.
       dataDir: CONXA_DATA_DIR,
@@ -580,10 +591,11 @@ const {
   clearReviewRetry,
   validateReviewAnswer,
   buildReviewRequest,
+  REVIEW_RETRY_MAX,
 } = require("./review_pause");
 
 function _buildReviewRequest(page, step, stepIndex, resolvedEntry, opts) {
-  return buildReviewRequest(page, step, stepIndex, resolvedEntry, opts);
+  return buildReviewRequest(page, step, stepIndex, resolvedEntry, { skillPacksDir: SKILL_PACKS_DIR, ...opts });
 }
 
 // EXEC-21 (hand-over shape): the human sibling of ai_review above, same reasoning for staying
@@ -670,7 +682,7 @@ function _detachUntilSignedIn({ runId, toolName, args, skill, workspaceId, auth 
 
 async function _handleTool(name, args, extra) {
   const text = (t) => ({ content: [{ type: "text", text: t }] });
-  const err  = (t) => text(t);
+  const err  = (t) => ({ content: [{ type: "text", text: t }], isError: true });
 
   // ── list_skills ──────────────────────────────────────────────────────────────
   if (name === "list_skills") {
@@ -988,10 +1000,20 @@ async function _handleTool(name, args, extra) {
 
       const execPath = path.join(entry.skillDir, "execution.json");
       const recPath  = path.join(entry.skillDir, "recovery.json");
-      const rawExec  = fs.existsSync(execPath) ? JSON.parse(fs.readFileSync(execPath, "utf8")) : null;
-      const rawRec   = fs.existsSync(recPath)  ? JSON.parse(fs.readFileSync(recPath,  "utf8")) : null;
-      const rawSteps = Array.isArray(rawExec) ? rawExec : (rawExec?.steps || rawExec?.execution_plan || []);
-      const enriched = enrichStepsWithRecovery(rawSteps, rawRec);
+      let rawExec, rawRec;
+      try {
+        // The compiler always writes a bare JSON array (skill_package_builder_output.py) —
+        // no object wrapper, no execution_plan key. A missing or unparseable file here used to
+        // become an EMPTY step array, which then ran and reported "Done." having done nothing —
+        // the single most misleading outcome this tool can produce. Fail loudly instead.
+        if (!fs.existsSync(execPath)) throw new Error("execution.json is missing from this skill's files");
+        rawExec = JSON.parse(fs.readFileSync(execPath, "utf8"));
+        if (!Array.isArray(rawExec)) throw new Error("execution.json is not the expected step-list shape");
+        rawRec = fs.existsSync(recPath) ? JSON.parse(fs.readFileSync(recPath, "utf8")) : null;
+      } catch (e) {
+        return err(`Skill ${run.skill}'s files are damaged (${e.message}) — sync or republish this skill.`);
+      }
+      const enriched = enrichStepsWithRecovery(rawExec, rawRec);
       // Apply agent-recovery selector overrides (Tier 3/4 closing edge). Only honoured when
       // agent recovery is enabled (ceiling ≥ 3) — in a deterministic Studio test (ceiling 2)
       // a stray override must not silently rewrite the pack under test.
@@ -1731,8 +1753,11 @@ async function _handleTool(name, args, extra) {
       // (_detachContextListeners itself is declared above, outside the try block — see comment there.)
 
       for (let si = 0; si < resolved.length; si++) {
-        const { entry, steps, inputs, resumeFrom, dryRun } = resolved[si];
+        const { entry, steps, inputs, resumeFrom, dryRun, isResume } = resolved[si];
         const startAt = si === 0 ? resumeFrom : 0;
+        // Only the primary skill's own resume actually resumes a call chain (see startAt above) —
+        // a later skill in an execute_sequence always starts fresh at step 0.
+        const isResuming = si === 0 && isResume;
         // Backs a compiled bulk-upload step's {{downloaded_files_dir}} placeholder (see
         // conxa_compile/compiler/upload_binding.py's _BindingState) — resolveUploadPaths already
         // expands a folder into every file inside it, so this run's own isolated download folder
@@ -1755,6 +1780,7 @@ async function _handleTool(name, args, extra) {
             hostRunId: _hostRunId,
             dataDir: CONXA_DATA_DIR,
             dryRun,
+            isResume: isResuming,
             context: _context, // EXEC-21: handover needs the browser context to arm its banner
           });
           _totalRecovered += (result && result.recoveredSteps) ? result.recoveredSteps : 0;
@@ -2058,6 +2084,9 @@ async function _handleTool(name, args, extra) {
               skill: primary.entry.slug,
               workspace_id: primary.entry.workspace_id,
               resume_from: runErr.stepIndex,
+              // The original call's inputs — dropping these meant a resumed run either failed
+              // the required-input check or filled every remaining {{placeholder}} with "".
+              inputs: args.inputs,
               watch: true,
               dry_run: runErr.dryRun,
             }).catch((e) => log("error", "handover_self_resume_failed", { error: e && e.message }));
@@ -2077,9 +2106,26 @@ async function _handleTool(name, args, extra) {
       // the recovery request (and its DOM fingerprint) must describe the page that failed.
       const _failedPage = runErr.failedPage || page;
 
+      // Wrapped: if assembling the recovery payload itself throws (screenshot/digest/fs error),
+      // the platform lock and browser lease must still be released below rather than leaking —
+      // this is best-effort evidence-building, not something that should turn into a stuck lock.
       const failResp = _failedPage
-        ? await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null, exec)
-        : err(runErr.message);
+        ? await (async () => {
+            try {
+              return await _buildFailureResponse(_failedPage, runErr, runErr.fromEntry || primary.entry, _runTracker, resolved.length === 1 ? primary.steps : null, exec);
+            } catch (buildErr) {
+              log("error", "failure_response_build_failed", { run_id: _runId, error: buildErr && buildErr.message });
+              const { summary, detail } = plainCause(runErr);
+              return err(`Execution failed: ${summary} (${detail}) — the detailed recovery report could not be built (${plainCause(buildErr).summary}).`);
+            }
+          })()
+        : (() => {
+            // No page to build the full recovery response against (e.g. browser launch or
+            // platform-lock failure before a page ever opened) — shape it the same way stepFailure
+            // does rather than surfacing the raw internal error.
+            const { summary, detail } = plainCause(runErr);
+            return err(`Execution failed: ${summary} (${detail})`);
+          })();
       if (failResp && Array.isArray(failResp.content)) {
         // EXEC-36/BUILD-28(a) — same warnings a passing run would have surfaced, so a run that
         // failed BECAUSE of a drift/environment mismatch says so instead of reading like an

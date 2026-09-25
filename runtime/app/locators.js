@@ -4,10 +4,10 @@
 // selector derivation helpers, and the small action helpers handlers use.
 const { signalToLocator } = require("./resolve_adapter");
 const { interpolate } = require("./interpolate");
+const { countOn, EVAL_TIMED_OUT } = require("./page_eval");
 const {
   ACTION_TIMEOUT_MS,
   SECONDARY_ACTION_TIMEOUT_MS,
-  RECOVERY_LOCATOR_TIMEOUT_MS,
   VIRTUAL_SCROLL_BUDGET_MS,
 } = require("./run_config");
 const { asObject, asArray, unique, isNonIdempotent } = require("./step_utils");
@@ -117,6 +117,7 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
   if (!candidates.length) throw new Error("Missing selector");
 
   let lastErr = null;
+  let sawAmbiguous = false;
   for (const locator of candidates) {
     try {
       if (timeout && selector !== PRIMARY) {
@@ -125,6 +126,19 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
           timeout,
         });
       }
+      // Never blindly act on candidate[0] of a many-match locator — this is string-mode
+      // (a plain/explicit/compiled selector, not the PRIMARY identity-bundle path, which
+      // already enforces resolver.js's own uniqueness margin). A root whose selector matches
+      // more than one element is not resolved; try the next root instead of guessing which one.
+      // 0 matches is NOT treated as ambiguous or as a reason to skip — Playwright's own click()/
+      // fill()/etc. auto-wait for the element to appear, exactly as before this check existed;
+      // only "more than one" is something this loop can usefully act on. Failing to even count
+      // (a genuinely non-Locator-like object) is treated the same as "can't tell" — proceed and
+      // let the action itself surface the real problem, rather than block on a safety net that
+      // itself couldn't run.
+      let count = -1;
+      try { count = await countOn(locator); } catch (_) { /* can't tell — proceed */ }
+      if (count !== EVAL_TIMED_OUT && count > 1) { sawAmbiguous = true; continue; }
       await gateLocator(locator.first(), step);
       return await actAndMark(fn, locator);
     } catch (err) {
@@ -137,6 +151,9 @@ async function withLocator(page, step, inputs, selector, timeout, fn) {
     }
   }
 
+  if (sawAmbiguous && !lastErr) {
+    throw Object.assign(new Error(`Selector matched more than one element: ${String(selector)}`), { ambiguous: true });
+  }
   throw lastErr || new Error(`Locator not found: ${String(selector)}`);
 }
 
@@ -146,6 +163,7 @@ async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, tim
   if (!src || !dst) throw new Error("Missing selector");
 
   let lastErr = null;
+  let sawAmbiguous = false;
   for (const root of await rootCandidates(page, step, inputs)) {
     try {
       const srcLoc = root.locator(src);
@@ -153,6 +171,15 @@ async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, tim
       if (timeout) {
         await srcLoc.first().waitFor({ state: "visible", timeout });
         await dstLoc.first().waitFor({ state: "visible", timeout });
+      }
+      // Same no-guessing rule as withLocator: a source or target that matches more than one
+      // element is not resolved, and dragging candidate[0] of either risks acting on the wrong
+      // element entirely. A count that can't be determined at all is treated the same as "not
+      // ambiguous" — dragTo below still has its own actionability wait/timeout.
+      let srcCount = -1, dstCount = -1;
+      try { srcCount = await countOn(srcLoc); dstCount = await countOn(dstLoc); } catch (_) { /* can't tell — proceed */ }
+      if ((srcCount !== EVAL_TIMED_OUT && srcCount > 1) || (dstCount !== EVAL_TIMED_OUT && dstCount > 1)) {
+        sawAmbiguous = true; continue;
       }
       return await actAndMark(fn, srcLoc, dstLoc);
     } catch (err) {
@@ -163,30 +190,10 @@ async function withLocatorPair(page, step, inputs, srcSelector, dstSelector, tim
     }
   }
 
+  if (sawAmbiguous && !lastErr) {
+    throw Object.assign(new Error(`Drag selector matched more than one element: ${src} -> ${dst}`), { ambiguous: true });
+  }
   throw lastErr || new Error(`Locator pair not found: ${src} -> ${dst}`);
-}
-
-async function locatorEvaluateAll(page, step, inputs, selector, arg, fn) {
-  let lastErr = null;
-  for (const locator of await locatorCandidates(page, step, inputs, selector)) {
-    try {
-      return await locator.evaluateAll(fn, arg);
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-
-  if (lastErr) throw lastErr;
-  return -1;
-}
-
-async function tryLocator(page, selector, timeout, step = {}, inputs = {}) {
-  try {
-    await withLocator(page, step, inputs, selector, timeout || RECOVERY_LOCATOR_TIMEOUT_MS, async locator => locator.first());
-    return true;
-  } catch (_) {
-    return false;
-  }
 }
 
 function compiledSelectors(step, inputs) {
@@ -195,8 +202,11 @@ function compiledSelectors(step, inputs) {
     .map(selector => interpolate(selector, inputs));
 }
 
+// step.selector is the only field the compiler emits (the display form of
+// target.primary_selector — skill_package_builder_saved_skill.py). css_selector/target.css
+// were an older pack shape nothing current writes.
 function baseSelector(step, inputs) {
-  return interpolate(step.selector || step.css_selector || (step.target && step.target.css) || "", inputs);
+  return interpolate(step.selector || "", inputs);
 }
 
 function stepSelector(step, inputs) {
@@ -227,15 +237,12 @@ function hasTarget(step, inputs) {
   return asArray(asObject(step.identity_bundle).signals).some(s => s && s.selector);
 }
 
+// Deliberately no "retry against .last() when something intercepts the click" fallback — that
+// used to silently click a DIFFERENT element than the one that was covered (never verified to be
+// the same target), which is worse than a clean failure. An overlay covering the target is
+// cascade.js's dismiss-overlay remedy's job, not something to route around here by guessing.
 async function clickFirst(locator, options) {
-  try {
-    return await locator.first().click(options);
-  } catch (err) {
-    if (String(err).includes("intercepts pointer events")) {
-      return locator.last().click({ ...options, timeout: SECONDARY_ACTION_TIMEOUT_MS });
-    }
-    throw err;
-  }
+  return await locator.first().click(options);
 }
 
 function checkboxValue(step, inputs) {
@@ -263,19 +270,14 @@ async function walkHoverChain(page, step, inputs) {
   }
 }
 
+// The compiler resolves src/dst at build time and always emits them as src_selector/
+// dst_selector directly (saved_skill.py) — the JSON-in-step.value shape this used to also parse
+// as a fallback is never produced.
 function parseDragSelectors(step, inputs) {
-  let srcSelector = interpolate(step.src_selector || "", inputs);
-  let dstSelector = interpolate(step.dst_selector || stepSelector(step, inputs), inputs);
-
-  if (!srcSelector && step.value) {
-    try {
-      const parsed = JSON.parse(step.value);
-      srcSelector = parsed.src_css || "";
-      if (!dstSelector) dstSelector = parsed.dst_css || "";
-    } catch (_) {}
-  }
-
-  return { srcSelector, dstSelector };
+  return {
+    srcSelector: interpolate(step.src_selector || "", inputs),
+    dstSelector: interpolate(step.dst_selector || stepSelector(step, inputs), inputs),
+  };
 }
 
 function parseKeyboardShortcut(value) {
@@ -299,8 +301,6 @@ module.exports = {
   markMayHaveActed,
   withLocator,
   withLocatorPair,
-  locatorEvaluateAll,
-  tryLocator,
   compiledSelectors,
   baseSelector,
   stepSelector,

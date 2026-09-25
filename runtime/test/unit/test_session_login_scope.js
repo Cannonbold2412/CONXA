@@ -19,10 +19,10 @@ const hostBrowser = require("../../app/host_browser");
 // A page whose password-box answer can change across calls (simulating the box disappearing once
 // sign-in actually happens) and whose pause-sign answer is always "no". `evaluate` branches on
 // script identity the same way evalOn's real callers pass one script per probe.
-function page(url, { pwSequence = [false] } = {}) {
+function page(url, { pwSequence = [false], landUrl } = {}) {
   let pwCalls = 0;
   return {
-    url: () => url, isClosed: () => false, close: async () => {}, opener: async () => null,
+    url: () => (landUrl && pwCalls >= pwSequence.length ? landUrl : url), isClosed: () => false, close: async () => {}, opener: async () => null,
     goto: async () => {},
     evaluate: async (script) => {
       if (script === pageScripts.passwordBoxProbe) {
@@ -70,7 +70,7 @@ test("host-owned: the login tab's own password box going away completes it", asy
   // different address than the login entry.
   hostBrowser.openTab = async () => ({ page: page("https://app.test/home", { pwSequence: [false] }), tabId: "probe" });
   hostBrowser.release = async () => {};
-  const loginPage = page("https://app.test/login", { pwSequence: [true, false] }); // box present, then gone
+  const loginPage = page("https://app.test/login", { pwSequence: [true, false], landUrl: "https://app.test/home" }); // box present, then gone
   const s = session({ hostOwned: true, pages: [loginPage] });
   const r = await _waitForInteractiveAuth("ws__app", { session: s, loginPage, hostTabId: "t1" }, opts);
   assert.ok(r.state.cookies.some((c) => c.name === "sid"));
@@ -109,7 +109,7 @@ test("waiting on a second-factor screen is never read as signed in", async () =>
 test("launched session: the login tab's own password box going away completes it", async () => {
   hostBrowser.openTab = async () => ({ page: page("https://app.test/home", { pwSequence: [false] }), tabId: "probe" });
   hostBrowser.release = async () => {};
-  const loginPage = page("https://app.test/login", { pwSequence: [true, false] });
+  const loginPage = page("https://app.test/login", { pwSequence: [true, false], landUrl: "https://app.test/home" });
   const s = session({ hostOwned: false, pages: [loginPage] });
   s.context.newPage = async () => page("https://app.test/home", { pwSequence: [false] });
   const r = await _waitForInteractiveAuth("ws__app", { session: s, loginPage }, opts);

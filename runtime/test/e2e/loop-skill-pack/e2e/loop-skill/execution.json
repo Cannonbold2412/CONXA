@@ -19,9 +19,8 @@
   },
   {
     "type": "assert",
-    "assert_kind": "text",
+    "kind": "text",
     "selector": "#status",
-    "_explicit_selector": "#status",
-    "value": "{{expected_status}}"
+    "text": "{{expected_status}}"
   }
 ]
