@@ -48,7 +48,7 @@ function AddAppDialog({ groupId }: { groupId: string }) {
   // Success URL is no longer collected here (P0: Application Authentication Recording) — sign-in
   // is learned from the Connect session itself, not configured up front. The field still exists
   // on the model (Edit keeps it, as an optional manual hint for the runtime's generic fallback
-  // when a definition can't be learned) — see docs/TRD.md §5.2a.
+  // when a definition can't be learned) — see docs/TRD.md §5.3.
   const mutation = useMutation({
     mutationFn: () => addGroupApp(groupId, name, loginUrl, ''),
     onSuccess: () => {

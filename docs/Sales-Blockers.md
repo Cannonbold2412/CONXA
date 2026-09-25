@@ -63,7 +63,7 @@ closes several objections a buyer's security/procurement review would otherwise 
   agree to this" gap a legal review would flag.
 - **Company Agent Fleet dashboard (Machine Registry).** Runtime identity, a paginated list of every
   machine running Conxa, and a revoke endpoint — the concrete answer to "how do we see and kill a
-  machine" in a fleet security review. See `docs/TRD.md` §13.4b.
+  machine" in a fleet security review. See `docs/TRD.md` §13.8.
 - **Compile credit add-on ladder (four tiers, one-time wallet purchases)** and **manual plan grants
   by customer email** — sales/ops can now provision or top up an account without an engineer.
 

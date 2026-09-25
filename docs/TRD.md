@@ -1,180 +1,160 @@
 # Technical Reference Document (TRD)
 
-**Status:** Current as of 2026-07-04  
-**Scope:** Conxa platform — Build Studio, Conxa Cloud, Runtime
+**Scope:** Conxa platform: Build Studio, Conxa Cloud, Conxa Execute, Runtime.
+**Nature:** Current-state reference. History lives in git, `Done.md`, and `docs/archive/fix-log/`.
 
 ---
 
 ## Table of Contents
 
 1. [System Overview](#1-system-overview)
-2. [Conxa Build Studio](#2-conxa-build-studio)
+2. [Build Studio](#2-build-studio)
 3. [Conxa Cloud](#3-conxa-cloud)
-4. [Conxa Runtime (MCP)](#4-conxa-runtime-mcp)
-5. [Authentication & Platform Communication](#5-authentication--platform-communication)
+4. [Runtime (MCP)](#4-runtime-mcp)
+5. [Authentication & Distribution](#5-authentication--distribution)
 6. [Recording Pipeline](#6-recording-pipeline)
 7. [Compilation Pipeline](#7-compilation-pipeline)
-8. [Skill Packaging Pipeline](#8-skill-packaging-pipeline)
+8. [Skill Packaging](#8-skill-packaging)
 9. [Execution Pipeline](#9-execution-pipeline)
 10. [Recovery Architecture](#10-recovery-architecture)
-11. [Skill Sync & Update Architecture](#11-skill-sync--update-architecture)
-12. [Telemetry Architecture](#12-telemetry-architecture)
-13. [LLM Router Architecture](#13-llm-router-architecture)
-14. [Database & Storage Architecture](#14-database--storage-architecture)
+11. [Control-Flow Steps](#11-control-flow-steps)
+12. [Telemetry](#12-telemetry)
+13. [LLM Router & Entitlements](#13-llm-router--entitlements)
+14. [Storage](#14-storage)
 15. [Security Model](#15-security-model)
-16. [Deployment Architecture](#16-deployment-architecture)
+16. [Deployment](#16-deployment)
 17. [Known Gaps & Tech Debt](#17-known-gaps--tech-debt)
 
 ---
 
 ## 1. System Overview
 
-Conxa is a three-tier platform:
-
 ```
 ┌─────────────────────────────────────────────────┐
-│         Conxa Build Studio (Windows)            │
-│  Electron app + Python stdio backend            │
-│  All recording, compilation, packaging          │
-│  happens 100% locally — nothing runs on cloud  │
+│  Build Studio (Windows)                         │
+│  Electron + Python stdio backend                │
+│  Records, compiles, packages — 100% local       │
 └───────────────────┬─────────────────────────────┘
-                    │ HTTPS / Bearer JWT
-                    │ (LLM proxy, publish, auth)
+                    │ HTTPS / Bearer JWT (LLM proxy, publish, auth)
 ┌───────────────────▼─────────────────────────────┐
-│           Conxa Cloud                           │
+│  Conxa Cloud                                    │
 │  FastAPI (Render) + Next.js (Vercel)            │
-│  LLM metering proxy, skill pack hosting,        │
-│  telemetry ingestion, billing, dashboard        │
+│  LLM proxy, skill pack hosting, telemetry,      │
+│  billing, dashboard                             │
 └───────────────────┬─────────────────────────────┘
-                    │ HTTPS at startup + async
-                    │ (skill sync, telemetry out)
+                    │ HTTPS (skill sync, telemetry, self-update)
 ┌───────────────────▼─────────────────────────────┐
-│           Conxa Runtime                         │
-│  Node.js MCP server on end-user machine         │
-│  Executes skills via Playwright                 │
-│  Exposed to Claude Desktop as MCP tools         │
+│  Runtime (end-user machine)                     │
+│  Node.js MCP server; executes skills via        │
+│  Playwright for any MCP client (Claude Desktop, │
+│  Conxa Execute, other agent hosts)              │
 └─────────────────────────────────────────────────┘
 ```
 
-**Key principle:** Execution is entirely on the end-user's machine. Conxa is
-not in the execution hot path. The cloud is a coordination + telemetry layer.
+**Key principle:** execution happens entirely on the end-user's machine. The cloud is coordination and telemetry, never in the execution hot path. It does not record, compile, or execute.
 
 ---
 
-## 2. Conxa Build Studio
+## 2. Build Studio
 
 ### 2.1 Process Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
-│  Electron Main Process (electron/main.js)    │
-│  • Window lifecycle                          │
-│  • IPC bridge (electron/preload.js)          │
-│  • Spawns Python backend as child process    │
-│  • Deep-link auth callback handler           │
+│  Electron main (electron/main.js)            │
+│  window lifecycle, IPC bridge (preload.js),  │
+│  spawns Python backend, deep-link auth       │
 └────────────────┬─────────────────────────────┘
                  │ IPC (contextBridge)
 ┌────────────────▼─────────────────────────────┐
-│  React Renderer (Vite + TypeScript)          │
+│  React renderer (Vite + TS)                  │
 │  electron/renderer/src/                      │
-│  Pages: Dashboard, Workflows, HumanEdit,     │
-│  Compile, Publish, BuildInstaller, Settings  │
+│  Dashboard, Workflows, HumanEdit, Compile,   │
+│  Publish, BuildInstaller, Settings           │
 │  State: Zustand (editorStore.ts)             │
 └────────────────┬─────────────────────────────┘
                  │ lib/ipc.ts → window.conxa.send()
 ┌────────────────▼─────────────────────────────┐
-│  Python Backend (python/backend.py)          │
-│  stdio JSON-RPC: newline-delimited JSON      │
-│  Protocol:                                   │
+│  Python backend (python/backend.py)          │
+│  newline-delimited JSON-RPC over stdio       │
 │    request  → {id, type, payload}            │
-│    result   ← {id, type: "result", result}  │
-│    error    ← {id, type: "error", code, msg}│
-│    event    ← {type: "event", id, ...}       │
-│  Threading: one thread per request           │
-│  Async loop: background thread for Playwright│
+│    result   ← {id, type:"result", result}    │
+│    error    ← {id, type:"error", code, msg}  │
+│    event    ← {type:"event", id, ...}        │
+│  One thread per request; background asyncio  │
+│  loop for Playwright                         │
 └──────────────────────────────────────────────┘
 ```
 
-Screenshots and step frames referenced by the workflow editor (`get_workflow`, and every editor mutation response) are **not** embedded in the JSON-RPC payload. `conxa_compile/editor/assets.py::asset_url()` returns a `conxa-asset://local/<relative-path>` URL (validated against `settings.data_dir`, no disk read); `electron/main.js` registers `conxa-asset` as a privileged scheme via `protocol.handle()` and streams the file from `<CONXA_STUDIO_HOME>/data` on demand when the renderer's `<img>` actually requests it. This keeps editor load/save round-trips independent of workflow size — previously every asset was read and base64-inlined synchronously on every response.
+Handlers live in `python/handlers/` (one mixin per domain, `protocol.py` holds `_CommandError` and event emission).
 
-### 2.2 Python Backend Commands
+**Editor assets are streamed, not inlined.** `editor/assets.py::asset_url()` returns a `conxa-asset://local/<relative-path>` URL (validated against `settings.data_dir`, no disk read). `main.js` registers `conxa-asset` as a privileged scheme and streams the file from `<CONXA_STUDIO_HOME>/data` only when an `<img>` requests it, so editor round-trips don't grow with workflow size.
 
-The backend dispatches on `type` field. All commands are in `backend.py`:
+### 2.2 Backend Commands
 
 | Command | Purpose |
 |---|---|
 | `ping` | Health check |
-| `bootstrap` | First-run dep download (NSIS, runtime binary) |
-| `login` / `logout` / `whoami` | Clerk PKCE auth |
-| `start_recording` / `stop_recording` | Playwright session lifecycle |
-| `get_recording_status` | Live event count |
-| `run_pipeline` | Normalize raw events |
-| `compile` | Full compile → SkillPackage |
+| `bootstrap` | First-run dependency download (§2.4) |
+| `login` / `logout` / `whoami` | Clerk PKCE auth (§5.2) |
+| `start_recording` / `stop_recording` / `get_recording_status` | Playwright recording session |
+| `run_pipeline` / `compile` | Normalize events / full compile → SkillPackage |
 | `create_workflow` / `list_workflows` / `get_workflow` / `update_workflow` / `delete_workflow` | Workflow CRUD (`update_workflow` also renames and re-groups) |
-| `list_groups` / `get_group` / `create_group` / `rename_group` / `delete_group` | WorkflowGroup CRUD — see §5.2a |
-| `add_group_app` / `update_group_app` / `remove_group_app` | Group's app list CRUD |
-| `get_group_auth_status` / `check_group_app_auth` / `start_group_app_auth` / `finish_group_app_auth` / `cancel_group_app_auth` | Per-app auth capture and (`check_group_app_auth`) user-initiated bounded headless session-freshness recheck, one app or the whole group — see §5.2a |
-| `get_skill_pack` | Get workspace's SkillPack + workflow list |
-| `build_skill_package` | Build workspace-scoped skill package |
-| `build_installer` | NSIS installer + cloud publish + upload |
-| `test_workflow` | Local runtime test |
-| `publish` | Push skill pack to cloud |
-| `get_workflow` / `patch_step` / `reorder_steps` / `insert_step` / `delete_step` | Workflow editor |
+| `list_groups` / `get_group` / `create_group` / `rename_group` / `delete_group` | Workflow group CRUD (§5.3) |
+| `add_group_app` / `update_group_app` / `remove_group_app` | A group's app list |
+| `get_group_auth_status` / `check_group_app_auth` / `start_group_app_auth` / `finish_group_app_auth` / `cancel_group_app_auth` | Per-app auth capture and bounded headless freshness recheck (§5.3) |
+| `patch_step` / `reorder_steps` / `insert_step` / `delete_step` | Workflow editor mutations |
 | `validate_workflow` / `sign_off_workflow` | Quality gate |
+| `get_skill_pack` / `build_skill_package` | Workspace SkillPack + build |
+| `publish` | Push skill pack to cloud (§5.6) |
+| `build_installer` | NSIS installer + optional cloud upload (§8) |
+| `test_workflow` | Local sandbox run |
 | `list_skills` / `get_skill_document` / `delete_skill` / `rename_skill` | Skill library |
 | `list_skill_packages` / `list_skill_package_files` | Skill pack browser |
-| `get_metrics` | Backend metrics |
-| `get_usage` | LLM proxy quota |
-| `get_failure_evidence` | Human Review Copilot's evidence bundle for a skill's failing step (BUILD-26, §7.2a) |
-| `copilot_turn` / `accept_copilot_proposal` / `reject_copilot_proposal` / `copilot_save_session` | Human Review Copilot conversation, proposal accept/reject, and session archive (BUILD-26, §7.2a) |
+| `get_metrics` / `get_usage` | Backend metrics / LLM quota |
+| `get_failure_evidence` | Copilot evidence bundle for a failing step (§7.4) |
+| `copilot_turn` / `accept_copilot_proposal` / `reject_copilot_proposal` / `copilot_save_session` | Human Review Copilot (§7.4) |
 
-### 2.3 Data Directory Layout (Build Studio)
+### 2.3 Data Directory
 
 ```
-~/.conxa/              (or SKILL_DATA_DIR)
-├── workflows/
-│   └── {workflow_id}/
-│       ├── workflow.json       (Workflow model)
-│       └── auth/
-│           └── auth.json       (Playwright storageState — NEVER in build output)
-├── sessions/
-│   └── {session_id}/
-│       ├── events.jsonl       (raw RecordedEvent stream)
-│       └── screenshots/
+~/.conxa/                       (or SKILL_DATA_DIR)
+├── workflows/{workflow_id}/
+│   ├── workflow.json           Workflow model
+│   └── auth/auth.json          Playwright storageState — NEVER in build output
+├── sessions/{session_id}/
+│   ├── events.jsonl            raw RecordedEvent stream
+│   └── screenshots/
 ├── skills/
-│   ├── {skill_id}.json         (SkillPackage JSON — json_store.py)
+│   ├── {skill_id}.json         SkillPackage
 │   └── {skill_id}/
-│       ├── assets/            (screenshot thumbnails)
-│       └── edits.jsonl        (reviewer edit log, BUILD-25 stage a — editor/edit_log.py;
-│                                one JSON line per changed field, keyed on step_key; carries
-│                                source/proposal_id/decision for a copilot-attributed line
-│                                since BUILD-26 stage d)
-├── skill-packs/
-│   └── {workspace_dir_slug}/   (filesystem-safe transform of workspace_id)
-│       ├── pack.json          (manifest with sync_endpoint, tracking, skill_groups — see §5.2a)
-│       └── {group_id}/        (workflow's group_id, or "_default" — see §5.2a)
-│           └── {skill_slug}/
-│               ├── execution.json
-│               ├── recovery.json
-│               └── inputs.json
-├── runs/
-│   └── {workflow_id}.jsonl
-├── cache/
-│   └── sessions/              (staged auth for runtime test)
+│       ├── assets/             screenshot thumbnails
+│       └── edits.jsonl         reviewer edit log: one line per changed field, keyed on
+│                               step_key; copilot lines carry source/proposal_id/decision
+├── skill-packs/{workspace_dir_slug}/
+│   ├── pack.json               sync endpoint, tracking, skill_groups (§5.3)
+│   └── {group_id|_default}/{skill_slug}/
+│       ├── execution.json
+│       ├── recovery.json
+│       └── inputs.json
+├── runs/{workflow_id}.jsonl
+├── cache/sessions/             staged auth for sandbox runs
 ├── deps/
 │   ├── nsis/makensis.exe
-│   └── runtime/{ver}/conxa-runtime.exe + keytar.node + runtime-app/
-└── kv/                        (filesystem fallback for DB)
+│   └── runtime/{ver}/          conxa-runtime.exe, keytar.node, runtime-app/
+└── kv/                         filesystem DB fallback
 ```
 
-### 2.4 Bootstrap Flow
+`workspace_dir_slug(workspace_id)` is a character-safety transform, not an identity.
 
-On first launch, `services/bootstrap.py` runs `ensure_all()`:
+### 2.4 Bootstrap
 
-1. Fetches `GET /api/v1/updates/deps-manifest` (public, no auth).
-2. Runs `playwright install chromium` and, for every dep the manifest reports outdated (NSIS zip → `deps/nsis/`; `conxa-runtime.exe` + `keytar.node` → `deps/runtime/{ver}/`; app-layer zip → `deps/runtime/{ver}/runtime-app/`), downloads + SHA-256 verifies + extracts it — all on separate threads (`ThreadPoolExecutor`) concurrently, since each is an independent file on an independent URL. The installed-versions ledger write (`_record_installed`) is lock-protected so two concurrent installs finishing at once can't overwrite each other's ledger entry.
+On first launch `services/bootstrap.py::ensure_all()`:
 
-This is idempotent — already-present deps are skipped.
+1. Fetches `GET /api/v1/updates/deps-manifest` (public).
+2. Runs `playwright install chromium` and, concurrently (`ThreadPoolExecutor`), downloads, SHA-256 verifies, and extracts every outdated dep: NSIS → `deps/nsis/`; `conxa-runtime.exe` + `keytar.node` → `deps/runtime/{ver}/`; app-layer zip → `deps/runtime/{ver}/runtime-app/`. The installed-versions ledger write is lock-protected.
+
+Idempotent: present deps are skipped.
 
 ---
 
@@ -184,1092 +164,652 @@ This is idempotent — already-present deps are skipped.
 
 ```
 Vercel (frontend)                    Render (backend)
-──────────────────                   ─────────────────────────
-Next.js 16                           FastAPI + uvicorn
-conxa-cloud/frontend/                conxa-cloud/backend/
-                                     
-/app/(marketing)/    ← public site   app/main.py
-/app/(protected)/    ← dashboard     app/api/
-/app/sign-in/        ← Clerk embed   app/llm/router.py
-/app/api/v1/[...]/   ← proxy        app/services/
-route.ts             ← proxy to      
-                       API_ORIGIN    PostgreSQL (SKILL_DATABASE_URL)
+Next.js 16, conxa-cloud/frontend/    FastAPI + uvicorn, conxa-cloud/backend/
+  (marketing)/  public site            app/main.py, app/api/, app/services/
+  (protected)/  dashboard              app/llm/router.py
+  sign-in/      Clerk                  PostgreSQL (SKILL_DATABASE_URL)
+  api/v1/[...]  proxy → API_ORIGIN
 ```
 
 ### 3.2 API Routes
 
-All under `/api/v1/` except health endpoints:
+Everything is under `/api/v1/` except health checks and the permanent telemetry alias (§3.3). Full request/response contracts: `docs/Backend-Schema.md`.
 
-| Prefix | Description | Auth |
+**Health & public**
+
+| Route | Purpose | Auth |
 |---|---|---|
-| `GET /healthz` | Liveness | Public |
-| `GET /readyz` | Readiness (DB ping) | Public |
-| `POST /api/v1/llm/proxy/{text,vision}` | Metered LLM proxy | Clerk JWT + X-Conxa-Client header |
-| `GET /api/v1/llm/proxy/usage` | Token quota status | Clerk JWT |
-| `GET /api/v1/entitlements/current` | Workspace plan, four numeric meters, and the capability ladder (distribution/white_label/ops_tier/compile_pool/byok/vision_fallback_on_exhaustion), trial status | Clerk JWT |
-| `GET /api/v1/entitlements/machines` | Registered build devices for the Settings device list | Clerk JWT, owner/admin |
-| `POST /api/v1/entitlements/machines/revoke` | Revoke a device, freeing its slot | Clerk JWT, owner/admin |
-| `POST /api/v1/usage/compile/reserve` | Reserve 1 fresh compile credit; also registers `X-Conxa-Machine` and checks trial expiry | Clerk JWT |
-| `POST /api/v1/usage/compile/commit` | Commit a reserved compile credit | Clerk JWT |
-| `POST /api/v1/usage/compile/release` | Release an uncommitted compile reservation | Clerk JWT |
-| `GET \| PUT \| DELETE /api/v1/workspace/llm-key` | Enterprise BYOK (Azure OpenAI) key config — GET never returns the key | Clerk JWT, owner/admin |
-| `POST /api/v1/bug-reports` | Dashboard "Report a bug" submission — emailed via Resend (§Backend-Schema.md §5.9b); called directly by the browser, not through the Next.js proxy, so a screen-recording attachment isn't capped by that proxy's small request limit | Clerk JWT |
-| `GET /api/v1/subscriptions/plans` | Public price sheet — the four tiers, derived from `PLAN_LIMITS` so it can't drift; excludes the credit add-on | Public |
-| `POST /api/v1/workflows/publish` | Skill pack publish (legacy, permanent) — **mandatory**, fails the whole publish on cloud error; workspace derived from Clerk session | Clerk JWT |
-| `POST /api/v1/workflows/{installer_version}/skill-packs/upload` | Skill pack publish (versioned equivalent); workspace derived from Clerk session — same contract/mandatory semantics | Clerk JWT |
-| `GET /api/v1/workflows/{installer_version}/skill-packs/versions` | Skill-pack release history (version, release notes, `is_latest`) — the Skill Pack Publishing page's changelog; workspace derived from Clerk session | Clerk JWT |
-| `POST /api/v1/workflows/{slug}/installer/upload` | Upload .exe (legacy, permanent) — **optional**, failure never fails the build (only surfaced as a `cloud_upload_error` field); workspace derived from Clerk session | Clerk JWT |
-| `POST /api/v1/workflows/{installer_version}/installer/upload` | Upload .exe (versioned equivalent); workspace derived from Clerk session — same optional semantics | Clerk JWT |
-| `GET /api/v1/workflows/generations` | `{current, supported, deprecated}` installer generations — Build Studio stamps `current` into new publishes/builds | Public |
-| `POST /api/v1/admin/workflows/generations` | Flip the default generation stamped into new builds (never affects already-installed runtimes) | Bearer: `CONXA_ADMIN_TOKEN` |
-| `GET /api/v1/installers/{slug}` | Installer download | Public if `SKILL_INSTALLER_SIGNING_KEY` unset (dev); otherwise requires `ts`+`sig` query params, HMAC-SHA256 signed, 10-min default window (SG-07) |
-| `GET /api/v1/skill-packs/{workspace_id}/delta` | Runtime skill sync — per-skill delta (see below), legacy permanent route | Rate-limited; bearer token optional |
-| `GET /api/v1/workflows/{installer_version}/{workspace_id}/skill-packs/delta` | Runtime skill sync, versioned equivalent — identical contract | Rate-limited; bearer token optional |
-| `POST /api/tracking/{workspace_id}/events` | Telemetry ingest — permanent back-compat alias (also served at `/api/v1/tracking/...` and the versioned `/api/v1/workflows/{installer_version}/{workspace_id}/tracking/events`) | Package tracking token |
-| `GET /api/v1/tracking/companies` | Workspace list — not ops_tier-gated (navigation lookup, not analytics content) | Clerk JWT |
-| `GET /api/v1/tracking/{workspace_id}/runs` | Run summaries — `ops_tier` "basic"+ (§13.4) | Clerk JWT |
-| `GET /api/v1/tracking/{workspace_id}/runs/{run_id}` | Run timeline — `ops_tier` "basic"+ | Clerk JWT |
-| `GET /api/v1/tracking/{workspace_id}/drift` | Admin drift review queue (aggregated `repair_event`s; admin-gated, no auto-publish) — `ops_tier` "full" only | Clerk JWT |
-| `GET /api/v1/tracking/dashboard?range=` | Full operations payload — adoption, reliability, health score, per-skill rollups, recovery cascade, heatmap, ROI, rule-derived insights. `range` accepts `24h`/`7d`/`30d`/`90d` — workspace derived from Clerk session; `ops_tier` "basic"+ | Clerk JWT |
-| `GET /api/v1/tracking/activity` | Recent runs for the workspace (polls independently of the dashboard aggregate) — `ops_tier` "basic"+ | Clerk JWT |
-| `GET /api/v1/tracking/workflows/{workspace_id}/{slug}?range=` | Step-level drill-down for one skill — `ops_tier` "basic"+ | Clerk JWT |
-| `GET \| PUT /api/v1/tracking/roi-assumptions` | Workspace ROI baseline (minutes per run, hourly rate). `PUT` is admin/owner only — `ops_tier` "basic"+ | Clerk JWT |
-| `GET /api/v1/updates/deps-manifest` | Bootstrap manifest (Build Studio deps only) | Public |
-| `GET /api/v1/manifest.json` | **Unified, Ed25519-signed** runtime update manifest — conxa_runtime, conxa_app, and per-skill versions, compatibility matrix, minimum versions, rollout percentages. Source of truth for `runtime/manifest_manager.js`. Served straight from `manifest` KV (signed once at publish time, not on the read path). | Public |
-| `POST /api/v1/admin/component-versions/{component}` | CI (after host/app build) and `publish_routes.py` (after skill publish) write a component's version record here; recomposes + re-signs the full manifest immediately. `component` is `conxa_runtime`, `conxa_app`, or `skill_packs:{company}:{skill}`. | Bearer: `CONXA_ADMIN_TOKEN` |
-| `GET /api/v1/updates/conxa-runtime-manifest` | **Deprecated** — thin shim reading the same `component_versions` KV data, kept only for runtimes that haven't picked up the manifest-driven self-updater. | Public |
-| `GET /api/v1/updates/conxa-app-manifest` | **Deprecated** — same shim pattern as above. | Public |
-| `GET /api/v1/updates/artifact/{tag}/{filename}` | Serves an `app-vX.Y.Z` app-layer zip from GitHub with a direct 200 (allow-listed to app zips only). The signed manifest points `conxa_app` at this instead of GitHub because host-v3.2.1's baked-in downloader treats GitHub's 302 as an error, so it could never self-update the app layer. `http_client.downloadBuffer` now follows redirects for later hosts. | Public |
-| `GET /api/v1/updates/studio-manifest` | Studio download info | Public |
-| `GET /api/v1/updates/studio/latest.yml` | electron-updater generic-provider feed for Build Studio — proxies GitHub's `latest.yml`, rewriting relative `files[].url` to absolute | Public |
-| `GET /api/v1/updates/execute-manifest` | Conxa Execute download info | Public |
-| `GET /api/v1/updates/execute/latest.yml` | electron-updater generic-provider feed for Conxa Execute — same proxy/rewrite as the Studio one | Public |
-| `GET /api/v1/skill-packs/{company}/delta` | Skill-pack delta sync — `since` is a JSON map of `{skill_slug: last_known_version}`; response is `{skills: [{name, action: "update"|"no_change", group, version?, files?}]}`. Each skill is compared and shipped independently — republishing one skill never triggers a re-download of the others. `group` is the skill's `group_id` (or `"_default"`), telling the runtime which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to sync into (§5.2a). Authenticated by installer-embedded sync_token. | Bearer: `pack.json.sync_token`; 401 if invalid |
-| `POST /api/v1/telemetry/runtime-start` | Runtime phone-home — stores `runtime_registrations` KV entry per `(company, platform)` | Public (non-critical) |
-| `GET /api/v1/telemetry/runtimes` | Runtime registration list for dashboard (active/stale, version distribution) | Clerk JWT |
-| `GET /api/v1/audit-events` | Audit log for the authenticated workspace (publish, installer upload, workflow create/delete) — `ops_tier` "basic"+; export is a documented follow-up, not yet a separate endpoint | Clerk JWT |
-| `POST /api/v1/subscriptions/create` | Create Cashfree subscription (`subscription_id`, `auth_link`, `plan_id`) | Clerk JWT |
-| `POST /api/v1/subscriptions/addon/order` | One-time purchase of a compile add-on pack via a Cashfree Payment Link (`payment_link`, `link_id`); dev fallback grants instantly when auth is off | Clerk JWT, owner/admin |
-| `POST /api/v1/subscriptions/addon/verify` | Verify a paid add-on Payment Link after redirect and credit the wallet (idempotent) | Clerk JWT |
-| `POST /api/v1/subscriptions/webhooks/cashfree-orders` | Cashfree PG webhook for one-time add-on orders; credits the wallet exactly once | Webhook secret HMAC over `timestamp + raw body`, base64 (`x-webhook-signature`) |
-| `POST /api/v1/subscriptions/webhooks/cashfree` | Cashfree webhook | Webhook secret HMAC over sorted `cf_`-prefixed fields |
-| `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
-| `GET /api/v1/workflows` | Workflow list + skill pack status | Clerk JWT |
-| `GET /api/v1/workflows/skill-packs` | SkillPack list (dashboard); workspace derived from Clerk session | Clerk JWT |
-| `GET /api/v1/workflows/skill-packs/{workspace_id}` | SkillPack detail (dashboard) | Clerk JWT |
+| `GET /healthz` / `GET /readyz` | Liveness / readiness (DB ping) | Public |
+| `GET /api/v1/subscriptions/plans` | Price sheet derived from `PLAN_LIMITS` (excludes add-on) | Public |
+| `GET /api/v1/workflows/generations` | `{current, supported, deprecated}` installer generations | Public |
+| `POST /api/v1/admin/workflows/generations` | Flip the generation stamped into new builds | `CONXA_ADMIN_TOKEN` |
+| `GET /api/v1/installers/{slug}` | Installer download; HMAC-SHA256 `ts`+`sig`, 10-min window when `SKILL_INSTALLER_SIGNING_KEY` set (SG-07) | Public / signed |
+
+**LLM & entitlements** (§13)
+
+| Route | Purpose | Auth |
+|---|---|---|
+| `POST /api/v1/llm/proxy/{text,vision}` (+ `/text/stream`) | Metered LLM proxy | Clerk JWT + `X-Conxa-Client` |
+| `GET /api/v1/llm/proxy/usage` | Quota status | Clerk JWT |
+| `GET /api/v1/entitlements/current` | Plan, meters, capability ladder, trial | Clerk JWT |
+| `GET /api/v1/entitlements/machines` / `POST .../machines/revoke` | Build-device list / revoke | owner/admin |
+| `POST /api/v1/usage/compile/{reserve,commit,release}` | Compile-credit reservation; `reserve` also registers `X-Conxa-Machine` and checks trial | Clerk JWT |
+| `GET \| PUT \| DELETE /api/v1/workspace/llm-key` | Enterprise BYOK config; GET never returns the key | owner/admin |
+| `GET /api/v1/execute/contexts` | Workspaces the caller can use Execute under (§3.6) | Clerk JWT |
+
+**Publishing & sync**
+
+| Route | Purpose | Auth |
+|---|---|---|
+| `POST /api/v1/workflows/{installer_version}/skill-packs/upload` | Skill pack publish (mandatory; cloud error fails the publish) | Clerk JWT |
+| `POST /api/v1/workflows/publish` | Unversioned publish (§3.3) | Clerk JWT |
+| `GET /api/v1/workflows/{installer_version}/skill-packs/versions` | Release history for the Publish page | Clerk JWT |
+| `POST /api/v1/workflows/{installer_version}/installer/upload` | Installer upload (optional; failure only surfaces as `cloud_upload_error`) | Clerk JWT |
+| `POST /api/v1/workflows/{slug}/installer/upload` | Unversioned installer upload (§3.3) | Clerk JWT |
+| `GET /api/v1/workflows/{installer_version}/{workspace_id}/skill-packs/delta` | Runtime per-skill delta sync (§5.7) | Rate-limited; `sync_token` |
+| `GET /api/v1/skill-packs/{workspace_id}/delta` | Unversioned delta sync (§3.3) | same |
+| `GET /api/v1/workflows` / `GET /api/v1/workflows/skill-packs[/{workspace_id}]` | Dashboard workflow + skill pack views | Clerk JWT |
 | `GET /api/v1/jobs/{job_id}` | Job status | Clerk JWT |
 
-### 3.2a Permanent Back-Compat Surfaces
+**Updates** (§5.7)
 
-These are deliberately kept forever, not tech debt awaiting cleanup. Each exists because a
-shipped artifact — an installed runtime's `pack.json`, a Build Studio release already in the
-field, or the desktop client's own error-parsing code — depends on it directly, and there is
-no way to migrate that artifact after the fact. Every site in code that carries one of these
-points back here instead of repeating the reasoning.
-
-| Surface | Depended on by | What would have to happen first to remove it |
+| Route | Purpose | Auth |
 |---|---|---|
-| Bare `POST /api/tracking/{workspace_id}/events` (no `/api/v1` prefix) | Any installer built before the versioned tracking-events route existed — its `pack.json.tracking.tracking_url` is baked in at install time and never rewritten | Every such installer replaced or self-updated to a `pack.json` pointing at a versioned URL — not practically achievable, hence permanent |
-| `POST /api/v1/workflows/publish` (unversioned) | Same as above — installers built before per-generation publish routes existed | Same as above |
-| `GET \| POST /api/v1/workflows/{slug}/installer/{upload,versions}` (unversioned, `{slug}` in the path but unused — slug is derived from the principal) | Build Studio's own Publish/Build Installer pages, which call these directly, and any installer generation minted before the versioned `{installer_version}/installer/...` pair existed | A Build Studio release that only ever calls the versioned pair, plus no installer relying on the unversioned pair remaining in the field |
-| `GET /api/v1/skill-packs/{workspace_id}/delta` (unversioned) | Same reasoning as the tracking-events alias — an installed runtime's `pack.json` URL is fixed at install time | Same as above |
-| `GET /api/v1/updates/conxa-runtime-manifest`, `GET /api/v1/updates/conxa-app-manifest` (deprecated shims) | Any runtime that hasn't yet picked up the unified, signed `/api/v1/manifest.json` self-updater | Every runtime confirmed migrated to the unified manifest — self-reinforcing since the shims are how a stale runtime updates itself into no longer needing them |
-| `human_edit_tokens` as a dual-emitted wire key alongside the canonical `ai_usage_credits` (`entitlements.py`'s `record_llm_usage`/`current_entitlements`, `productApi.ts`, `billingData.ts`) | Any Build Studio build reading the old key name from `GET /api/v1/entitlements/current`'s `wallet`/`meters` | Confirmation that no build in the field still reads `human_edit_tokens` — tracked as a TODO.md item, not yet scheduled |
-| `saas.py`'s static-secret proxy-identity path (`_trusted_proxy_identity`'s fallback branch below the HMAC one, no replay protection) | An older Conxa Execute deployment that predates the HMAC-signed proxy-identity scheme | That deployment generation confirmed fully retired |
+| `GET /api/v1/manifest.json` | Unified Ed25519-signed runtime manifest (host, app, per-skill versions, compat matrix, rollout %). Served from `manifest` KV, signed at write time | Public |
+| `POST /api/v1/admin/component-versions/{component}` | CI / publish writes a component version (`conxa_runtime`, `conxa_app`, `skill_packs:{co}:{skill}`) and re-signs the manifest | `CONXA_ADMIN_TOKEN` |
+| `GET /api/v1/updates/artifact/{tag}/{filename}` | Serves `app-vX.Y.Z` zips from GitHub as a direct 200 (host-v3.2.1's downloader treats a 302 as an error) | Public |
+| `GET /api/v1/updates/deps-manifest` | Build Studio bootstrap deps | Public |
+| `GET /api/v1/updates/{studio,execute}-manifest` | Desktop app download info | Public |
+| `GET /api/v1/updates/{studio,execute}/latest.yml` | electron-updater feed; proxies GitHub, rewrites relative `files[].url` | Public |
+| `GET /api/v1/updates/conxa-{runtime,app}-manifest` | Deprecated shims (§3.3) | Public |
 
-Two collision hazards worth knowing before touching any of these: the unversioned and versioned
-installer-upload/versions routes at `{slug}`/`{installer_version}` are the *same FastAPI path
-template* on the same router — one shadows the other, and this already broke silently once (the
-versioned pair was unreachable until 2026-09-17; see §17 and the "Permanent" row above). And five
-routers share the bare `/workflows` prefix (`main.py`'s `include_router` order matters — see the
-comment block directly above those calls).
+**Telemetry & dashboard** (§12)
 
-### 3.3 Authentication Middleware
+| Route | Purpose | Auth |
+|---|---|---|
+| `POST /api/v1/workflows/{installer_version}/{workspace_id}/tracking/events` | Telemetry ingest (also `/api/v1/tracking/...` and bare `/api/tracking/...`) | Tracking token |
+| `POST /api/v1/telemetry/runtime-start` / `GET .../runtimes` | Runtime phone-home / registration list | Public / Clerk JWT |
+| `GET /api/v1/tracking/companies` | Workspace list (not tier-gated) | Clerk JWT |
+| `GET /api/v1/tracking/dashboard?range=24h\|7d\|30d\|90d` | Operations payload: adoption, reliability, health, rollups, cascade, heatmap, ROI, insights | `ops_tier` basic+ |
+| `GET /api/v1/tracking/activity` | Recent runs | basic+ |
+| `GET /api/v1/tracking/{workspace_id}/runs[/{run_id}]` | Run summaries / timeline | basic+ |
+| `GET /api/v1/tracking/workflows/{workspace_id}/{slug}?range=` | Step-level drill-down | basic+ |
+| `GET \| PUT /api/v1/tracking/roi-assumptions` | ROI baseline (PUT owner/admin) | basic+ |
+| `GET /api/v1/tracking/{workspace_id}/drift` | Drift review queue (§10.7) | `ops_tier` full |
+| `GET /api/v1/audit-events` | Workspace audit log | basic+ |
+| `GET /api/v1/dashboard` | Dashboard data | Clerk JWT |
+| `POST /api/v1/bug-reports` | "Report a bug" via Resend; called directly by the browser (bypasses the Next.js proxy's body limit) | Clerk JWT |
 
-`app/api/security.py` — `ProductionRequestMiddleware`:
+**Billing** (§3.5)
 
-1. Attaches a request ID to every request.
-2. Enforces body size limits (1MB general; 250MB for the `BUILD_ARTIFACT_UPLOAD_PATHS` set — `/api/v1/workflows/publish`, any `/installer/upload`, any `/skill-packs/upload`). A path missing from that set is silently held to the 1MB general limit, which is how versioned skill-pack publishes were being rejected until 2026-08-01.
-3. When `SKILL_AUTH_REQUIRED=true`:
-   - Extracts `Authorization: Bearer <token>`.
-   - Verifies against Clerk JWKS (`SKILL_CLERK_JWKS_URL`).
-   - Attaches `request.state.auth` with subject, org_id, claims.
-4. Public paths bypass auth: health endpoints, installer downloads, update manifests (including the signed `/api/v1/manifest.json`, polled by every installed runtime before any Clerk session exists), telemetry ingest, skill-pack delta GETs.
+| Route | Purpose | Auth |
+|---|---|---|
+| `POST /api/v1/subscriptions/create` | Create Cashfree subscription → `auth_link` | Clerk JWT |
+| `POST /api/v1/subscriptions/addon/{order,verify}` | One-time add-on via Payment Link / post-redirect verify | owner/admin / Clerk JWT |
+| `POST /api/v1/subscriptions/webhooks/cashfree` | Subscription webhook; HMAC over sorted `cf_` fields | Webhook secret |
+| `POST /api/v1/subscriptions/webhooks/cashfree-orders` | Add-on PG webhook; HMAC over `timestamp + raw body` | Webhook secret |
+| `GET /api/v1/subscriptions/addons` | Add-on catalog (`ADDON_TIERS`) | Clerk JWT |
 
-   The **versioned** runtime endpoints nested under `/api/v1/workflows/{installer_version}/{company}/…` are exempted by *suffix*, not by prefix — `PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_GET = ("/skill-packs/delta",)` and `PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST = ("/tracking/events",)`. A blanket `/api/v1/workflows/` prefix exemption would also unauthenticate `workflow_routes.py`'s Clerk-protected dashboard endpoints (list/create/delete), which share that path segment. Both exempted sub-paths are package-token guarded in their own handlers.
+**Also documented elsewhere in this file**
 
-### 3.4 Workspace / Principal Model
+| Route family | Section |
+|---|---|
+| `POST /api/v1/usage/compile/refund` | §13.4 |
+| `…/releases/{version}/{release,rollback}`, `…/skills/{archive,unarchive}`, `…/deployments`, `…/diff`, `PUT …/groups/{group_id}` | §5.5, §5.3.1 |
+| `POST …/skill-packs/{slug}/artifacts` | §10.2 |
+| `GET /api/v1/tracking/{workspace_id}/reconcile`, `PUT …/policy` | §12.4, §12.5 |
+| `/api/v1/entitlements/execute-grants[/revoke\|/claim]`, `/entitlements/installer-domain` | §13.7, §13.6 |
+| `POST /api/v1/telemetry/runtimes/revoke` | §13.8 |
+| `GET /api/v1/legal/{current,acceptance}`, `POST /api/v1/legal/acceptance` | §5.2 |
 
-`app/services/saas.py` provides `Principal`:
+### 3.3 Permanent Back-Compat Surfaces
 
-```python
-@dataclass(frozen=True)
-class Principal:
-    user_id: str
-    workspace_id: str      # org_id from Clerk, or personal_<user_id>
-    workspace_slug: str
-    workspace_name: str
-    role: str              # "owner" | "member" | "admin"
-    email: str | None
-    name: str | None
-    auth_provider: str     # "clerk" | "local"
-    identity_source: str
-```
+Kept forever: each is depended on by a shipped artifact (a `pack.json` baked at install time, a Studio release in the field, or client error parsing) that can't be migrated. Code sites carrying one point here.
 
-In local dev (`SKILL_AUTH_REQUIRED=false`), all requests are treated as a synthetic local principal.
+| Surface | Depended on by | Removable when |
+|---|---|---|
+| Bare `POST /api/tracking/{workspace_id}/events` | Installers whose `pack.json.tracking.tracking_url` predates the versioned route | Never, practically |
+| Unversioned `POST /api/v1/workflows/publish` | Pre-generation installers | Never, practically |
+| Unversioned `/api/v1/workflows/{slug}/installer/{upload,versions}` (`{slug}` unused; derived from principal) | Studio's Publish/Build Installer pages; older generations | Studio only calls the versioned pair and no old installer remains |
+| Unversioned `GET /api/v1/skill-packs/{workspace_id}/delta` | Installed `pack.json` URLs | Never, practically |
+| `updates/conxa-{runtime,app}-manifest` shims | Runtimes not yet on the unified manifest | All runtimes migrated (self-reinforcing) |
+| `human_edit_tokens` dual-emitted beside `ai_usage_credits` | Studio builds reading the old key from `/entitlements/current` | No such build remains (TODO.md) |
+| `saas.py` static-secret proxy-identity fallback (no replay protection) | Pre-HMAC Execute deployment | That generation retired |
 
-**Role normalization** (`_normalize_org_role`) strips Clerk's `org:` prefix and lowercases. When a
-principal has **no active Clerk org**, they are in their own personal workspace
-(`personal_{user_id}`) — a workspace nobody else can reach, of which they are the sole member — so
-the empty role normalizes to `"owner"`, not `"basic_member"`. Defaulting them to `basic_member`
-locked every solo user out of all `require_admin` routes: publish, workflow create/delete, subscribe.
-Both identity paths (trusted proxy and Clerk JWT) pass `personal_workspace=not org_id`. Tested in
-`tests/test_llm_proxy_and_publish.py`.
+Two hazards: the unversioned and versioned installer routes share one FastAPI path template on one router, so one can shadow the other (this happened once). And five routers share the bare `/workflows` prefix, so `include_router` order in `main.py` matters (see the comment above those calls).
+
+### 3.4 Request Middleware & Principal
+
+`app/api/security.py::ProductionRequestMiddleware`:
+
+1. Attaches a request ID.
+2. Enforces body limits: 1 MB general; 250 MB for `BUILD_ARTIFACT_UPLOAD_PATHS` (`/workflows/publish`, any `/installer/upload`, any `/skill-packs/upload`). A path missing from that set silently gets 1 MB. Execute chat calls reuse `llm_vision_proxy_max_bytes` (`_body_limit_for_path`).
+3. With `SKILL_AUTH_REQUIRED=true`, verifies `Authorization: Bearer` against Clerk JWKS and sets `request.state.auth`.
+4. Public bypass: health, installer downloads, update manifests, telemetry ingest, delta GETs. Versioned runtime routes under `/api/v1/workflows/{installer_version}/{workspace_id}/…` are exempted **by suffix** (`PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_GET = ("/skill-packs/delta",)`, `..._POST = ("/tracking/events",)`), because a `/api/v1/workflows/` prefix exemption would unauthenticate Clerk-protected dashboard routes. Both are token-guarded in their handlers.
+
+`app/services/saas.py::Principal` (frozen dataclass): `user_id`, `workspace_id` (Clerk `org_id` or `personal_<user_id>`), `workspace_slug`, `workspace_name`, `role` (`owner|admin|member`), `email`, `name`, `auth_provider` (`clerk|local`), `identity_source`. Local dev (`SKILL_AUTH_REQUIRED=false`) uses a synthetic principal.
+
+`_normalize_org_role` strips Clerk's `org:` prefix and lowercases. A user with no active org is in their own personal workspace and normalizes to **`owner`** (defaulting to `basic_member` locked solo users out of every `require_admin` route). Both identity paths pass `personal_workspace=not org_id`; covered by `tests/test_llm_proxy_and_publish.py`.
 
 ### 3.5 Billing
 
-Cashfree is the wired payment gateway (`app/api/cashfree_routes.py`, mounted at `/api/v1/subscriptions`; switched from Razorpay 2026-06-30). `POST /create` calls Cashfree's `POST /api/v2/subscriptions/nonSeamless/subscription` server-side and returns an `auth_link` for the frontend to redirect to; the workspace↔subscription↔tier mapping is stored server-side (`cashfree_sub_workspace` KV) since Cashfree webhooks only carry the subscription reference id. `POST /verify` fetches the subscription from Cashfree and resolves the tier from its `planId`. `POST /webhooks/cashfree` verifies the signature by sorting all `cf_`-prefixed payload fields and comparing against the shared webhook secret. Activation/charge webhooks persist `current_period_end` so paid usage windows reset on the monthly payment date. **Compile add-on packs are one-time purchases, not subscriptions (rewritten 2026-08-22):** `POST /addon/order` creates a Cashfree Payment Link (`POST /pg/links`) and the frontend redirects to it; payment is confirmed either by the PG webhook (`POST /webhooks/cashfree-orders`, signature over `timestamp + raw body`) or by `POST /addon/verify` after the redirect back — both credit a never-expiring wallet on the billing record exactly once (`cashfree_orders_granted` KV guard). The wallet is drawn down only after the plan's monthly allowance runs out; no Cashfree *plan IDs* are needed for add-ons. See `docs/Backend-Schema.md` §5.4 for the full request/response contracts. Stripe was previously present as orphaned unwired config fields and has since been fully removed (see §17).
+Cashfree (`app/api/cashfree_routes.py`, mounted at `/api/v1/subscriptions`).
 
-### 3.6 Conxa Execute (folded into conxa-cloud, 2026-09-17 — supersedes the standalone-backend design below)
+- **Subscriptions:** `POST /create` calls Cashfree's non-seamless subscription API and returns `auth_link`. Workspace↔subscription↔tier mapping lives in `cashfree_sub_workspace` KV, because webhooks carry only the subscription reference. `POST /verify` resolves the tier from `planId`. Activation/charge webhooks persist `current_period_end`, so paid usage windows reset on the payment date.
+- **Compile add-on packs** are one-time purchases: `POST /addon/order` creates a Payment Link (`POST /pg/links`). Payment is confirmed by the PG webhook or by `POST /addon/verify` after redirect; either credits a never-expiring wallet exactly once (`cashfree_orders_granted` KV guard). The wallet is drawn only after the monthly allowance runs out.
 
-Conxa Execute has **no backend of its own**. The desktop app (`conxa-execute/app/`) is a thin client of `conxa-cloud/backend` — the same backend Build Studio and the Cloud Dashboard use — the same way those two already are. The earlier design (a standalone `conxa-execute/backend/` Render service with its own Postgres, its own Cashfree billing, its own dedicated LLM keys, and its own separate Clerk application) has been deleted entirely; every reason that design gave for the separation (see the archived text this section replaces, in git history at this file's prior revision) is answered by the points below.
+Contracts: `docs/Backend-Schema.md` §5.4.
 
-**Identity:** one Clerk application (`clerk.conxa.in`), shared with Build Studio. Execute's desktop app uses its own OAuth client under that same instance (a separate `client_id` and its own redirect-URI port range, `127.0.0.1:52841-52850/cb`, so the two apps' PKCE flows never collide) — not a second Clerk instance. Scope includes `user:org:read` so the token carries `org_id`. `conxa-execute/app/electron/auth_service.js` is otherwise unchanged: PKCE S256, token refresh with 60s leeway, tokens encrypted via Electron `safeStorage` to `userData/clerk-session.bin`.
+### 3.6 Conxa Execute
 
-**No BYOK.** Every chat call goes through conxa-cloud's LLM proxy — there is no personal-API-key mode, no wallet, no subscription, no Cashfree integration specific to Execute. Access and billing are entirely the existing Build Studio team plan (see §13.4c): a full workspace member gets Execute for free as part of their plan; a non-member gets it via an Execute Seat grant. Both draw from the workspace's existing AI Usage Credits pool, metered as their own line item (`execute_chat_tokens`, `packages/conxa-core`'s shared meter code) but the same underlying quota/wallet as Human Edit — not a second, independent allowance.
+Execute is a desktop app (`conxa-execute/app/`) with **no backend of its own**. It is a thin client of `conxa-cloud/backend`, like Build Studio and the dashboard.
 
-**Personal/team context switcher:** `GET /api/v1/execute/contexts` (`conxa-cloud/backend/app/api/entitlement_routes.py`) returns every workspace a signed-in person can use Execute under — their personal workspace (always present, free-tier pool), every Clerk org they're a real member of (via `saas.py::clerk_user_organizations`, the Clerk Backend API), and every workspace where they hold a `claimed` Execute grant (`entitlements.py::list_claimed_grant_workspaces_for`). The same call also auto-claims any `pending` grant matching the caller's verified email (`entitlements.py::auto_claim_pending_grants_for`) — see §13.4c, this replaces the old manual invite-code paste. The desktop app's Settings shows a picker built from this list; the chosen `workspace_id` is stored locally and sent as `target_workspace_id` on every chat/entitlement call, **re-verified server-side on every call** (`llm_proxy_routes.py::_resolve_execute_chat_workspace` → `entitlements.py::execute_chat_access_for`) rather than trusted from the client.
+- **Identity:** the same Clerk instance as Build Studio, with its own OAuth client (separate `client_id`, redirect ports `127.0.0.1:52841-52850/cb`). Scope includes `user:org:read` so tokens carry `org_id`. `electron/auth_service.js`: PKCE S256, 60 s refresh leeway, tokens in Electron `safeStorage` (`userData/clerk-session.bin`).
+- **Billing:** no BYOK, wallet, or Execute-specific subscription. Workspace members get Execute on their plan; non-members get it via an Execute Seat grant (§13.7). Both draw from the workspace's AI Usage Credits pool, metered as `execute_chat_tokens`.
+- **Context switcher:** `GET /api/v1/execute/contexts` returns the personal workspace, every Clerk org the user belongs to (`saas.py::clerk_user_organizations`), and every workspace where they hold a `claimed` grant. The same call auto-claims `pending` grants matching the verified email. The chosen `workspace_id` is sent as `target_workspace_id` and **re-verified on every call** (`llm_proxy_routes.py::_resolve_execute_chat_workspace` → `entitlements.py::execute_chat_access_for`).
+- **Model:** no dedicated pool. `execute_chat` routes through `compile_pool_for(principal)` (the tier pool compile and Human Edit use), always on the vision path, so it lands on the tier's `*_MULTIMODAL_MODEL` (falling back to `*_VISION_MODEL`).
+- **Chat proxy:** `POST /api/v1/llm/proxy/text/stream` with `X-Conxa-Client: conxa-execute`, `usage_class: "execute_chat"`. Scoped to that task only: `_openai_messages_for_task` passes `payload["messages"]` through and `_openai_body_dict` forwards `tools`/`tool_choice`; streaming uses `_iter_sse_deltas` (tagged `text`/`tool_call` chunks). Execute calls skip `register_request_machine` (seats, not machines, are the cap).
+- **Client transport:** `vendor/opencode/loop/run_turn.js` accepts an `opts.chatCompletion` transport. `electron/execute_client.js::makeChatCompletion` maps OpenAI-shaped requests to the proxy body, parses the tagged SSE stream, accumulates tool-call fragments by index, and returns `{choices:[{message}]}`.
+- **Sessions:** local only (`vendor/opencode/storage/storage.js`, see `app/NOTICE`). No cross-device sync.
+- **In-app browser:** see §4.7.
 
-**No dedicated model (removed 2026-09-24):** Execute chat has no LLM deployment of its own. `_execute_route` and the `EXECUTE_LLM_{PROVIDER,ENDPOINT,API_KEYS,MULTIMODAL_MODEL,FALLBACK_MULTIMODAL_MODEL}` config block and router pool `"execute"` were removed — every `execute_chat` turn routes through `compile_pool_for(principal)`, the same tier pool (Free/Starter/Pro) compile and Human Edit already use, always down the vision path so it lands on that tier's `*_MULTIMODAL_MODEL` slot (`client.py::_copilot_modality` always returns `multimodal` for the task, falls back to `*_VISION_MODEL` when the multimodal slot is unset). See `docs/cost_model.md` "LLM Provider Strategy."
-
-**Chat proxy:** Execute's chat goes through the same endpoints Build Studio's compiler already uses — `POST /api/v1/llm/proxy/text/stream` (and the non-streaming `/text` for completeness), header `X-Conxa-Client: conxa-execute` alongside the existing `build-studio` value, `usage_class: "execute_chat"`. The proxy needed two additions for a real multi-turn tool-calling chat client, both scoped to a new `execute_chat` task so every other task's behavior is untouched: (1) `packages/conxa-core/conxa_core/llm/client.py::_openai_messages_for_task`'s `execute_chat` branch passes `payload["messages"]` straight through instead of building a single-turn prompt, and `_openai_body_dict` forwards `tools`/`tool_choice` when the payload carries them; (2) the streaming wire format gained a tool-call-aware sibling, `_iter_sse_deltas` (tagged `{"type":"text"|"tool_call",...}` chunks instead of `_iter_sse_text_deltas`'s bare strings), wired into `app/llm/router.py::_call_provider` and `app/api/llm_proxy_routes.py::_meter_and_stream` only when `task == "execute_chat"`. An Execute-originated call also skips `register_request_machine` (`execute_seats` is its cap, not `machines`) and gets a higher body-size ceiling (reuses `llm_vision_proxy_max_bytes`, since a chat history is bigger than a one-shot compile prompt) — see `app/api/security.py::_body_limit_for_path`.
-
-`conxa-execute/app/vendor/opencode/loop/run_turn.js` (the tool-dispatch loop) is unchanged in behavior but gained an optional `opts.chatCompletion` pluggable transport — a caller-supplied `async (openaiBody) => {ok,json}|{ok:false,error}` function that replaces its default real-OpenAI-compatible `fetch` call. `conxa-execute/app/electron/execute_client.js::makeChatCompletion` is that plug: it translates run_turn's OpenAI-shaped request into the cloud proxy's `{task,payload,usage_class,target_workspace_id}` body, parses the tagged SSE stream, accumulates tool-call argument fragments by index (standard OpenAI streaming semantics), and hands back a normal `{choices:[{message}]}` shape — run_turn's own tool-dispatch logic needs no further changes.
-
-**Local session storage only** — `conxa-execute/app/vendor/opencode/storage/storage.js` (ported from opencode, see `conxa-execute/app/NOTICE`) remains the sole session store; the earlier design's cross-device sync target (`PUT /v1/sessions/{id}`, table `execute_chat_session`) was cut rather than migrated — nothing in the desktop app depended on it functionally (no "restore from another device" UI existed), and it's straightforward to re-add against conxa-cloud later if cross-device continuity becomes a real ask.
-
-**What was deleted:** the entire `conxa-execute/backend/` directory and its `render.yaml` (own Postgres, own Cashfree webhooks, own dedicated LLM provider keys), `conxa-cloud/backend/app/api/execute_bridge_routes.py` (the shared-secret `SKILL_EXECUTE_SERVICE_TOKEN` HTTP bridge — collapsed into in-process function calls now that both live in one backend), `conxa-cloud/frontend/src/ClaimPage.tsx` and its `/claim/[grantId]` route (the manual invite-code redeem screen, unnecessary once auto-claim works), and the `execute_service_token`/`conxa_cloud_api_base_url` config fields (`packages/conxa-core/conxa_core/config.py`).
 
 ---
 
-## 4. Conxa Runtime (MCP)
+## 4. Runtime (MCP)
 
 ### 4.1 Process Model
 
-The runtime uses a **split architecture** — a large infrequent host binary and a small frequently-updated app layer:
+Two layers: a large, rarely-updated host binary and a small, frequently-updated app layer.
 
 ```
-Claude Desktop (host)
-        │  MCP stdio transport
+MCP client (Claude Desktop, Conxa Execute, …)
+        │  MCP stdio
         ▼
-conxa-runtime.exe  ← host layer (Node.js + all npm deps + bootstrap.js, ~85 MB, updated quarterly)
+conxa-runtime.exe   host layer: Node + npm deps + bootstrap.js (~85 MB, rare releases)
         │  loads from disk
         ▼
-~/.conxa/conxa-app/server.js  ← app layer (obfuscated JS, ~60 KB zip, updated every release)
-        │
-        ├── @modelcontextprotocol/sdk  (bundled in host, accessed via global.__hostRequire bridge)
-        ├── run.js                    (step executor)
-        ├── skill_loader.js           (skill registry)
-        ├── sync.js                   (skill pack sync)
-        ├── auth_manager.js           (token + session management)
-        ├── browser.js                (Playwright browser lifecycle)
-        ├── page_scripts.js           (functions run inside the browser page — see below)
-        └── tracker.js                (telemetry event emission)
+~/.conxa/conxa-app/current/server.js   app layer: obfuscated JS (~60 KB zip, every release)
+        ├── run.js, resolver.js, resolve_adapter.js, cascade.js, recovery.js
+        ├── skill_loader.js, sync.js, auth_manager.js, browser.js, tabs.js
+        ├── page_scripts.js, tracker.js, run_registry.js, host_lock.js, …
+        └── @modelcontextprotocol/sdk etc. via global.__hostRequire (bundled in host)
 ```
 
-`bootstrap.js` (bundled in host; source at `runtime/host/bootstrap.js`) first applies `env.js`, which normalizes the install, data, app, API, and update-channel paths for every subsequently loaded module. The `register-mcp` and `unregister-mcp` host-layer commands then exit before any app-layer work. For a normal MCP launch, bootstrap fetches and verifies the signed manifest and may activate a compatible app-layer update; it then resolves `conxa-app/current` (a directory junction — see §4.4) via `version_manager.resolveCurrent()`, checks that version's `version.json` for `min_host` compatibility (the pure, unit-tested gate lives in `runtime/host/min_host_gate.js`; `bootstrap.tryLoad` is a thin wrapper), and loads its `server.js`. On failure, it calls `version_manager.rollback()` to flip `current` back to the previously-retained version and retries — no re-download needed, since old versions are never deleted until pruned by retention. The install-time `sync` subcommand (`host/cli_sync.js`) enforces the same gate before it requires the app layer's `sync.js`, so an incompatible app layer can no longer execute against an old host during installation (it skips with a message; first launch self-updates the host). App-layer files are obfuscated JS (self-defending, string-array rc4) — not human-readable on disk, but no V8 bytecode dependency on the host's exact Node build.
+**Bootstrap** (`runtime/host/bootstrap.js`):
 
-**Source layout vs deployed layout:** in the repo, exe-frozen modules live under `runtime/host/` and app-layer modules under `runtime/app/` (see `runtime/host-manifest.json` for the authoritative frozen list — edits in `host/`, or to the dual-shipped `app/` modules it lists, ship only with the next `host-v*` release). The *deployed* layouts stay flat: the exe is built from `runtime/host/bootstrap.js`, and the conxa-app zip stages every module side-by-side in `conxa-app/<version>/` — so relative `require("./x")` inside the app layer is unchanged in production.
+1. `env.js` normalizes install, data, app, API, and update-channel paths for every later module.
+2. `register-mcp` / `unregister-mcp` / `sync` / `schedule` / `runner` subcommands dispatch here (§4.3, §4.8).
+3. Normal launch: fetch and verify the signed manifest, optionally activate a newer app layer (§5.7), then `version_manager.resolveCurrent()` → check `version.json.min_host` (pure gate: `host/min_host_gate.js`) → `require` `server.js`. On failure, `version_manager.rollback()` flips `current` to the retained previous version and retries (no re-download).
 
-`page_scripts.js` is the one app-layer file obfuscated **without** `--self-defending`/`--string-array` (mangled identifiers only). Every function it exports is one Playwright ships into the browser page via `page.evaluate()`/`locator.evaluate()` (`Function.prototype.toString()`, re-parsed and run outside this Node process). Both of those transforms rewrite a function body to call back into a module-scope decoder/self-defending guard — invisible once the source is re-parsed in the browser realm, so a full-strength build throws `ReferenceError: <mangled-name> is not defined` at the first evaluate() call that runs (silent for evaluate() sites wrapped in try/catch, fatal for `run.js`'s scroll handler, which is not). `run.js`, `server.js`, `resolve_adapter.js`, and `drift.js` call into `page_scripts.js` rather than defining browser-context functions inline — keep it that way; a new inline arrow passed to `page.evaluate()`/`locator.evaluate()` anywhere else in the app layer will reproduce this bug.
+The install-time `sync` subcommand (`host/cli_sync.js`) enforces the same `min_host` gate before loading the app layer's `sync.js`; an incompatible app layer is skipped and the first launch self-updates the host.
 
-> **Why not bytecode?** `@yao-pkg/pkg` embeds its own prebuilt Node24 base, whose V8 build differs from official nodejs.org Node 24.x. `bytenode`'s `fixBytecode` overwrites the header bytes that reveal the mismatch, so `cachedDataRejected` never fires — but the deserialization segfaults silently (0xC0000005, no stderr). Obfuscated plain JS eliminates this coupling permanently.
+**Source vs deployed layout.** In the repo, host modules live in `runtime/host/` and app modules in `runtime/app/`. `runtime/host-manifest.json` is the authoritative frozen list (verified in CI by `check_host_manifest.js`: every file reachable from `bootstrap.js` must be listed). Edits to listed files ship only with a `host-v*` release. Deployed layouts are flat: the zip stages every app module side by side in `conxa-app/<version>/`.
+
+**Obfuscation, not bytecode.** App-layer files are obfuscated JS (self-defending, rc4 string array). `@yao-pkg/pkg`'s embedded Node differs from official Node builds; `bytenode`'s `fixBytecode` masks the header mismatch, so V8 segfaults silently (0xC0000005). The host exe is built `--no-bytecode` for the same reason (Playwright's selector engine).
+
+**`page_scripts.js` is the only place for browser-context functions.** It's obfuscated with mangled identifiers only (no self-defending/string-array), because Playwright serializes functions passed to `page.evaluate()`/`locator.evaluate()` via `toString()` and re-parses them in the page, where the obfuscator's module-scope decoder doesn't exist. `run.js`, `server.js`, `resolve_adapter.js`, and `drift.js` call into it. Never pass an inline arrow to `evaluate()` elsewhere in the app layer: it throws `ReferenceError` in production.
 
 ### 4.2 MCP Tools
 
-Defined in `server.js` `_toolDefinitions()`:
+Defined in `server.js::_toolDefinitions()`:
 
 | Tool | Description |
 |---|---|
-| `list_skills` | List installed skills, optionally filtered by company |
-| `execute_skill` | Execute a single workflow skill |
-| `execute_sequence` | Execute an ordered list of skills in one browser session |
-| `get_skill_inputs` | Return input schema for a skill |
-| `get_execution_status` | What is running and what is waiting (2026-09-21). No args: `{active_runs, awaiting_auth, recent}` — every running execution (§4.5), every run detached while it waits for the user to sign in (each app's status: `waiting` / `signed_in` / `closed` / `failed`), and how the last 10 runs ended. With `run_id`: that one run's `state` (`running` / `awaiting_auth` / `completed` / `failed` / `cancelled`; `unknown` if it aged out) plus, once finished, its result `summary`. This is how any MCP client follows a run detached by `execute_skill` — see §5.2a. |
-| `cancel_execution` | Cancel a running execution; pass `run_id` when more than one is active |
-| `authenticate` | Open sign-in windows for every application in a skill's group and **block (bounded) until the user finishes** (2026-09-20). Args: `skill` (resolves workspace and group) or `workspace_id`, `wait_seconds` (default 45, max 600). Returns `{status, apps?, message?, next}` with `status` one of `signed_in` / `waiting` / `failed`. Idempotent — a call while a window is still open re-waits on that same window instead of opening another, so `waiting` is answered by calling it again. Uses `getAuthContext(..., {authOnly: true})`, which — when a live check or a sign-in is needed — opens the sign-in tab(s) inside a browser *session* (§4.5) and, once everything is signed in, parks that warm session for the next `execute_skill` to reuse (an Execute-owned view is closed instead). With nothing to check it returns at once without building any browser. Exposed to Conxa Execute's chat agent (`CHAT_TOOLS`). |
-| `get_runtime_status` | Runtime diagnostics (non-mutating). `staged_runtime_version` is non-null when a host update is activated on disk but this process is still the old exe. Null on local dev builds. While it is set, the runtime also refuses new `execute_skill`/`execute_sequence` calls (`runtime/app/update_gate.js`) with "Quit and reopen <host> to finish" — the same rule in Claude Desktop and every other MCP client; scheduled runs are exempt, and the gate releases itself after 3 launches that never picked up the update (`CONXA_SKIP_UPDATE_GATE=1` disables it). |
-| `create_schedule` | Schedule a skill to run on this machine on a cron schedule (PROD-5, §4.6). Inputs stored encrypted locally. |
-| `list_schedules` | List local schedules with next run + last result (metadata only — input values never returned) |
-| `delete_schedule` | Permanently remove one local schedule |
+| `list_skills` | Installed skills, optionally filtered by company |
+| `get_skill_inputs` | Input schema for a skill |
+| `execute_skill` | Run one skill. Options: `dry_run`, `watch`, `step_overrides`, `review_results`, `resume_from` (below) |
+| `execute_sequence` | Run an ordered list of skills in one browser session |
+| `get_execution_status` | No args: `{active_runs, awaiting_auth, recent}` (running runs, runs detached waiting for sign-in with each app's `waiting`/`signed_in`/`closed`/`failed`, last 10 outcomes). With `run_id`: that run's `state` (`running`/`awaiting_auth`/`completed`/`failed`/`cancelled`/`unknown`) and, once finished, its `summary`. Also surfaces `waiting_for_host` (§4.6) |
+| `cancel_execution` | Cancel a run; `run_id` required when more than one is active |
+| `authenticate` | Open sign-in for every app in a skill's group and block (bounded) until done. Args: `skill` or `workspace_id`, `wait_seconds` (default 45, max 600). Returns `{status: signed_in\|waiting\|failed, apps?, message?, next}`. Idempotent: calling again re-waits on the open window. Parks the warm session for the next `execute_skill` (§4.6) |
+| `get_runtime_status` | Diagnostics. `staged_runtime_version` is non-null when a host update is activated on disk but this process is the old exe |
+| `create_schedule` / `list_schedules` / `delete_schedule` | Local cron schedules (§4.8). `list_schedules` never returns input values |
 
-**PROD-3-DRYRUN**: `execute_skill`/`execute_sequence` accept `dry_run: true` — every step runs
-normally except a `destructive === true` one, which is resolved (proving its target is findable)
-but never dispatched or verified. See §10.6a's sibling section for the full mechanism.
+**Execute-skill options:**
 
-**EXEC-13**: `execute_skill` also accepts `review_results: { "<step_index>": <answer> }` — the
-`ai_review` step type's resume payload, parallel to `step_overrides` but bound straight into
-`inputs` rather than run through `applyStepOverrides`. See §10.9.
+- `dry_run: true` — every step runs except `destructive === true` ones, which are resolved (proving the target exists) but not dispatched (§9.6).
+- `review_results: {"<step_index>": answer}` — resume payload for an `ai_review` pause, bound into `inputs` (§11.3).
+- `resume_from` alone resumes a hand-over pause; a hand-over can also resume outside MCP (§11.4).
+- `step_overrides` — agent-supplied step fixes, the closing edge of Tier B recovery (§10.1).
 
-**EXEC-21 (hand-over shape)**: no new `execute_skill` parameter — a hand-over pause is resumed by
-calling `execute_skill` again with `resume_from` alone (there is no structured answer to pass, and
-the resume is normally self-driven anyway, see §10.10) or, outside any MCP call at all, via a file
-drop / `conxa-runtime.exe resume <run_id>` / a token-gated loopback HTTP POST. See §10.10.
+**Update gate** (`app/update_gate.js`): while `staged_runtime_version` is set, new `execute_skill`/`execute_sequence` calls are refused with "Quit and reopen <host> to finish". Scheduled runs are exempt; the gate releases itself after 3 launches that never picked up the update; `CONXA_SKIP_UPDATE_GATE=1` disables it.
 
-There is no `refresh_skills` tool — skill pack sync runs automatically on startup
-(`syncSkillPacks`, §4.3) and again whenever `execute_skill`'s integrity gate fails a
-real on-disk checksum mismatch. Before that gate, `ensureSkillIntegrity` re-reads the
-skill's `manifest.json` from disk (one retry) so a long-lived process — Build Studio's
-reused sandbox runtime — does not fail the first run after a restage against stale
-in-memory checksums. Nothing else triggers a cloud re-sync on demand.
+**No `refresh_skills` tool.** Sync runs at startup (§4.4) and again when `execute_skill`'s integrity gate finds a real on-disk checksum mismatch. Before failing that gate, `ensureSkillIntegrity` re-reads the skill's `manifest.json` once, so a long-lived process (Studio's reused sandbox runtime) doesn't fail after a restage on stale in-memory checksums.
 
-### 4.2a MCP Registration (`register-mcp` / `unregister-mcp`)
+### 4.3 MCP Registration
 
-`conxa-runtime.exe register-mcp` / `unregister-mcp` are **host-exe-layer subcommands**, dispatched in `bootstrap.js` immediately after `env.apply()` — before `version_manager.resolveCurrent()`/the app-layer load, so they work even when no app layer is staged yet (a thin installer ships one before the first app-layer download) and regardless of the app layer's `min_host` check. NSIS calls the subcommand directly (`ExecWait '... register-mcp'`); no config-editing logic lives in the installer template itself.
-
-Files (all host-layer, bundled into the exe via `bootstrap.js`'s static `require()`s — no `pkg.scripts` entry needed for a statically-required path). The full frozen membership list is declared in `runtime/host-manifest.json` and CI-verified by `runtime/check_host_manifest.js` (runs in `build-runtime-host.yml`): any file reachable from `bootstrap.js`'s require graph must be listed there, so "this edit is secretly a host-release change" is visible at review time instead of discovered in packaged prod.
+`conxa-runtime.exe register-mcp` / `unregister-mcp` are host-layer subcommands dispatched right after `env.apply()`, before the app-layer load and the `min_host` check, so they work with no app layer staged. NSIS only invokes them (`ExecWait '... register-mcp'`); no config editing lives in the installer.
 
 | File | Role |
 |---|---|
-| `mcp_hosts.js` | Data table of JSON-configured hosts (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Gemini CLI, Cline, Zed, Copilot CLI, Factory, KiloCode, Antigravity, OpenCode, OpenClaw, Crush, OpenHands, Augment, Kiro, Junie, Qwen). One row per host: `detect(ctx)`, `configPaths(ctx)` (plural — VS Code writes one file per profile, Cline writes two locations), `objectPath`, `shape`. |
-| `mcp_hosts_toml.js` | Codex CLI, Mistral Vibe (TOML — `# >>> conxa:<label> >>>` managed marker blocks, no TOML parser dependency). |
-| `mcp_hosts_yaml.js` | Goose, Hermes (YAML — `yaml` package's Document API, comment-preserving). |
-| `config_edit.js` | JSON/JSONC writer (`jsonc-parser`, so comments/formatting survive on every host, not just the hand-edited ones). Atomic write (temp file, `fsync`, `rename`), ownership check (`isOwned()` — an existing entry is "ours" only if its `command` resolves inside our install root), and a read-immediately-before-write CAS check against a concurrent writer. |
-| `config_edit_toml.js` | Marker-block editor for the two TOML hosts. A regular table (`[mcp_servers.conxa]`, Codex) can exist only once — TOML rejects a duplicate definition — so a second one outside our span is treated as foreign; an array-of-tables (`[[mcp_servers]]`, Vibe) legitimately repeats once per server, so the only real conflict is another entry whose own `name` already claims our key. |
-| `config_edit_yaml.js` | Document-API editor for the two YAML hosts; no marker needed (YAML mappings hold sibling keys natively, same as the JSON hosts). |
-| `mcp_register.js` | Orchestrator: `computeIdentity()` derives the entry key (`conxa` vs `conxa-dev`, from `env.js`'s `dev` flag — see §5.8-adjacent env resolution) and the stable `conxa-runtime/current/conxa-runtime.exe` command path; iterates all three host tables; never aborts the run because one host failed; writes a diagnostic status file (below); sets `process.exitCode` non-zero only if *every detected* host failed. |
-| `durable_context.js` | Post-sync discoverability: writes a per-company skill/instructions file (`SKILL.md`, `AGENTS.md`, `global_rules.md`, …) into each *registered* host so the agent actually reaches for the tools. Called from `sync.js` right after `pack.skills` is written — **not** from `register-mcp`, because a thin installer ships `pack.skills` empty (§5.9); there is nothing real to name until the first successful delta-sync. Best-effort; never fails the sync. |
+| `mcp_hosts.js` | JSON-config hosts (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, Gemini CLI, Cline, Zed, Copilot CLI, Factory, KiloCode, Antigravity, OpenCode, OpenClaw, Crush, OpenHands, Augment, Kiro, Junie, Qwen). Per row: `detect(ctx)`, `configPaths(ctx)` (plural: VS Code per profile, Cline two locations), `objectPath`, `shape` |
+| `mcp_hosts_toml.js` | Codex CLI, Mistral Vibe: `# >>> conxa:<label> >>>` marker blocks, no TOML parser |
+| `mcp_hosts_yaml.js` | Goose, Hermes: `yaml` Document API, comment-preserving |
+| `config_edit.js` | JSON/JSONC writer (`jsonc-parser`). Atomic (temp, `fsync`, `rename`); ownership check (`isOwned()`: an entry is ours only if its `command` resolves inside our install root); read-before-write CAS |
+| `config_edit_toml.js` | Marker-block editor. A regular table (`[mcp_servers.conxa]`) can exist once, so another outside our span is foreign; an array-of-tables (`[[mcp_servers]]`) conflicts only if another entry's `name` claims our key |
+| `config_edit_yaml.js` | Document-API editor; no marker needed |
+| `mcp_register.js` | Orchestrator. `computeIdentity()` derives the key (`conxa` vs `conxa-dev` from `env.js`'s dev flag) and the stable `conxa-runtime/current/conxa-runtime.exe` path; iterates all tables; one host failing never aborts the run; non-zero exit only if every detected host failed |
+| `durable_context.js` | Writes a per-company skills/instructions file (`SKILL.md`, `AGENTS.md`, `global_rules.md`, …) into each registered host. Called from `sync.js` after `pack.skills` is written (a thin installer ships it empty); best-effort |
 
-**Ownership is structural, not a hardcoded string.** Because `register-mcp` and `unregister-mcp` derive the entry key from the *same* `env.js` resolution every time, a dev-channel install and a stable-channel install on the same machine write to two distinct keys (`conxa-dev` / `conxa`) that can never drift apart — this replaces an earlier NSIS-generated-PowerShell design where the uninstaller's key was a separate hardcoded literal that fell out of sync with the installer's channel-derived key, leaving a dangling entry behind on dev-channel uninstalls.
+Because install and uninstall derive the key from the same `env.js` resolution, dev and stable installs on one machine use distinct keys that can't drift.
 
-`register-mcp --plan` performs every detection/ownership check and prints the machine-readable receipt (what would be written, where) without touching any file — no network, no mutation. `--dry-run` is the same without the JSON dump. `--only <id>[,<id>]` restricts the run to specific host ids.
+Flags: `--plan` prints the machine-readable receipt without touching files or network; `--dry-run` is the same without the JSON; `--only <id>[,<id>]` limits hosts.
 
-Every run writes `<CONXA_DIR>\mcp-register-status.txt`: a one-line summary (`conxa register-mcp: 15 ok, 3 not installed, 1 left alone (not ours), 1 FAILED`) followed by per-host detail. NSIS reads the first line into its completion `MessageBox` — this is necessary, not cosmetic: the process exit code is only nonzero when *every* detected host fails, so a partial failure (14 hosts registered, 1 didn't) would otherwise show "Setup complete!" with no indication anything went wrong.
+Every run writes `<CONXA_DIR>\mcp-register-status.txt`: a summary line (`conxa register-mcp: 15 ok, 3 not installed, 1 left alone (not ours), 1 FAILED`) plus per-host detail. NSIS shows the first line in its completion dialog, the only way a partial failure becomes visible.
 
-Tests: `runtime/test/unit/` (`test_config_edit.js`, `test_config_edit_toml.js`, `test_config_edit_yaml.js`, `test_mcp_hosts.js`, `test_mcp_register.js`, `test_mcp_register_toml.js`, `test_mcp_register_yaml.js`, `test_durable_context.js` and the rest of the offline suite) — fixture-driven (`os.tmpdir()` + `USERPROFILE`/`HOME`/`APPDATA`/`LOCALAPPDATA` env overrides so `os.homedir()`-based host detection never touches the real machine running the test). Run via `npm test` (= `node --test "test/unit/*.js"` — only the sandboxed offline unit tests; browser/exe-dependent scripts live in `runtime/test/e2e/` and are run by their own CI gate steps).
+Tests: `runtime/test/unit/test_config_edit*.js`, `test_mcp_hosts.js`, `test_mcp_register*.js`, `test_durable_context.js`, all fixture-driven (temp dirs plus `USERPROFILE`/`HOME`/`APPDATA`/`LOCALAPPDATA` overrides). `npm test` runs `node --test "test/unit/*.js"`; browser/exe tests live in `runtime/test/e2e/` and run in CI gates.
 
-### 4.3 Startup Sequence
+### 4.4 Startup Sequence
 
 ```mermaid
 sequenceDiagram
-    participant CD as Claude Desktop
+    participant CD as MCP client
     participant RT as bootstrap.js (host)
     participant App as conxa-app/server.js
     participant Cloud as Conxa Cloud
 
-    CD->>RT: spawn conxa-runtime/current/conxa-runtime.exe (MCP stdio)
-    RT->>RT: env.apply() → normalize CONXA_DIR, CONXA_DATA_DIR, CONXA_APP_DIR, API URL, channel
-    alt register-mcp or unregister-mcp
-        RT->>RT: run host-layer command and exit
-    else normal MCP launch
-    RT->>Cloud: GET /api/v1/manifest.json (no local TTL — every launch fetches; Ed25519-verified against baked-in public key)
+    CD->>RT: spawn conxa-runtime/current/conxa-runtime.exe (stdio)
+    RT->>RT: env.apply()
+    RT->>Cloud: GET /api/v1/manifest.json (every launch; Ed25519-verified)
     Cloud-->>RT: {conxa_runtime, conxa_app, skill_packs, minimum_versions, signature}
-    RT->>RT: manifest_manager.checkForUpdates(components: ["conxa_app"]) — version, min_host, rollout %, min_versions
-    RT->>RT: if conxa_app newer → download zip (tight retry budget), verify SHA-256, extract to conxa-app/<version>/, activate()
-    Note over RT: pre-load — server.js is NOT require()'d yet, so this activation is live for THIS launch
-    RT->>RT: version_manager.resolveCurrent(conxa-app) again → check min_host compatibility
-    RT->>App: require conxa-app/current/server.js (or rollback to previous version)
-    App->>App: read normalized paths; configure Playwright and handle app-layer CLI flags
-    App->>App: load skill index from cache (SKILL_PACKS_DIR)
-    App->>CD: MCP connect (StdioServerTransport)
-    par Startup sync (parallel)
-        App->>App: manifest_manager.checkForUpdates(components: ["conxa_runtime"]) — reuses the manifest bootstrap.js already fetched
-        App->>Cloud: if conxa_runtime newer → download files, --selfcheck the new exe, activate() (never touches the running process's own file; effective next cold start)
-        and
-        App->>Cloud: GET /skill-packs/{co}/delta?since={per-skill version map} (skipped if synced <5min ago)
-        Cloud-->>App: {skills: [{name, action, version?, files?}]}
-        App->>App: per changed skill → parallel file downloads → write to <skill>/<version>/ → activate()
-        and
+    RT->>RT: checkForUpdates(["conxa_app"]) → download, verify SHA-256, extract, activate()
+    Note over RT: server.js not yet required, so the new app layer is live this launch
+    RT->>RT: resolveCurrent(conxa-app) → min_host check
+    RT->>App: require current/server.js (or rollback)
+    App->>App: load skill index from cache
+    App->>CD: MCP connect
+    par startup sync
+        App->>Cloud: checkForUpdates(["conxa_runtime"]) on the cached manifest → download, --selfcheck, activate() (next cold start)
+    and
+        App->>Cloud: GET …/skill-packs/delta?since={per-skill versions} (skipped if synced <5 min ago)
+        App->>App: per changed skill: parallel downloads → <skill>/<version>/ → activate()
+    and
         App->>App: re-encrypt plaintext session files (best effort)
     end
-    App->>App: syncState.complete = true; reload skill index
+    App->>App: reload skill index
     App->>CD: sendToolListChanged()
     App->>Cloud: POST /api/v1/telemetry/runtime-start (fire-and-forget)
-    end
 ```
 
-**Execution gate:** `execute_skill` awaits `startupSync` before running. Both skill-pack sync and the conxa_runtime manifest check must complete (or fail gracefully) before any workflow executes. On a normal connection this resolves in under 1 second. Failures fall through to cached data — the user is never permanently blocked. Manifest signature failures are treated identically to network failures: the last previously-verified cached manifest is used, or the check is skipped entirely on first run.
+- **Execution gate:** `execute_skill` awaits startup sync (skill packs + host manifest check). Typically under 1 s. Failures fall through to cached data; a bad manifest signature is treated like a network failure (last verified cached manifest, or skip on first run).
+- **Pre-load app update budget:** 3 s manifest timeout, 2 retries × 5 s for the zip. Any failure is swallowed and bootstrap loads whatever `current` points at.
 
-**Pre-load app update budget:** the `conxa_app` leg above runs before the MCP transport connects, so it's bounded tightly — 3s manifest fetch timeout, 2 retries × 5s for the ~60 KB app zip. Any failure (network, bad signature, download, decode) is caught and swallowed; bootstrap.js falls through to whatever `current` already points at, exactly as if the check never ran. Typical added latency: well under a second when no update is pending, a few seconds when one downloads.
+### 4.5 On-Disk Layout
 
-### 4.4 Skill Pack Directory Layout (Runtime)
-
-Every updateable component — the host exe, the app layer, and each individual skill —
-is a **versioned directory** with a `current` directory junction pointing at the active
-version (see `runtime/version_manager.js`). Old versions are retained (default: current +
-2 previous) so rollback never needs a re-download; junctions are used (not JSON pointer
-files) because Claude Desktop's MCP config stores a literal filesystem path to the host
-exe, which only the OS itself can resolve transparently — a junction is the one mechanism
-that works without requiring admin rights or Developer Mode.
+Every updateable component (host exe, app layer, each skill) is a **versioned directory** with a `current` directory junction (`version_manager.js`). Default retention: current + 2 previous, so rollback needs no download. Junctions, not pointer files, because MCP host configs store a literal path to the exe, and junctions need neither admin rights nor Developer Mode.
 
 ```
-~/.conxa/                       (CONXA_DIR)
-├── conxa-runtime/
-│   ├── v1.0.0/, v1.1.0/         (each: conxa-runtime.exe, keytar.node, version.json)
-│   └── current                 (directory junction → the active version)
-├── conxa-app/                  (app layer — checked and activated pre-load in bootstrap.js,
-│                                 effective on the SAME cold start it downloads in)
-│   ├── v1.0.0/, v1.1.0/         (each: server.js, sync.js, run.js, browser.js,
-│   │                             auth_manager.js, tracker.js, skill_loader.js,
-│   │                             install_identity.js, version_manager.js,
-│   │                             manifest_manager.js, page_scripts.js, version.json)
-│   └── current                 (directory junction → the active version)
-├── manifest.json                (locally cached copy of the last Ed25519-verified signed manifest)
-├── chromium/                   (Playwright browser — unversioned, external)
-├── skill-packs/
-│   └── {company}/
-│       ├── pack.json           (company metadata: sync_endpoint, sync_token, groups[],
-│       │                        skill_groups {slug: group_id} — see §5.2a)
-│       └── {group_id}/         (workflow's group_id, or "_default" — see §5.2a)
-│           └── {skill_slug}/
-│               ├── v1.0.0/, v1.1.0/  (each: execution.json, recovery.json, inputs.json,
-│               │                      manifest.json [carries group_id], validation.json, version.json)
-│               └── current           (directory junction, independent per skill)
-└── logs/
-    ├── runtime.log             (JSONL, rotated at 10MB)
-    └── recovery.log            (recovery event log, rotated at 10MB)
+~/.conxa/                              CONXA_DIR
+├── conxa-runtime/{vX.Y.Z}/, current   conxa-runtime.exe, keytar.node, version.json
+├── conxa-app/{vX.Y.Z}/, current       app modules + version.json
+├── manifest.json                      last verified signed manifest
+├── chromium/                          Playwright browser (unversioned)
+├── skill-packs/{company}/
+│   ├── pack.json                      sync_endpoint, sync_token, groups[], skill_groups (§5.3)
+│   └── {group_id|_default}/{skill_slug}/
+│       ├── {vX.Y.Z}/                  execution.json, recovery.json, inputs.json,
+│       │                              manifest.json (carries group_id), validation.json, version.json
+│       └── current
+├── resume/{run_id}.cmd                hand-over resume drops (§11.4)
+└── logs/runtime.log, recovery.log     JSONL, rotated at 10 MB
 
-%APPDATA%/Conxa/               (CONXA_DATA_DIR)
-├── cache/
-│   ├── sessions/
-│   │   ├── {co}__{appId}_state.json    (per-app, AES-256-GCM encrypted storageState — see §5.2a)
-│   │   └── {co}__{appId}_raw_state.json (plaintext fallback)
-│   └── manifests.json                  (skill index fast-load cache)
-└── data/
-    ├── executions/{id}/
-    │   ├── state.json
-    │   └── checkpoint.json
-    └── runs/{workflow_id}.jsonl
+%APPDATA%/Conxa/                       CONXA_DATA_DIR
+├── cache/sessions/{co}__{appId}_state.json       AES-256-GCM storageState (§5.3)
+├── cache/sessions/{co}__{appId}_raw_state.json   plaintext fallback
+├── cache/manifests.json               skill index cache
+├── data/executions/{id}/state.json, checkpoint.json
+├── data/runs/{workflow_id}.jsonl
+├── locks/<host>.lock                  cross-process platform mutex (§4.6)
+└── scheduler/                         §4.8
 ```
 
-### 4.5 Concurrency Model (RT-3)
+### 4.6 Concurrency
 
-Real MCP usage is concurrent by default: separate chats each running a workflow against the same
-installed runtime, or one chat firing several `execute_skill` calls at once. The runtime supports
-**true parallel execution, capped**, not a serialized queue — a queue was rejected because Claude
-Desktop abandons a `tools/call` at ~240s and one run's own wall-clock budget
-(`CONXA_EXECUTION_DEADLINE_MS`, §9) is already 210s, so a queued run would typically time out
-before it ever started.
+Runs execute **truly in parallel, capped**. A serialized queue doesn't work: Claude Desktop abandons a `tools/call` at ~240 s and one run's budget (`CONXA_EXECUTION_DEADLINE_MS`) is 210 s, so a queued run would time out before starting.
 
-- **Admission.** `run_registry.js` tracks every active run by its own `runId`, admitted up to
-  `CONXA_MAX_CONCURRENT_RUNS` (default 5, flat — same number regardless of the host machine's
-  specs; see `RT-3-CAP-SIZING` in `TODO.md` for a since-proposed memory-derived default that was
-  deliberately deferred, not forgotten). Past the cap, `execute_skill`/`execute_sequence` are
-  refused with a message naming the runs already in flight and pointing at
-  `get_execution_status` — it never suggests calling `cancel_execution`, since the caller didn't
-  start those runs. `cancel_execution` takes an optional `run_id`: required once more than one run
-  is active (a bare call is only unambiguous with exactly zero or one runs active).
-- **Browser sessions (`browser_session.js`, 2026-09-21).** Every live Chromium — headless or
-  visible — is a *session* in one registry, so the cap of `CONXA_MAX_CONCURRENT_RUNS` (default 5)
-  bounds **browser instances**, not just runs. A session is a *lease*: a run holds it `busy` for the
-  whole execution, the idle timer (90s) only starts on release, and a concurrent call finding it
-  leased gets its **own** session — two live runs must never drive the same Playwright context,
-  since `tabs.js`'s popup registry and the per-run download listener both assume exactly one. The
-  key is `workspace::group::sortedRequiredApps::h|w` (`::host:<runId>` for an Execute-owned session,
-  whose views live under that run id). A parked session of the same key is reused — that is what
-  lets `authenticate` and the `execute_skill` after it (or a login and the run it unblocks) share one
-  Chromium — and skips pre-flight, a staleness window bounded by the idle timeout. A visible run's
-  session is not parked: `server.js` closes its browser at teardown and `release()` drops the dead
-  entry at once. When every slot is leased the call is refused with *"All N browser sessions are
-  currently in use. Wait for one of the running workflows to finish, then try again"* (never
-  suggesting `cancel_execution` — the caller didn't start those runs); an idle session of another
-  key is evicted to make room instead. A session's liveness is `browser.isConnected()` — a closed
-  Playwright context does not throw from `pages()`. Before this, a run that needed sign-in could
-  launch ~4 Chromium processes (a headless probe, one headed login window per app, then the run);
-  now it is one.
-- **Recovery park isolation.** The Tier B parked-failure page (`recovery_park.js`) is keyed per
-  `${workspace_id}:${slug}`, not a single process-wide slot — one run failing and parking must
-  never discard a sibling run's parked recovery window. A park holds its browser lease for its
-  full TTL (`CONXA_RECOVERY_PARK_TTL_MS`, default 180s) rather than the idle cache's shorter
-  window.
-- **Per-host platform serialization (`host_lock.js`).** RT-3's runtime-level isolation above does
-  NOT protect the *external platform* itself: two independently-isolated runs both mutating the
-  same Render/Vercel/etc. project concurrently is still a real risk — lost updates on a shared
-  resource, one deploy cancelling another mid-flight, or bot/rate-limit detection tripped by two
-  near-simultaneous automated sessions on one account. `host_lock.js` closes that gap with a
-  mutex keyed per external hostname (resolved from a non-group skill's `manifest.target_url`, or
-  every required app's host for a Workflow Group — the same `pack.json` `groups` lookup already
-  used for auth pre-flight). A run acquires every host it will touch, atomically, before any
-  browser work begins (including auth); a run needing a host another run already holds blocks
-  (polling every 250ms) rather than racing it. **This deliberately serializes only runs that
-  overlap on a platform — two runs on different platforms still execute fully in parallel**, which
-  is the reason a per-host lock was chosen over falling back to a single global queue. The lock is
-  held through a park exactly like the browser lease (a parked page is a live, uncommitted
-  platform interaction). A blocked run's wait counts against its own `EXECUTION_DEADLINE_MS`
-  (§4.3) via the same `cancelCheck`/`isDone` function `runPlan` uses, so a run that waits too long
-  fails with the existing actionable deadline message (naming the host and the blocking run) —
-  it never hangs silently. `get_execution_status` (`run_registry.js`) surfaces a blocked run's
-  `waiting_for_host` field so an agent can see *why* a run's step count isn't advancing.
-  **Cross-process extension (PROD-5, 2026-08-26):** the map above is process-local, which two
-  engine processes (chat-host-spawned + scheduler daemon-spawned) could silently bypass. When
-  server.js passes `locksDir` (= `<CONXA_DATA_DIR>/locks`), an in-process win must ALSO win the
-  heartbeat-stamped file-lock race for the same hosts (`file_lock.js`) before the acquire
-  resolves — same sorted order, same `isDone` contract, both layers released together. A lock
-  frees when its file disappears, its PID dies, or its heartbeat goes stale (>15s), so a crashed
-  engine releases its platforms within seconds of dying. Filesystem trouble degrades to
-  in-process-only locking (fail open); unit tests omit `locksDir` and stay hermetic.
-- **Everything else is already per-run.** `run.js`'s step loop, the tab registry (`tabs.js`), the
-  telemetry tracker, the `runs/{runId}/` download workspace, and the deadline/cancel flags all
-  live in the closure of one `execute_skill` call — no module-level shared state to isolate.
-- **Deliberately unchanged: the retry budget.** `retry_budget.js` keys attempts by
-  `${slug}:${stepIndex}` only, so two concurrent runs of the *same* skill share one counter — see
-  the `ponytail:` comment there for why (the budget exists to persist across MCP calls, which
-  per-run keying would defeat) and the bounded worst case (a sibling gets a few extra retries, not
-  corruption).
-- **Known limitation.** In `watch: true` mode each parallel run is its own visible Chromium
-  window, and `tabs.js`'s `bringToFront()` means concurrent visible runs compete for OS foreground
-  focus — correct execution, a noisy desktop. **Exception (EXEC-41, 2026-09-17):** a run launched
-  by Conxa Execute doesn't open an OS window at all — see below.
+- **Admission** (`run_registry.js`): runs tracked by `runId`, admitted up to `CONXA_MAX_CONCURRENT_RUNS` (default 5, flat; a memory-derived default is deferred as `RT-3-CAP-SIZING`). Past the cap, calls are refused with the in-flight runs named and a pointer to `get_execution_status`, never to `cancel_execution` (the caller didn't start those runs).
+- **Browser sessions** (`browser_session.js`): every live Chromium, headless or visible, is a session in one registry, so the cap bounds browser instances. A session is a lease: busy for the whole run, 90 s idle timer starting on release. A concurrent call that finds a leased session gets its own; two runs never share a Playwright context (`tabs.js`'s popup registry and the per-run download listener assume one). Key: `workspace::group::sortedRequiredApps::h|w` (`::host:<runId>` for Execute-owned sessions). A parked session with the same key is reused and skips pre-flight (this is how `authenticate` and the following `execute_skill` share one Chromium). Visible runs aren't parked. When every slot is leased, an idle session of another key is evicted; if none, the call is refused ("All N browser sessions are currently in use…"). Liveness is `browser.isConnected()` (a closed context doesn't throw from `pages()`).
+- **Recovery parks** (`recovery_park.js`) are keyed `${workspace_id}:${slug}`, so one run's park never discards a sibling's. A park holds its lease for `CONXA_RECOVERY_PARK_TTL_MS` (default 180 s).
+- **Per-host platform serialization** (`host_lock.js`): runtime isolation doesn't protect the external platform from two runs mutating the same project (lost updates, cancelled deploys, bot detection). A mutex keyed by hostname, from `manifest.target_url` or every required app host of a group, is acquired for all hosts atomically, in sorted order, before any browser work (including auth). A blocked run polls every 250 ms; the wait counts against its deadline, fails with a message naming the host and the blocking run, and shows as `waiting_for_host`. Runs on different platforms stay fully parallel. The lock is held through a park.
+  - **Cross-process:** with `locksDir` (`<CONXA_DATA_DIR>/locks`), an in-process win must also win a heartbeat-stamped file lock (`file_lock.js`). A lock frees when its file disappears, its PID dies, or its heartbeat is >15 s stale. Filesystem errors degrade to in-process locking (fail open).
+- **Everything else is per-run**: the step loop, tab registry, tracker, `runs/{runId}/` download dir, deadline/cancel flags all live in one `execute_skill` closure.
+- **Retry budget is shared on purpose**: `retry_budget.js` keys by `${slug}:${stepIndex}` so the budget persists across MCP calls; concurrent runs of the same skill share it (bounded worst case, see its `ponytail:` comment).
+- **Limitation:** concurrent `watch: true` runs each get a visible window and compete for foreground focus (`bringToFront()`), except under Execute (§4.7).
 
-**In-app browser panel for Conxa Execute (EXEC-41, Stage 1 shipped 2026-09-17).** Conxa Execute
-(`conxa-execute/`) renders a skill run's browser inside its own window — chat left, a panel on the
-right, one tab strip entry per active run — instead of a separate Chromium window. The seam is one
-branch in `browser.js::_buildExecContext`: when Execute sets `CONXA_HOST_BROWSER_CDP` (its own
-Electron process's CDP endpoint) and a run is headed (`watch: true`, i.e. `headless: false`) with a
-`runId`, the runtime calls `chromium.connectOverCDP()` and asks Execute's loopback control channel
-(`conxa-execute/app/electron/browser_control.js`, same shape as `handover.js`'s own loopback
-listener) for a `WebContentsView` instead of launching its own Chromium. Every other MCP client
-(Claude Desktop, `scheduler_daemon.js`, the Build Studio sandbox) never sets that env var and takes
-the unchanged `chromium.launch()` path — this is inert for them by construction, not by a runtime
-check. A connection failure at any step falls back to launching normally; a run is never lost over
-Execute's panel being unavailable.
+### 4.7 Conxa Execute In-App Browser
 
-- **New module `runtime/app/host_browser.js`** — `acquire({ runId, storageState })` connects and
-  asks Execute for a view (`new_view` control op), then seeds `storageState` manually: cookies via
-  `context.addCookies()` (works fine over CDP against Electron), `localStorage` by navigating each
-  origin and setting it from the page itself via `page_eval.js`'s `evalOn` (EXEC-34 seam) — there is
-  no CDP call for this, same technique Playwright's own `storageState` loading uses internally.
-  `newTab({ context, runId })` backs `tabs.js`'s `opened_by === "user"` (`tab_open` step) branch.
-  `release({ runId })` disconnects (never closes Execute's browser) and best-effort tells Execute to
-  tear the run's views down (`run_end`) — a missed notification just leaks one view until Execute's
-  own idle cleanup reclaims it, never a hard failure.
-- **Electron limits, confirmed by a Stage-0 spike before any of this was built (not assumed):**
-  Electron's CDP target implements neither `Target.createBrowserContext` (so `host_browser.js` uses
-  `browser.contexts()[0]`, the one Electron exposes) nor `Target.createTarget` (so every new page —
-  a `tab_open` step, a site-opened popup — has to be created by Execute itself, in
-  `browser_panel.js`, not by a Playwright `context.newPage()` call). A site-opened popup takes the
-  same path: Execute's `setWindowOpenHandler` creates the sibling view, and Playwright observes it
-  as a normal `context.on("page")` event. `browser_panel.js::_createTab` is the single place that
-  makes a new tab the run's active tab and tells the renderer (2026-09-20) — before that, a popup
-  or a `tab_open` tab was created at 0x0 and never announced, so an OAuth "Sign in with Google"
-  leg loaded into a view nobody could see.
-- **Teardown: `browser.js::teardownExecBrowser`.** One shared function, replacing what used to be
-  four separate `if (watch) { context.close(); browser.close(); }` blocks in `server.js` plus one in
-  `recovery_park.js::discardPark` — closing `context`/`browser` on a host-owned run would tear down
-  Execute's whole browser process, panel and all, not just the one run's view. A host-owned
-  `browser.close()` (a CDP connection) only disconnects; Execute's `run_end` handler is what
-  actually destroys the view and clears its partition.
-- **Per-run isolation.** Each run's view(s) live in their own non-persistent Electron partition
-  (`conxa-run-<runId>`, no `persist:` prefix — in-memory, gone when the run ends) — nothing about
-  one run's cookies or storage can leak into a sibling's.
-- **Tab-addressable panel (2026-09-20).** A group pack opens one interactive login per missing app,
-  all under the same `runId`, so a run routinely holds several views. The panel therefore renders a
-  Chrome-style header (`BrowserPanel.tsx`): a chip per tab with ×, `+`, back/forward/reload, an
-  editable URL field, ⋮ / expand / close; a run selector row appears only when more than one run is
-  live. Login tabs are labelled with the pack's app name — `label` rides on the `new_view` /
-  `new_tab` control ops (both now also return `tabId`); any other tab shows its live page title,
-  then hostname. Teardown is **tab-scoped for logins, run-scoped for run end**: the control channel
-  gained `close_view { runId, tabId }` (→ `browser_panel.js::closeTab`, which promotes a neighbour
-  and falls through to `runEnd` when the last tab goes), and `host_browser.js::release({ runId,
-  tabId })` posts it when given a `tabId`, `run_end` otherwise. Before this, a finished login posted
-  `run_end` and destroyed every sibling login's view. A login tab closed by hand never fires the CDP
-  `disconnected` event (the connection is Execute's whole process), so
-  `_waitForInteractiveAuth`'s 1.5 s poll also resolves when the login page is closed.
-- **Stage 2 (also shipped 2026-09-17): login and hand-over/review in the panel.**
-  `browser.js::_openInteractiveAuthWindow` gets the identical host branch as a skill run's own
-  context — a login window is just another headed context, so `beginInteractiveAuth`'s existing
-  non-blocking design (the window opens, the MCP call returns immediately, a background task waits
-  for the user) is unchanged; only *where* the window renders differs. Hand-over/AI-review pauses
-  needed no new code at all: `handover.js`'s in-page "Done — resume workflow" banner
-  (`context.exposeBinding` + `context.addInitScript`, injected straight into the live page's own
-  DOM) already worked unmodified against a host-owned context — confirmed by a dedicated spike
-  (real injected-button click firing the binding, script re-applying after navigation) before
-  assuming it, not after. A host-owned login shares Execute's whole-process CDP connection, so
-  "disconnected" never fires when the person just walks away; `_waitForInteractiveAuth` therefore
-  has a 10-minute deadline (`LOGIN_WAIT_MS`, 2026-09-20) that closes the login view and marks the
-  attempt abandoned with `loginTimedOut` (no reopen-and-wait-again retry) — without it
-  `_pendingAuth` stayed `pending` forever and every later run answered "a login window is already
-  open" until the runtime restarted.
-  - **The real bug the design flagged going in, now fixed:** a resumed park's teardown used to
-    report the *new* call's `runId` to Execute — wrong, since Execute registered the browser view
-    under the ORIGINAL run's id, and every `execute_skill` call (including a resume) generates a
-    fresh `_runId`. `server.js` now carries a second value, `_hostRunId` — the id Execute actually
-    knows this view by — alongside `_runId` — the caller-facing resume identity hand-over's
-    file-drop (`~/.conxa/resume/<run_id>.cmd`) and loopback-HTTP paths need, which must stay
-    per-call. They're identical for a fresh run and diverge only across a park/resume cycle, where
-    `_hostRunId` is restored from `_park.runId` (itself set from `_hostRunId` at park-creation time,
-    so it survives arbitrarily many resume cycles). `run.js::runPlan` takes a matching `hostRunId`
-    opt, kept separate from its existing `runId` opt — conflating them would have fixed
-    `tab_open`'s Execute-panel correlation while silently breaking hand-over's own resume-file
-    naming.
+When Execute is the MCP client, a headed run renders inside Execute's window (chat left, browser panel right) instead of an OS window.
 
----
+**Seam:** `browser.js::_buildExecContext`. If `CONXA_HOST_BROWSER_CDP` is set (Execute's CDP endpoint) and the run is headed with a `runId`, the runtime calls `chromium.connectOverCDP()` and requests a `WebContentsView` over Execute's loopback control channel (`conxa-execute/app/electron/browser_control.js`). Every other client never sets the variable and takes `chromium.launch()`. Any connection failure falls back to a normal launch.
 
-### 4.6 Standalone Runner & Scheduler (PROD-5)
+- **`runtime/app/host_browser.js`:** `acquire({runId, storageState})` connects, requests a view (`new_view`), then seeds state manually: cookies via `context.addCookies()`, `localStorage` by navigating each origin and setting it through `page_eval.js::evalOn` (no CDP call exists for this). `newTab({context, runId})` backs `tab_open` steps. `release({runId, tabId?})` disconnects (never closes Execute's browser) and posts `close_view` (one tab) or `run_end` (whole run); a missed message leaks one view until Execute's idle cleanup.
+- **Electron limits:** no `Target.createBrowserContext` (use `browser.contexts()[0]`) and no `Target.createTarget`, so Execute creates every new page itself (`browser_panel.js`). Site popups go through `setWindowOpenHandler` and appear to Playwright as normal `context.on("page")`. `browser_panel.js::_createTab` is the single place that makes a tab active and notifies the renderer.
+- **Teardown:** `browser.js::teardownExecBrowser` is the one shared teardown. On a host-owned run, `browser.close()` only disconnects; Execute's `run_end` handler destroys views and clears the partition.
+- **Isolation:** each run's views use a non-persistent partition `conxa-run-<runId>`.
+- **Panel:** Chrome-style header (`BrowserPanel.tsx`): tab chips, back/forward/reload, editable URL, run selector when several runs are live. Login tabs are labelled with the app name (`label` on `new_view`/`new_tab`, both return `tabId`). Login teardown is tab-scoped, run end is run-scoped (`browser_panel.js::closeTab` promotes a neighbour and calls `runEnd` on the last tab).
+- **Login and hand-over:** `_openInteractiveAuthWindow` uses the same host branch; `beginInteractiveAuth`'s non-blocking flow is unchanged. `handover.js`'s in-page resume banner (`exposeBinding` + `addInitScript`) works unmodified against a host-owned context. Because Execute's CDP connection never fires `disconnected` for one view, `_waitForInteractiveAuth` also polls for a closed login page every 1.5 s and has a 10-minute deadline (`LOGIN_WAIT_MS`) that closes the view and marks the attempt `loginTimedOut`.
+- **Two run ids:** `server.js` carries `_runId` (per call; names hand-over resume files) and `_hostRunId` (the id Execute registered the view under). They diverge only across park/resume, where `_hostRunId` is restored from `_park.runId`. `run.js::runPlan` takes both as separate opts.
 
-Skills can now run on a schedule with **no chat application open** — every chat app (Claude,
-ChatGPT, Cursor) becomes an optional front door rather than a dependency. Shipped 2026-08-26.
-The design was constrained by the Horizon-2 doctrine (`docs/PRD.md` §14.5, decided 2026-08-21):
-**execution workers and schedules live on customer-owned infrastructure; the cloud holds
-neither.** There is no cloud scheduler, no queue, no schedule sync.
+### 4.8 Standalone Runner & Scheduler
 
-**Architecture — daemon as MCP client.** `scheduler_daemon.js` is a thin MCP *client*: it spawns
-the SAME host exe a chat host would spawn (`process.execPath` when packaged; `node app/server.js`
-in dev) and drives it over stdio JSON-RPC via the vendored MCP SDK's client classes, exactly as
-Claude Desktop does. Consequences:
+Skills can run on a schedule with no chat app open. Per `docs/PRD.md` §14.5, workers and schedules live on customer infrastructure: no cloud scheduler, queue, or schedule sync.
 
-- Zero refactor of `server.js` — a bug in scheduling can degrade scheduling but never breaks
-  chat-driven execution.
-- Every engine guarantee applies unchanged to scheduled runs: auth pre-flight, startup sync,
-  telemetry tracking, the concurrency cap (`CONXA_MAX_CONCURRENT_RUNS`, §4.5), per-host platform
-  serialization (§4.5, now cross-process), recovery parks, deadlines.
-- The transport is constructed with an explicit `env: process.env` because the SDK otherwise
-  filters inherited environment variables to a safe subset — without it the engine would boot the
-  wrong dev/prod lane.
-- Scheduled runs always pass `watch: false` (headless; visible windows compete for OS focus) and
-  `_trigger: "scheduled"`, which surfaces in the engine's `execute_start` log line and on the
-  exec registry entry so scheduled runs are distinguishable from chat-driven ones.
-
-**Components** (all app-layer unless noted — subcommand fixes ship via normal app-vX.Y.Z updates):
+**The daemon is an MCP client.** `scheduler_daemon.js` spawns the same host exe a chat host would (`process.execPath` packaged; `node app/server.js` in dev) and drives it over stdio with the vendored SDK client. So `server.js` needs no changes and every engine guarantee applies: auth pre-flight, startup sync, telemetry, the concurrency cap, host locks (now cross-process), parks, deadlines. The transport passes `env: process.env` explicitly (the SDK otherwise filters env vars and the engine boots the wrong dev/prod lane). Scheduled runs pass `watch: false` and `_trigger: "scheduled"` (visible in `execute_start` logs and the run registry).
 
 | Module | Role |
 |---|---|
-| `app/cron_lite.js` | Hand-rolled 5-field cron parser + `nextAfter()` (Vixie dom/dow OR rule, presets, DST-safe by wall-clock recomputation). No dependency added on purpose. |
-| `app/scheduler_store.js` | One JSON file per schedule under `<CONXA_DATA_DIR>/scheduler/schedules/`. Inputs encrypted at rest with AES-256-GCM under a dedicated machine key (`conxa-session/scheduler-v1` keychain account). Atomic tmp+rename writes. `listMeta()` never decrypts — chat-facing surfaces must not echo input values into transcripts. |
-| `app/scheduler_daemon.js` | 30s tick loop; pure `computeActions()` decision function; engine child lifecycle (lazy spawn, 10-min idle kill, bounded restart); single-instance guard (`daemon.lock` PID+heartbeat); `state.json` for tray/CLI; command-file inbox; daily logs under `scheduler/logs/`. |
-| `app/file_lock.js` | Cross-process layer of the platform mutex — see §4.5. |
-| `app/tray_windows.ps1` | Native Windows tray icon (PowerShell `NotifyIcon`, zero npm deps, nothing extra shipped). View-only: every action writes a command file; the daemon remains the single writer of truth. Exits when the daemon lock disappears. |
-| `app/scheduler_cli.js` | All `schedule …` / `runner …` subcommand logic. |
-| `host/cli_schedule.js` | Host-exe shim (frozen): resolves the app layer through the same min_host gate as install-time sync, then dispatches argv. Registered in `host-manifest.json`. |
+| `app/cron_lite.js` | 5-field cron + `nextAfter()` (Vixie dom/dow OR rule, presets, DST-safe). No dependency |
+| `app/scheduler_store.js` | One JSON per schedule in `scheduler/schedules/`. Inputs AES-256-GCM encrypted under a machine key (keychain `conxa-session/scheduler-v1`). Atomic writes. `listMeta()` never decrypts |
+| `app/scheduler_daemon.js` | 30 s tick; pure `computeActions()`; engine child lifecycle (lazy spawn, 10-min idle kill, bounded restart); singleton `daemon.lock` (PID + heartbeat); `state.json`; command inbox; daily logs |
+| `app/file_lock.js` | Cross-process platform mutex (§4.6) |
+| `app/tray_windows.ps1` | Windows tray (`NotifyIcon`, no deps). View-only: actions write command files; exits when the daemon lock disappears |
+| `app/scheduler_cli.js` | `schedule …` / `runner …` subcommands |
+| `host/cli_schedule.js` | Host shim: resolves the app layer through the `min_host` gate, dispatches argv |
 
-**Missed-run policy ("catch-up within grace").** Each schedule stores `next_run_at`. When a tick
-finds a pending slot: overdue ≤ `catchup_grace_minutes` → fire (this covers both normal due and
-post-boot/wake catch-up); older → ONE skip record fast-forwarded past every slot that is itself
-beyond grace, stopping at the first slot young enough to still fire. Capacity pressure DEFERS a
-run (retried next tick) rather than skipping it — staleness skips, busyness waits. A `busy`
-result from the engine's cap refusal leaves the slot pending; only completed/failed/error
-advance the slot bookkeeping. An ad-hoc `run_now` records `last_run` but never touches slot
-state.
+**Missed runs: catch up within grace.** A slot overdue ≤ `catchup_grace_minutes` fires; older slots produce one skip record fast-forwarded to the first slot young enough to fire. Capacity pressure defers (retry next tick) rather than skips. A `busy` refusal leaves the slot pending; only completed/failed/error advance it. `run_now` records `last_run` without touching slots.
 
-**Entry points.**
-
-- Chat: new core tools `create_schedule` / `list_schedules` / `delete_schedule` (§4.2).
-  `create_schedule` validates slug+cron up front and returns the resolved target hosts so an
-  agent can tell the user which schedules will serialize against each other.
-- CLI: `schedule add|list|show|remove|enable|disable|run-now|pause|resume|daemon` and
-  `runner start|stop|status|autostart on\|off|setup|doctor`. Autostart writes a per-user Startup
-  folder `.lnk` targeting `<exe> schedule daemon` (no admin rights); `doctor` checks Chromium,
-  skill packs, keychain reachability, cron validity, locks-dir writability, and (read-only) the
-  Windows AC standby timeout.
-
-**Local filesystem layout** (all under `<CONXA_DATA_DIR>`, never synced):
+**Entry points.** Chat: `create_schedule` validates slug and cron and returns the resolved target hosts (so the agent can say which schedules serialize). CLI: `schedule add|list|show|remove|enable|disable|run-now|pause|resume|daemon`, `runner start|stop|status|autostart on|off|setup|doctor`. Autostart writes a per-user Startup `.lnk` to `<exe> schedule daemon`. `doctor` checks Chromium, skill packs, keychain, cron validity, lock-dir writability, and (read-only) Windows AC standby timeout.
 
 ```
-scheduler/
-  schedules/<sch_id>.json   encrypted-input schedule records (schema: docs/Backend-Schema.md §1.4)
-  state.json                last-known status snapshot (tray + CLI read; daemon sole writer)
-  daemon.lock               singleton guard {pid, heartbeat_at}
-  commands/*.cmd            inbox consumed by ticks: {"type":"pause"|"resume"|"quit"|"run_now", ...}
+<CONXA_DATA_DIR>/scheduler/
+  schedules/<sch_id>.json     schema: docs/Backend-Schema.md §1.4
+  state.json                  daemon is sole writer
+  daemon.lock                 {pid, heartbeat_at}
+  commands/*.cmd              {"type":"pause"|"resume"|"quit"|"run_now", …}
   logs/scheduler-YYYY-MM-DD.log
-locks/<host>.lock           cross-process platform mutex files (§4.5)
 ```
 
-**Release sequencing.** The `schedule`/`runner` dispatch is a HOST-exe change: it needs a
-host-vX.Y.Z release (and `host-manifest.json` closure update), after which everything else ships
-as ordinary app-layer updates. Old host + new app degrades gracefully (tools absent, no launcher
-entry points); new host + old app leaves the subcommands dormant behind the min_host gate's clear
-error.
+**Release sequencing:** subcommand dispatch is a host change (needs `host-v*` + `host-manifest.json`); the rest ships as app updates. Old host + new app: tools absent. New host + old app: subcommands blocked by the `min_host` gate's error.
 
-**Known limitations.** The same-app rule is enforced per machine — two runner VMs pointed at the
-same target platform by the customer will still overlap (documented in `docs/Runner-Machine.md`;
-fleet-level partitioning is the customer's scheduling responsibility). Session lifetime remains
-the unattended ceiling (PROD-4 / PRD §14.5 question 5 still open) — a dead login fails fast at
-pre-flight with an actionable message rather than breaking silently mid-run. Mac has no tray yet
-(daemon/CLI work everywhere the runtime does).
+**Limitations:** host locks are per machine, so two runner VMs on one platform can still overlap (`docs/Runner-Machine.md`). Session lifetime caps unattended use (PROD-4); a dead login fails fast at pre-flight. No Mac tray.
+
 
 ---
 
-## 5. Authentication & Platform Communication
+## 5. Authentication & Distribution
 
-### 5.1 Authentication Systems Summary
+### 5.1 Auth Systems
 
-| System | Auth Mechanism | Token Storage | Identity Provider |
+| System | Mechanism | Storage | Identity provider |
 |---|---|---|---|
-| Build Studio | Clerk PKCE OAuth | OS keyring (`keyring` lib) | Clerk (clerk.conxa.in) |
-| Cloud (API) | Clerk JWT verification | N/A (stateless) | Clerk JWKS |
-| Cloud (Frontend) | Clerk Next.js SDK | Clerk session cookie | Clerk |
-| Runtime | Per-company opaque token | OS keychain (`keytar`) | Conxa Cloud (POST /auth/refresh) |
+| Build Studio | Clerk PKCE OAuth | OS keyring (`keyring`, service `conxa-studio`) | Clerk (`clerk.conxa.in`) |
+| Conxa Execute | Clerk PKCE OAuth (own client, same instance) | Electron `safeStorage` | Clerk |
+| Cloud API | Clerk JWT via PyJWT + JWKS | stateless | Clerk |
+| Cloud frontend | Clerk Next.js SDK | session cookie | Clerk |
+| Runtime → Cloud | Installer-embedded `sync_token` / tracking token | `pack.json` | Conxa Cloud |
+| Runtime → target platforms | Playwright storageState per app | AES-256-GCM files, key in OS keychain | The platform itself |
 
-### 5.2 Build Studio Login Flow
+End users never sign in to Conxa. They sign in only to their own target platforms.
+
+### 5.2 Build Studio Login & Legal Gate
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant Studio as Build Studio (Renderer)
-    participant Backend as Python Backend
-    participant Browser as System Browser
+    participant Studio as Renderer
+    participant Backend as Python backend
+    participant Browser as System browser
     participant Clerk as clerk.conxa.in
-    participant Cloud as Conxa Cloud
 
-    User->>Studio: Click "Sign In"
-    Studio->>Backend: {type: "login"}
-    Backend->>Backend: generate PKCE verifier + challenge
-    Backend->>Backend: start localhost HTTP server on port 52741
-    Backend->>Browser: open authorize URL (Clerk PKCE)
-    Browser->>Clerk: GET /oauth/authorize?code_challenge=...
-    User->>Clerk: complete login in browser
-    Clerk->>Browser: redirect to http://127.0.0.1:52741/cb?code=...
-    Browser->>Backend: GET /cb?code=...&state=...
+    Studio->>Backend: {type:"login"}
+    Backend->>Backend: PKCE verifier + challenge; listen on 127.0.0.1:52741
+    Backend->>Browser: open authorize URL
+    Browser->>Clerk: /oauth/authorize?code_challenge=…
+    Clerk->>Browser: redirect 127.0.0.1:52741/cb?code=…
+    Browser->>Backend: GET /cb?code&state
     Backend->>Clerk: POST /oauth/token (code + verifier)
-    Clerk-->>Backend: {access_token, refresh_token, expires_in}
-    Backend->>Clerk: GET /oauth/userinfo (Bearer access_token)
-    Clerk-->>Backend: {sub, email, name, org_id}
-    Backend->>Backend: store tokens in OS keyring (service="conxa-studio")
-    Backend-->>Studio: {type: "result", result: {org_id, user_id, name, email}}
-    Studio->>Studio: update AuthContext, show dashboard
+    Backend->>Clerk: GET /oauth/userinfo
+    Backend->>Backend: store tokens in OS keyring
+    Backend-->>Studio: {org_id, user_id, name, email}
 ```
 
-**Token lifecycle:** Tokens are refreshed transparently in `auth_service.get_token()` when within 60 seconds of expiry using the stored `refresh_token`. Stored in OS credential manager (Windows Credential Manager / macOS Keychain / Linux Secret Service via the `keyring` Python library).
+`auth_service.get_token()` refreshes transparently within 60 s of expiry. Every protected call sends `Authorization: Bearer`, verified by the middleware (§3.4) and turned into a `Principal` by `saas.py::principal_from_request()`.
 
-### 5.2a Workflow Groups: Shared Multi-App Authentication
+**Startup gate chain** (`renderer/src/App.tsx`): deps bootstrap → mandatory update → Clerk sign-in → legal acceptance → routes. Acceptance comes after sign-in so the record names an identified user.
 
-A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `conxa_core/storage/group_store.py`) is a business-domain folder — "Sales", "Marketing" — that owns both a set of Workflows and the target-platform applications those workflows sign in to (`GroupApp`: name, `login_url`, `success_url`, captured session path). Every workflow belongs to exactly one group (`Workflow.group_id`); a workspace's `Default` group catches workflows that were never explicitly grouped, including ones migrated from before this model existed (`workflow_store._migrate_workspace` assigns `group_id` on read if missing). Auth is captured **once per app, at the group level** — the old per-workflow `Workflow.auth`/`WorkflowAuth` field and its Record Login dialog are gone.
+1. `legal_status` → `GET /api/v1/legal/current` (`{version, documents:[{id,title,url,sha256}]}`) and `GET /api/v1/legal/acceptance`.
+2. If not accepted: blocking Terms & Privacy screen. `legal_accept` → `POST /api/v1/legal/acceptance` with `document_hashes`; the cloud verifies them against frozen per-version snapshots and writes once.
 
-**Setup (Build Studio):** `cmd_start_group_app_auth` launches the existing recorder in `auth_mode` at the app's `login_url`, passing `wait_for_url=app.success_url` — the recorder's `RecordingSession.wait_for_url`/`reached_wait_url` fields self-detect success and the renderer polls `get_recording_status` (1s) to auto-close and advance to the next app, mirroring the "authenticate once → organize by group → run seamlessly" flow. `cmd_finish_group_app_auth` persists the captured state to `data/groups/{group_id}/auth/{app_id}.json` and flips every workflow in the group to `status=ready` once all its apps are authenticated.
+**Fail-closed:** if the cloud is unreachable, Studio shows a blocking retry screen (a Conxa outage stops Studio from opening). Unpackaged dev builds skip the gate. Contracts: `docs/Backend-Schema.md` §5.11, §7.
 
-**Completion detection (2026-08-20):** `success_url` matching is not the only save trigger. Whenever `success_url` is unset, or the real post-login page never matches it, the user's only remaining signal is closing the login window — and the recorder's teardown save (`force=True` at the end of `_run_sync_recorder`) is a no-op by then, since `_autosave_storage_state_sync` bails out once `browser_open` is already `False` (set by the `disconnected` handler before that final save runs), to avoid a permanent CDP hang. So `auth_mode` sessions now also save (once per distinct URL, via `_auth_saved_url`) the moment the top page navigates away from the login page at all — this is the real completion signal for a successful sign-in, independent of any configured `success_url`, and it fires while `browser_open` is still `True`. A successful save of this kind sets `RecordingSession.auth_captured`, surfaced in `status()` alongside `reached_wait_url`. `cmd_finish_group_app_auth` also stopped trusting "a file exists" as proof of a real session: `_has_captured_session` (`handlers/groups.py`) parses the saved storage state and requires at least one cookie or one origin's localStorage before treating the capture as successful — a login window closed *before* signing in can still leave an empty storage-state shell on disk, which now correctly raises `auth_capture_failed` ("You closed the login window before signing in — nothing was saved.") instead of silently marking the app connected. On the renderer side, `GroupAuthWizard`'s `waiting` state offers **Done** and **Cancel** buttons instead of a disabled spinner, and its auto-finish effect also fires on `recStatusQ.isError` (previously a polling error left the UI frozen indefinitely, since React Query's `retry: false` here means a failed poll never refetches on its own) — see `FIX.md` 2026-08-20.
+### 5.3 Workflow Groups & Target-Platform Sign-In
 
-**`auth_captured` is informational only, not an auto-finish signal (2026-09-24).** `GroupAuthWizard`'s auto-finish effect no longer includes `auth_captured` in its trigger condition — only `reached_wait_url` (a configured `success_url` actually matched) or the browser closing count as completion. Many login pages redirect once on load (e.g. `www.github.com/login` → `github.com/login`), which fires the "navigated away from login" save above and sets `auth_captured` within about a second of the window opening, well before the user has signed in. Auto-finishing on that flag closed the login window immediately and saved a logged-out (but cookie-bearing, so `_has_captured_session`-passing) session as "ready". `auth_captured` still drives the save itself — closing the window by hand after a real sign-in still works — it just no longer drives the wizard's auto-close.
+#### 5.3.1 Model and pack contract
 
-**Recording a workflow:** `cmd_start_recording` merges every authenticated app's storageState in the workflow's group (`conxa_core.storage.storage_state.merge_storage_states` — cookie union, per-origin localStorage merge, later wins on key conflicts) into one seeded Playwright context, so a recording that crosses N apps starts already signed in to all of them.
+A **WorkflowGroup** (`conxa_core.models.workflow.WorkflowGroup`, `storage/group_store.py`) is a business-domain folder ("Sales") that owns workflows and the apps they sign in to. Each **GroupApp** has `name`, `login_url`, `success_url`, a captured session path, `captured_at` (a session file exists), `checked_at` (last live verdict), `last_error`, `detect_warning`, and an optional learned `auth_definition` (§5.3.5).
 
-**Success-URL wildcard:** `success_url` may contain a literal `{}` as a wildcard for "anything after this point" (e.g. `vercel.com/{}` matches any path under `vercel.com/`); `conxa_compile.recorder.session.url_matches_pattern(url, pattern, exclude_prefix="")` is the single matcher shared by login self-detection (`RecordingSession._url_matches_wait_target`, which excludes variants of the login page itself via `exclude_prefix`) and the session-freshness probe below.
+- Every workflow belongs to exactly one group (`Workflow.group_id`); the workspace's `Default` group catches ungrouped ones (`workflow_store._migrate_workspace` assigns on read).
+- Auth is captured **once per app, per group**. A group with no apps is valid: its skills run ungated.
+- **A group is the unit of sign-in.** A skill runs only when every app in its group is signed in. There is no per-skill subset (`required_apps` was removed; an older manifest's field is ignored).
 
-**Cross-host sign-in (AUTH-5, 2026-09-21):** the runtime detects sign-in by watching for `success_url`'s host (`runtime/app/browser.js::_reachedProtectedUrl`, which now also honours the `{}` wildcard the way `url_matches_pattern` does — a path prefix before `{}` is required, a bare-origin prefix stays host-only). An app whose sign-in lives on a *different* host (`login_url` `accounts.google.com`, `success_url` `drive.google.com/{}`; likewise Okta/Entra/Auth0 tenants) used to open its tab at `login_url`, so the provider's own return-to parameter (`continue=`/`redirect_uri=`) pointed back at the provider, sign-in ended on a host the watcher never looks at, and the tab never closed or saved. `_loginEntryUrl` now opens the login tab at the `success_url` prefix when the two hosts differ, so the provider returns the user to the app; same-host apps keep `login_url` (their success host often serves a public logged-out page — opening it would "succeed" before anyone signs in). The freshness probe likewise navigates to the `{}`-stripped prefix, never the literal pattern. Known limit: a cross-host app whose success host serves a public logged-out page would capture an anonymous session — `success_url` is defined as the authenticated landing page, so that is a misconfiguration; Build Studio's `GroupApp.detect_warning` (set by `cmd_finish_group_app_auth` when the recorder never reached `success_url`) surfaces it as an amber note on the app card.
+`pack.json` carries:
+- `groups`: `[{id, name, apps: [{id, name, login_url, success_url, auth_definition}]}]`, the single source of truth for sign-in.
+- `skill_groups`: `{skill_slug: group_id}`, the path index. Skills live at `skill-packs/{ws}/{group_id|_default}/{skill_slug}/` in both Studio build output and the runtime.
 
-**Session freshness (2026-08-15, extended 2026-08-16):** `captured_at` alone only proves an app was *once* authenticated — it never expires or re-verifies. `check_app_session_sync(app)` (same module) does a short-lived **headless** probe: loads `app.storage_state_path` into a throwaway `headless=True` context, navigates to the success-URL prefix (or `login_url` if no `success_url` is set), and classifies the landed URL as `"ready"` (matches the success pattern), `"expired"` (bounced back to the login page, or the saved state file is missing/corrupt), or — on any navigation error/timeout — falls back to `"ready"` rather than falsely flagging a flaky probe as expired. Every call site that gets a verdict from this probe now stamps `GroupApp.checked_at` via `set_group_app_checked` (`group_store.py`) — distinct from `captured_at` ("a session file exists") — so `group_auth_status` can report a `verified` flag (`checked_at` set and within a 600s TTL) alongside the cheap `state` field, instead of letting a `ready` badge silently mean "never actually tested." `group_auth_status(group)` (`handlers/groups.py`) itself stays cheap and read-only, called on every normal page load (`cmd_get_group_auth_status`, `cmd_list_groups`, `cmd_get_group`); a real probe only ever runs from `cmd_start_recording` (right before a recording starts, not on group-page open — an earlier version that probed on every page open had no per-step timeout and could wedge the backend, see `FIX.md` 2026-08-15) or from the user-initiated `cmd_check_group_app_auth` ("Check now" per app, or the whole group at once, on the Group page). An app the probe finds expired gets `last_error` set via `set_group_app_checked`, which flips its row from the ready-green treatment to a red "expired" state with a Reconnect button in the same `group_auth_status` response the group page already polls.
+Each skill's `manifest.json` carries `group_id` and, when non-empty, `unclaimed_hosts`.
 
-**Per-workflow recording gate + session write-back (2026-08-16):** `cmd_start_recording` no longer requires every app in the group to be connected before a workflow can be recorded — it narrows the group's apps down to `apps_for_workflow(group.apps, workflow.target_url, workflow.protected_url)` (`conxa_core.storage.group_store`, matched by **site** — last two labels, e.g. `drive.google.com` matches an app whose `login_url` is `accounts.google.com` — against each app's `login_url`/`success_url`, not exact hostname (2026-09-24 fix: exact matching silently produced `required_apps: []` for workflows that visited a same-site-but-different-subdomain app, shipping with no saved sign-in seeded at all); same rule `unclaimed_hosts` already used, so the two agree; shared with the group page's platform chips so the two can't disagree; the runtime no longer scopes by it — AUTH-14) and only *requires* those before recording can start. It still *probes* every captured app in the group (skipping any checked within the last 600s, via `checked_at`) — not just the required subset — because recording seeds every captured app's session into the browser (below), so a sibling app being dead at record time is a real, silent risk even though it isn't gated on. An expired required app blocks recording with `auth_required`; an expired sibling only warns (surfaced in the `cmd_start_recording` response's `warnings` field) since the user is present in the recorder window and can sign back in inline if that app actually comes up. Recording also stops discarding the session it was seeded with: `storage_state_autosave_path` is now the same `merged_group_state.json` the recorder was seeded from (previously left unset). **Authentication is pre-flight-only (2026-08-17):** this save happens exactly once, at recording teardown (`force=True`) — never on a repeating timer during the recording. An earlier version of this feature autosaved on a throttled 6s timer during recording, which turned out to reproduce, for ordinary workflow recording, the same visible browser-window flicker already diagnosed and fixed for auth-mode recording (`context.storage_state()` is a heavy, all-at-once CDP call; see `_autosave_storage_state_sync`'s comment in `recorder/session.py`). Recording never re-checks a required app's session mid-recording either — the pre-flight gate above is the only auth check; if a site logs the user out partway through, its own login page simply appears in the recorder window like any other page, and the human signs back in inline, same as before this feature existed. When the recording stops or is cancelled, `_refresh_group_app_sessions(workflow_id)` (`handlers/session.py`) reads that merged file and, for each app in the group that already has a saved session, derives its refreshed slice via `conxa_core.storage.storage_state.refresh_app_state` — keeping only the cookie domains/localStorage origins that app already owned, so a sibling app's cookies from the same merged context never bleed across — and writes it back to that app's `storage_state_path` via `set_group_app_auth` (bumping `captured_at` and `checked_at` — a just-completed login is inherently verified — clearing `last_error`). This is what makes routine cookie rotation, refresh-token renewal, or a user manually re-authenticating mid-recording actually stick instead of being thrown away the moment the recorder closes. If `apps_for_workflow` matches none of the group's apps (a workflow whose login happens on a different host than its target, the common single-sign-on shape), recording is **not** blocked — it warns instead (`auth_scope_warning` in the `cmd_start_recording` response's `warnings` field), since forcing a confirmation here would also block every genuinely-no-login-needed workflow in the same group.
+**No fallback.** A pack without `groups`, or a skill whose group is missing, fails at run time ("No sign-in group found … rebuild the pack in Build Studio"). `build_skill_package` refuses to build a workflow whose group was deleted.
 
-**Group summary (`cmd_list_groups`):** each row carries `{id, slug, name, workflow_count, stages, workflow_preview, apps_total, apps_authenticated, ready, created_at, updated_at}`. `stages` is a `{stage: count}` map over `derive_workflow_stage` (keys present only for non-empty stages) and `workflow_preview` is the first `WORKFLOW_PREVIEW_LIMIT` (3) workflows as `{id, name, stage}`. Both are derived from the workflow list the handler already loads — no extra I/O — and exist so the Workflows page can draw each group as a folder showing its contents and lifecycle mix (see `docs/UI-UX-Brief.md` §2.3). Creating or renaming a group in Build Studio also upserts that group's `id` and `name` to Conxa Cloud (`PUT /api/v1/workflows/{installer_version}/groups/{group_id}`, workspace derived from Clerk session), so Skill Packages can show the folder immediately — including when it still has zero published workflows. The Default group is not synced until it is renamed. Deleting a Studio group does not remove the Cloud folder. Cloud failures never fail the local create/rename.
+**Touched apps and unclaimed hosts.** `Workflow.visited_hosts` holds hostnames a recording navigated (main frame + tabs), extracted by `recorder.session.extract_visited_hosts` at save time (and stored as `SkillMeta.visited_hosts` at compile). `group_store.apps_for_workflow(apps, target_url, protected_url, *visited_hosts)` matches by **site** (last two labels; IPs exactly) against each app's `login_url`/`success_url` and feeds the group page's platform chips (`cmd_get_group.used_apps`) and the recording gate. `group_store.unclaimed_hosts(...)`, from the same inputs, returns hosts no app covers. Warnings are non-blocking:
+- Studio shows an amber "host · no sign-in" chip.
+- The runtime returns `unclaimed_hosts` + `warning` from `authenticate` and emits a `no_signin_configured_for:<hosts>` `test_phase` during pre-flight.
 
-**Compiled pack contract:** `pack.json` gains a `groups` array (`[{id, name, apps: [{id, name, login_url, success_url, auth_definition}]}]`); each skill's `manifest.json` gains `group_id` and — only when non-empty — `unclaimed_hosts` (`[hostname, ...]`, see "Platform tags"); the per-skill `required_apps` list was removed 2026-09-25 (AUTH-14). **There is no single-session fallback (AUTH-2, 2026-09-21):** a pack with no `groups` key, or a skill whose group is missing from it, fails at run time with *"No sign-in group found … rebuild the pack in Build Studio"*, and `build_skill_package` refuses to produce one — a workflow whose group was deleted fails the build (*"These workflows are not in an existing group … move each one into a group"*) instead of failing on a customer's machine. A group with **no apps** is valid and means "nothing to sign in to": its skills run with no gate.
+**Host locks** (`runtime/app/target_hosts.js::resolveTargetHosts`) cover every group app's host (§4.6).
 
-**Platform tags / touched apps (2026-08-23):** every workflow carries `Workflow.visited_hosts` — the hostnames its recording actually navigated (main frame + opened tabs), extracted from session events at "Save Workflow Now" time by `conxa_compile.recorder.session.extract_visited_hosts` (the same extractor the compiler later stores as `SkillMeta.visited_hosts`; a discarded/empty recording clears the field via `clear_recording`). The group page surfaces each workflow's touched apps as platform chips: `cmd_get_group` computes `used_apps: [{id, name}]` via `apps_for_workflow(group.apps, target_url, protected_url, *visited_hosts)` — deliberately the SAME matcher the recording gate uses (the runtime itself gates on the whole group — AUTH-14 — so a run can need more apps than the card shows). A workflow that starts in Render but visits Vercel mid-recording therefore shows both chips before its first compile.
+**Group sync to cloud.** Creating or renaming a group upserts `{id, name}` via `PUT /api/v1/workflows/{installer_version}/groups/{group_id}`, so Skill Packages shows the folder before anything is published. `Default` isn't synced until renamed. Deleting a Studio group doesn't delete the cloud folder. Cloud errors never fail the local operation.
 
-**Unclaimed hosts (AUTH-1, 2026-09-21).** A recording that visited a host *no* group app covers (say `drive.google.com` with no Google app) has no app to sign in for it, so nothing gates it and it would die mid-run at that login wall. `group_store.unclaimed_hosts(apps, *urls)` — computed from the same inputs as `apps_for_workflow`, so both readers agree — returns those hosts; a host on the same *site* (last two labels; IPs match exactly) as any app is treated as covered, since it is that app's own sign-in hop. It is written into the skill's `manifest.json` as `unclaimed_hosts` (omitted when empty) and read two ways, both **non-blocking**: Build Studio's group page shows an amber "host · no sign-in" chip beside the platform chips (`cmd_get_group` → `unclaimed_hosts`), and the runtime warns — `authenticate` returns `unclaimed_hosts` + a plain `warning`, and pre-flight emits a `no_signin_configured_for:<hosts>` `test_phase` entry that Build Studio's Run Test log relays. The runtime cannot check a login it has no app for, so the warning tells the user to already be signed in there. At execution time the same union is what locks: the runtime's `resolveTargetHosts` (`runtime/app/target_hosts.js`, extracted from server.js) adds every group app's `success_url || login_url` host to the run's host_lock set, so two runs overlapping on ANY touched platform serialize while disjoint-platform runs stay fully parallel (see §4.5). There is no separate `platform_tags` manifest field — the embedded `groups` block is the single source of truth.
+**Group summary** (`cmd_list_groups`): `{id, slug, name, workflow_count, stages, workflow_preview, apps_total, apps_authenticated, ready, created_at, updated_at}`. `stages` counts `derive_workflow_stage` values and `workflow_preview` holds the first 3 workflows; both come from already-loaded data (`docs/UI-UX-Brief.md` §2.3).
 
-**On-disk skill layout:** `pack.json` also gains a `skill_groups` field (`{skill_slug: group_id}`, distinct from `groups` above — `groups` is auth-app metadata, `skill_groups` is the path index) and each skill's directory nests under its `group_id` (or the sentinel `"_default"` when a workflow's `group_id` is empty) — `skill-packs/{workspace_dir_slug}/{group_id}/{skill_slug}/`, both in Build Studio's local build output and on the real runtime after sync. The delta-sync response's per-skill entries (§11.1) also carry a `"group"` field so `runtime/sync.js` knows which nested path to write into; its version-comparison lookup only ever consults the nested path, so a skill previously synced under the pre-nesting flat layout (`skill-packs/{workspace_dir_slug}/{skill_slug}/`) is treated as never-synced and freshly redownloaded into its nested location on the runtime's next sync — a one-time, self-healing migration with no separate migration pass. The cloud's `_build_delta` (`skillpack_update_routes.py`) mirrors this on its own storage: if a workspace's files still sit at the old flat cloud-storage path (published before this nested-path support existed), it serves from there while still reporting the resolved `group_id`, so already-published workspaces keep syncing without needing to republish.
+**Success-URL wildcard.** `{}` in `success_url` means "anything after" (`vercel.com/{}`). `recorder.session.url_matches_pattern(url, pattern, exclude_prefix)` is the single matcher. In the runtime, `success_url` is only a navigation hint (`_protectedUrlOf`: `success_url` → learned landing address → `login_url`); detection never reads it (§5.3.4).
 
-**Per-workflow app scoping (`required_apps`) — removed 2026-09-25 (AUTH-14).** A group's apps used to *gate* only the workflows whose `target_url`/`protected_url`/`visited_hosts` matched them, via a per-skill `manifest.required_apps`. That whole layer is gone — see "A group is the unit of sign-in" below. `SkillMeta.visited_hosts` (populated at compile time by `compiler/build.py::_extract_visited_hosts` from every recorded event's `page.url`/`tab.url`) still exists; it now feeds only `unclaimed_hosts` and the group page's platform chips.
+#### 5.3.2 Connecting an app (Build Studio)
 
-**Runtime resolution (`runtime/browser.js`):** `getAuthContext(company, authManager, {groupId})` calls `_resolveGroup(company, groupId)` against `pack.json`; if the pack has a matching group, `getGroupAuthContext` gates on **every app in the group** (AUTH-14, 2026-09-25 — a group is the unit of sign-in, there is no per-skill subset) and pays a live network validation for each app whose stored session has no fresh TTL stamp, while *seeding* the merged context from every app that has a stored session at all, so a workflow that moves between the group's apps arrives signed in to each. App validations run as throwaway tabs of the run's own session browser (`_probeInSession`, 2026-09-21 — previously one separate headless `_validateSessionsBatch` Chromium; that function, and the legacy single-session path that used it, were deleted 2026-09-21 — AUTH-2). A successful validation is stamped per app key into `<sessions>/_auth_validation_cache.json`; repeat runs within `CONXA_AUTH_VALIDATION_TTL_MS` (default 6h, env-overridable) skip the live check entirely — the stamp records the session file's mtime, so a fresh interactive login (which rewrites that file) invalidates it (unit-tested in `runtime/test/unit/test_auth_validation_cache.js`). Sessions are keyed `${company}__${appId}` (same encrypt/raw/keytar machinery as the single-session path in `auth_manager.js` — every function there already takes the session key as its first argument, so this is purely a call-site convention) and merged via `mergeStorageStates` (JS twin of the Python function above). **Session-file precedence is newest-mtime-wins, decided at read time (`_loadSessionForKey`)** — not "encrypted always wins, raw is a stale fallback," which was the bug behind a re-authenticated group app still gating as expired until the whole runtime process restarted: a `<key>_raw_state.json` newer than its `<key>_state.json` sibling means something other than this process wrote a fresher session since encryption last ran — most commonly Build Studio's `_stage_runtime_auth` re-staging a session the user just re-authenticated in the Group Auth Wizard, or a save that fell back to plaintext (SG-11) — and the old unconditional encrypted-first read served that stale session until the next cold start's one-time `reencryptPlaintextSessions()` sweep happened to reconcile them. A winning raw file is now promoted into the encrypted one immediately (unit-tested in `runtime/test/unit/test_session_precedence.js`), so the cost is paid once, by whichever run first notices the fresher file, not deferred to the next restart. `server.js` passes only the group id into `getCachedBrowser` (AUTH-14; it used to pass the manifests' `required_apps` — for `execute_sequence` their union), so the browser cache key is `workspace::group::mode`. `getCachedBrowser`'s reuse window is intentionally short (90s, not the 5 minutes it used to be) — a cache hit skips re-validating the underlying session entirely, so keeping it short bounds how long a session that expired while cached goes undetected. Emits `test_phase` log entries (`group_auth_validate_start`/`group_auth_validate_done`, relayed to Build Studio's live test log the same way the launch-phase markers are — see the "Run Test" performance notes below) around the validation, so a slow pre-flight is visible instead of silent. **Every** missing/expired app opens its own non-blocking login window at once (2026-08-16 — previously one at a time, costing N interrupted runs for N expired apps), with one message naming all of them:
+1. `cmd_start_group_app_auth` launches the recorder in `auth_mode` at `login_url` with `wait_for_url=success_url`. `reached_wait_url` is a **passive hint only**; nothing auto-stops the session on it.
+2. While the window is open, the recorder saves storage state once per distinct URL whenever the top page navigates off the login page (`_auth_saved_url`; sets `auth_captured`). It saves then, not at teardown, because once the `disconnected` handler clears `browser_open` a teardown save would hang CDP. `auth_captured` is informational: many login pages redirect once on load.
+3. **Only the user's Done ends the session.** `GroupAuthWizard` polls `get_recording_status` every 1 s and auto-finishes only on browser close or a poll error. It offers Done and Cancel.
+4. `cmd_finish_group_app_auth`:
+   - requires a real session (`_has_captured_session`: at least one cookie or localStorage origin), otherwise `auth_capture_failed` ("You closed the login window before signing in…");
+   - runs learning (§5.3.5). A failed self-test returns `{confirmed:false, reason}` and keeps the window open. "Save anyway" (`force:true`) skips learning;
+   - persists `data/groups/{group_id}/auth/{app_id}.json` and marks the group's workflows `ready` once every app is connected. Sets `detect_warning` when `success_url` was never reached (amber note on the app card).
 
-> This workflow belongs to the Sales group and requires authentication to 5 applications. Sign in to Salesforce, Billing, Reports in the windows that just opened, then run the skill again.
+A hand-closed browser leaves any existing `auth_definition` untouched. `cmd_update_group_app` clears `auth_definition` when `login_url` changes.
 
-(The count is the whole group's; the names are the apps still needing sign-in.) A single re-run of `execute_skill` proceeds once every app in the group is authenticated — the same request/response shape MCP already uses for the single-app case, so this ships to Claude Desktop with no new interaction primitive.
+**Freshness.** `captured_at` never expires, so `check_app_session_sync(app)` runs a bounded headless probe. It loads the state into a throwaway context, evaluates the learned definition if present, otherwise navigates to the success-URL prefix and classifies `ready` / `expired` (bounced to login, or state missing/corrupt). A navigation error counts as `ready` rather than a false "expired". Every verdict stamps `checked_at` (and `last_error` on expiry) via `set_group_app_checked`. `group_auth_status(group)` is cheap and read-only; it reports `state` plus `verified` (`checked_at` within 600 s). Probes run only from `cmd_start_recording` and the user's "Check now" (`cmd_check_group_app_auth`), never on page load.
 
-**One Chromium per execution session; sign-in tabs share the run's context (2026-09-21).** Pre-flight opens the session's single browser (§4.5), seeds it with every stored app session, probes only the apps whose stored session has no fresh TTL stamp (in throwaway tabs of that browser), and opens **one sign-in tab per missing or expired app** — in the *same context the workflow then runs in*. Apps with a valid session are untouched; when nothing needs a check no probe runs at all. So the cookies a login earns are already where the run executes — nothing is re-seeded from disk and nothing is re-validated. Detection (`_waitForSessionLogin`) is a poll over every page of the session's context, not events on one window, so a sign-in finished in *another* tab, an OAuth popup, a multi-hop SSO redirect, a slow redirect and a login page that closes itself all look the same: some page is on the app's host and off its login path (`_reachedProtectedUrl` — deliberately still the narrow, host-scoped, anchored `LOGIN_PATH_RE`, not `run.js`'s broad `AUTH_FAILURE_URL_RE`; do not merge them). A host-owned (Execute) session only considers pages *its own login created* — its context is Electron's single shared one, so polling all of it would take another run's signed-in page for this sign-in (EXEC-45). Only the login tab and pages it opened (`page.opener()` chain) are closed on success; another app's tab and tabs the user opened are never touched. On success the app's slice is written to disk **immediately** (`refreshAppState`, the JS twin of Python's `refresh_app_state`, keeping only the domains/origins the app owns — its previous file's, plus its own login/success hosts for a first-ever login — and cookies no *other* app claims, i.e. an SSO provider's, so re-login stays one click) and the validation cache is stamped, so the next session starts signed in. Seeding orders the apps' session files **newest first**, because `mergeStorageStates` keeps the first cookie per name/domain/path — without that, a stale sibling copy of a shared SSO cookie (an identity provider's) would beat a fresh login just by coming earlier in the group's app order (AUTH-3; unit-tested in `runtime/test/unit/test_session_auth.js`). A tab closed by hand, a closed browser, a timeout (`LOGIN_WAIT_MS`, 10 min) and a failed launch each end the wait with the specific reason (`describeAuthWait`) and drop the half-signed-in session — a retry starts clean. If Chromium cannot start at all, the apps that needed it come back as `launch_failed` sign-in results (so `authenticate` reports `failed` at once) rather than a thrown error. **Known limit:** a chat-triggered `watch: false` run that needs a human cannot show a login in a headless browser, so it still opens its own visible window (the one case that costs a second Chromium) and its session is closed rather than kept. A *scheduled* run never gets that far — see below.
+#### 5.3.3 Recording with group auth
 
-**Multi-signal login-completion detection (2026-09-22).** `_reachedProtectedUrl` alone (the live page's URL against `success_url`/`login_url`) has two real gaps: it saves the instant the live page leaves the login path even mid-MFA (an OTP/code screen on the app's own host looks identical to "done"), and a flat post-reach settle delay (`LOGIN_SETTLE_MS`) can beat a site that writes its last cookie a moment late. Both `_waitForSessionLogin` and `_waitForInteractiveAuth` now run through one shared ladder (`login_signals.js`, called from both so they cannot drift — same discipline as `second_opinion.py::build_try_dismiss_from_hint`): three passive **lookouts** — journey (`_reachedProtectedUrl` first, falling back to `classifyJourney`'s generic non-login/non-IdP host detection — `accounts.google.com`, Microsoft, Okta, Auth0, Apple, GitHub's sign-in host — for a cross-host app with no `success_url` configured to name it), password-box-gone (`page_scripts.js::passwordBoxProbe`, same-origin frames included), and a **pause sign** (`pauseSignProbe` — an OTP-shaped input run or `autocomplete="one-time-code"`; while up, nothing else counts, closing the MFA gap above). Once any lookout fires, a **judge** (`_judgeLogin`) opens a throwaway tab of the same session and re-requests the login entry URL in the background — never on a timer, only when a lookout just fired — and checks whether it still shows a login form; judge "yes" saves at once, judge "no" is a false alarm (keep watching), and judge "can't tell" (the probe itself failed) falls back to a **backup rule**: 2+ lookouts holding continuously for `CONXA_LOGIN_BACKUP_AGREE_MS` (default 10s) saves anyway, for a site whose login page shows the same thing to everyone. Once the ladder says save, a **timekeeper** (`_waitForTicketsCalm`) replaces the flat settle delay with a calm-wait over a ticket signature (cookie names + localStorage/sessionStorage key counts, never values) — two consecutive samples matching, or `CONXA_LOGIN_TIMEKEEPER_BUDGET_MS` (default 5s) elapsing, whichever comes first; deliberately never compares against the instant-of-decision state, only two separate post-decision polls, or a write landing between the decision and the first poll would read as "already unchanged." Finally a **prover** (`_proveSession`) verifies the just-captured state actually authenticates before reporting success: a launched session gets a true isolated re-test (`browser.newContext({storageState})`, catching a site that keeps part of its login in page-memory that was never written to a cookie — so it was never really captured); a host-owned (Execute) session re-tests in a fresh tab of the same shared context instead, since Electron's CDP target has neither `Target.createBrowserContext` nor `Target.createTarget` (§4.5) — weaker, but still catches the same page-memory-only failure. A failed proof does not block the save (the artifact this implements, `docs/artifacts/login-desk.html`, is explicit: a wrong-but-saved login is still saved) — it surfaces a warning through `beginInteractiveAuth`'s existing `handle.message` (additively, in `authenticate`'s `login_warnings` field) so the customer is told now, not on the next run's failure. `LOGIN_HUMAN_PROMPT_MS` (25s) only logs `login_signal_inconclusive` — the actual "I'm done signing in" control is Phase 2, described next. None of this needed any change to what Build Studio captures or ships — `login_url`/`success_url` were already the only two fields the runtime ever received.
+- **Seeding:** `cmd_start_recording` merges every captured app's state (`storage_state.merge_storage_states`: cookie union, per-origin localStorage merge) into one context.
+- **Gate:** requires only the apps `apps_for_workflow` matches for this workflow, but probes every captured app (skipping ones checked in the last 600 s). An expired required app blocks with `auth_required`; an expired sibling warns in `warnings`. If no app matches (common with SSO on another host), recording warns with `auth_scope_warning` instead of blocking.
+- **Pre-flight only:** no mid-recording auth checks and no periodic autosave (`context.storage_state()` is heavy and made the window flicker). If a site logs out mid-recording, the user signs back in inline.
+- **Write-back:** the recorder autosaves once at teardown to `merged_group_state.json`. `_refresh_group_app_sessions` then splits it per app with `storage_state.refresh_app_state` (keeping only domains/origins that app already owned) and writes each via `set_group_app_auth`, bumping `captured_at`/`checked_at` and clearing `last_error`. Cookie rotation and mid-recording re-logins stick.
 
-**Phase 2 — AUTH-6/7/8 (2026-09-22).** Three follow-ups, all additive to the ladder above, none changing its Phase 1 behavior for a login that already resolves on its own.
+The recording gate still scopes by `apps_for_workflow` while the runtime gates on the whole group (tracked in `TODO.md`).
 
-*AUTH-6, "I'm done signing in":* a file-drop signal, `<CONXA_DIR>/login-done/<key>.cmd` (`key` = `${workspace_id}__${appId}`), checked once per poll tick in both wait functions via `_checkHumanOverride` — existence-only, consumed on the way past, same accepted local-trust model as `handover.js`'s own resume file. Deliberately rooted at `CONXA_DIR`, not `CONXA_DATA_DIR` like `handover.js` — `conxa-execute`'s Electron process resolves and forwards `CONXA_DIR` (`runtime_path.js` + `mcp_client.js`'s `{...process.env}` forwarding) but never learns `CONXA_DATA_DIR`, which only this runtime process computes; rooting there would leave Execute's own button unable to find the directory. A hit is an unconditional save — bypasses judge, the backup-agreement rule, and even a currently-showing pause sign; the human is the authority of last resort. Three ways to trigger it, all writing the same file: the `conxa-runtime login-done <key>` CLI subcommand (`runtime/host/bootstrap.js`, mirrors `resume`'s exact shape, runs before app-layer resolution); and, for Conxa Execute specifically, a per-login-tab "Done" button. The button required threading a `loginKey` end to end alongside the existing `label` on every sign-in-tab creation call (never on a judge/prover probe tab, which passes no `loginKey`): `browser.js`'s `_openInteractiveAuthWindow` → `host_browser.js`'s `acquire`/`openTab` → Execute's `browser_control.js` dispatch → `browser_panel.js`'s `newView`/`newTab`, stored on the tab record. The raw key never reaches the renderer — `_describeTab` exposes only `isLogin: Boolean(t.loginKey)`; the renderer's button calls `panel:login-done` with just `{runId, tabId}`, and `browser_panel.js::loginDone` looks up that tab's own key server-side before writing the file.
+#### 5.3.4 Runtime pre-flight
 
-*AUTH-7, per-signal decision log:* `login_signals.js::ladderVerdict`'s `reason` (previously read only for its `action`) is now recorded on every terminal outcome — `judge_yes` / `lookouts_agreed` / `human_override`, or a wait's own non-ladder terminal outcome (`timeout` / `closed` / `gone` / `abandoned` / `rejected_url`) — to `<CONXA_DIR>/logs/login_signals.log` via a new, dedicated `login_decision_log.js` (JSON Lines, size-capped single-generation rotation, `{ts, key, decision, waitedMs}`). Deliberately its own file rather than reusing `recovery_log.js`: that module's reader (`readRecentEvents`) filters by `slug` and feeds an agent-facing failure's `recovery_trail` — a login decision has no `slug` in scope and is not a recovery-cascade event, and this log has no reader at all; it exists purely so the ladder's timing constants can eventually be tuned from real data.
+`browser.js::getAuthContext(company, authManager, {groupId})` → `_resolveGroup` against `pack.json` → `getGroupAuthContext`:
 
-*AUTH-8, "Signed in as ___":* a new, deliberately text-reading probe (`page_scripts.js::accountNameProbe` — every other probe in that file is structural-only by design) looks for a short (2-60 char) label on or near a plausible account/profile marker on the page that actually landed the sign-in, run once via `_probeAccountName` right after the Prover. Best-effort and silent on a miss — never a warning, unlike a failed Prover check — surfaced through `handle.accountName` → `authenticate`'s additive `signed_in_as` field, kept separate from `login_warnings` since it is never a warning. The per-site fingerprint escape hatch from the same TODO item was not built — it stays scoped to "only if Phase 1 falls short," and nothing has demonstrated that yet.
+- **Sessions** are keyed `${workspace_id}__${appId}` (`auth_manager.js` functions all take the key). **Precedence is newest-mtime-wins at read time** (`_loadSessionForKey`): a `_raw_state.json` newer than its encrypted sibling (Studio re-staged a session, or an SG-11 plaintext fallback) wins and is promoted to encrypted immediately (`test_session_precedence.js`).
+- **Seeding** merges every stored app session, newest first, because `mergeStorageStates` keeps the first cookie per name/domain/path and a stale shared SSO cookie must not win (`test_session_auth.js`).
+- **Validation:** only apps without a fresh stamp are probed, as throwaway tabs of the run's own session browser (`_probeInSession`). Stamps live in `<sessions>/_auth_validation_cache.json` for `CONXA_AUTH_VALIDATION_TTL_MS` (default 6 h) and record the session file's mtime, so a fresh login invalidates them (`test_auth_validation_cache.js`). `test_phase` markers `group_auth_validate_start`/`_done` reach Studio's Run Test log.
+- **Detection** (pre-flight and the prover) navigates to `login_url`, never `success_url`:
+  - with a learned definition: `evaluateAuthDefinition` (§5.3.5);
+  - otherwise the **signed-out baseline**: `_signedOutBaseline(session, entryUrl)` loads the login URL in a fresh incognito context (cached per URL for the TTL), and `login_signals.js::isSignedInAgainstBaseline(baseline, current)` answers signed in when the probe is not login-shaped and differs from the baseline. `looksLikeLoginAnswer` = a visible password box, or a path with a `login|signin|sign-in|session-expired` segment at any depth (`LOGIN_PATH_RE`). No host or IdP lists. Keep `LOGIN_PATH_RE` separate from `run.js`'s broader `AUTH_FAILURE_URL_RE`.
+- **Sign-in:** one Chromium per session (§4.6). Every missing/expired app gets its own sign-in tab at `login_url`, in the same context the run then uses, so earned cookies are already in place. The message counts the group's apps and names the missing ones. An app whose sign-in is already pending returns `already_open` before any session or probe, so a repeat call can't start a second session.
+- **On success:** only the login tab and pages it opened (`opener()` chain) close. The app's slice is written immediately (`refreshAppState`: its previous domains/origins, its own login/success hosts on first login, and cookies no other app claims, such as the IdP's) and the stamp is set.
+- **Failure:** a closed tab or browser, a timeout (`LOGIN_WAIT_MS`, 10 min), or a failed launch ends the wait with a specific reason (`describeAuthWait`) and discards the half-signed-in session. A launch failure returns `launch_failed` results (`authenticate` reports `failed`).
+- **Headless limitation:** a chat-triggered `watch:false` run needing a human opens its own visible window (a second Chromium) and doesn't park it.
 
-**The judge now compares a before/after snapshot, and a learned landing address stands in for a missing `success_url` (2026-09-23).** Two gaps the artifact called out as still open. First, the judge (`browser.js::_snapshotLoginEntry`, renamed from `_judgeLogin`) used to just re-check `_reachedProtectedUrl` against the login entry URL — worthless for an app with no `success_url` at all, since `protectedUrl` then falls back to `login_url` itself and can never "not look like login." It now gathers `{url, hasPasswordBox}` snapshots and hands both to `login_signals.js::judgeFromSnapshots`: same origin+path both times means "can't tell" (the backup rule takes over, matching the artifact's "a few sites show the form to everyone" row); a different, non-login-shaped answer means "yes"; a different but still login-shaped answer (bounced to an IdP, or a password box reappeared) means "no". `looksLikeLoginAnswer` — an IdP host, a login-shaped path, or a visible password box — is the one place "does this look like a login page" is decided, replacing the old bare host+path check for this purpose. The "before" snapshot is taken once in `beginInteractiveAuth`, in a throwaway tab, **before** the visible login window opens — not concurrently with it — specifically so it can never race the person's own (possibly near-instant) sign-in and misread an already-fresh session as "before"; a launched-browser fallback with no session/context yet at that point skips it and the judge falls back to its old check. When the before snapshot itself already doesn't look like a login answer, `alreadySignedIn` saves at once (the artifact's "old login still works" row) without waiting on any lookout. Second, `login_signals.js::shouldAskJudge` now gates the judge on a NEW lookout having fired since the last ask (`firedCount > judgedAtFiredCount`), not just "any lookout has ever fired" — the old condition re-asked the judge on every single poll tick once one lookout had fired and stayed fired, hitting the site's login page far more than the artifact's "gentle with the website" rule intends. Separately, `_readLanding`/`_writeLanding` (`browser.js`, a JSON sidecar next to `_auth_validation_cache.json`, keyed the same way) remember the app's real post-login origin the first time a sign-in actually lands somewhere — never a known IdP host, never anything still login-shaped. `_protectedUrlOf(app, key)` prefers `success_url`, then this learned address, then `login_url`, and now feeds every place that used to read `app.success_url || app.login_url` directly (pre-flight's live probe, the judge's baseline, the login wait's own `protectedUrl`) — so a cross-host app configured with no `success_url` stops being treated as expired on every single run once it has signed in at least once.
+Host comparisons remain only for attribution (`captureReAuth`, `refreshAppState`); `_hostOf` strips a leading `www.`.
 
-**The judge never probes while the person is still on a sign-in page, and probe tabs never take the screen (2026-09-25, AUTH-18).** Symptom: in Conxa Execute, typing the Google email and clicking Next bounced the panel back to the first login page, repeatedly. Cause 1: Execute's `browser_panel.js` made every new tab active, ignoring `focus:false`, so each judge/prover/pre-flight probe tab (which loads the login entry URL) became the visible view — `new_tab` with explicit `focus:false` now opens parked at 0x0 (a plain new tab, popup or `tab_open` step still becomes active). Cause 2: the judge fired on the context-wide `newTickets` lookout the moment Next wrote a cookie and loaded the login URL in the same cookie jar mid-flow, which can reset multi-step IdPs. `login_signals.js::shouldAskJudge` now also requires `!onSignIn`, where `_sampleLookouts` reports `onSignIn` when any of this login's own live pages still reads as a login answer. The backup-agreement rule and the human override are unaffected. Third guard: `getGroupAuthContext` returns `already_open` for any group app whose sign-in is still pending, before opening a session or probing — a repeat `execute_skill` call (the agent "checking again") can no longer spin up a second session behind the person. Accepted trade-off: a site whose sign-in tab stays on a login-shaped URL after success is resolved by those two paths, not the judge.
+#### 5.3.5 Login-completion detection
 
-**Nothing saves while the person is mid-way through the sign-in (2026-09-25, AUTH-19).** AUTH-18's gate covered only the judge; the backup-agreement rung still saved on a Google "check your phone" screen, where the password box is gone and new cookies exist, so the half-done session was captured, the tab closed, and the run reopened sign-in from the first page. `ladderVerdict` now takes `onSignIn` and returns `wait`/`on_sign_in` ahead of every rung, including a judge `yes`; the learned-definition path checks it too. `onSignIn` is *mid-flow*, not merely "on a login-shaped page": `_sampleLookouts` records each own tab's first sign-in state (origin+path, password box) and latches `progressed` once it changes while still on a sign-in page. An untouched login tab therefore never blocks, so a sign-in finished in a different tab is still found by the judge. A second-factor page whose address doesn't look like a login (GitHub's `/sessions/two-factor/app`) is left to the judge rather than to a keyword list: `judgeFromSnapshots` answers "no" whenever the login entry URL still shows a login answer, at the same address or not (it used to be "can't tell" at the same address, handing the case to the backup rule); `ladderVerdict` applies the backup rule only when `judgeSettled`, meaning the judge has answered for the page the person is on now; and `shouldAskJudge` also re-asks when this login's own tabs move to a different page, so a "no" given on the 2FA page is revisited when they land in the app. Accepted trade-offs: a person who starts signing in in the login tab and then finishes somewhere else resolves by the human override or by closing that tab; a site whose login URL keeps showing a login form to a signed-in visitor no longer auto-completes, but pre-flight (`isSignedInAgainstBaseline`) already reads such a site as signed out on every run, so it was never supported.
+A live sign-in is watched by `_waitForSessionLogin` / `_waitForInteractiveAuth`, both driven by one shared ladder in `login_signals.js` so they can't drift. For a launched session the wait polls every page of the context (sign-in in another tab, popups, SSO hops all count). A host-owned (Execute) session only watches pages its own login created, since Electron's context is shared (EXEC-45).
 
-**A genuine signed-out baseline replaces ALL host/redirect/IdP-list matching (2026-09-24) — supersedes AUTH-5 (line above) and the host-scoped `_reachedProtectedUrl` this section previously described.** Root cause: GitHub's login URL is `https://www.github.com/login`; GitHub redirects it to `https://github.com/login` (no `www.`). `_reachedProtectedUrl` compared hostnames exactly, so a valid GitHub session read as "not signed in" on every pre-flight check, forever — and `login_signals.js`'s `KNOWN_IDP_HOST_SUFFIXES` separately hardcoded `github.com` as a third-party identity provider (alongside Google/Microsoft/Okta/Auth0/Apple), which is wrong whenever GitHub *is* the app, not a provider fronting one: every github.com page then read as "still on the login step," so the judge could never say yes and a completed GitHub sign-in could never be detected. Both were instances of the same brittle pattern — matching a specific host/redirect shape instead of asking the site itself.
+**With a learned `auth_definition`,** the ladder is replaced: a throwaway-tab probe (`_probeAuthDefinitionVerdict`) must return a confident **yes**. "No" and "unsure" keep waiting until timeout.
 
-`_reachedProtectedUrl`, `KNOWN_IDP_HOST_SUFFIXES`/`isKnownIdpHost`, `classifyJourney`, and AUTH-5's same-host/cross-host branch in `_loginEntryUrl` (the login tab now always opens `login_url`, full stop) are **deleted**. In their place: `browser.js::_signedOutBaseline(session, entryUrl)` fetches the login URL from a throwaway **incognito** context (`browser.newContext()`, no `storageState` — genuinely, not guessed, signed out), cached per `entryUrl` for `AUTH_VALIDATION_TTL_MS` (a login page's shape rarely changes). `login_signals.js::isSignedInAgainstBaseline(baseline, current)` compares a live probe against it: signed in = the probe isn't itself login-shaped (`looksLikeLoginAnswer` — a password box, or a `/login`-shaped path; the IdP-host branch is gone, password-box/path-pattern are fully generic) **and** differs from the baseline. Unlike `judgeFromSnapshots`'s "before" (merely "whatever this session showed before THIS attempt," which may itself already be signed in), `baseline` is unconditionally signed-out, so "same as baseline" is a *definite* not-signed-in, not merely inconclusive. This mechanism now backs every sign-in decision:
+**Otherwise, the generic ladder:**
 
-- **Pre-flight validation** (`_isAuthenticated`, called from `_probeInSession`) and **the prover** (`_proveSession`) both navigate to `login_url` (never `success_url`) and decide via the baseline compare — `success_url`/`protected_url` are no longer read for detection at all, only still used as a navigation hint (`_protectedUrlOf`, server.js's post-login pre-navigate) and by Build Studio's own `detect_warning` UI, unrelated to this mechanism.
-- **The judge** (`_judgeVerdict`, new): tries the existing relative `judgeFromSnapshots(beforeSnapshot, after)` first; when that's inconclusive (before/after read the same address — the case a fast sign-in leaves genuinely ambiguous by a relative compare alone), it falls back to the baseline compare, which can only ever resolve "yes" from that fallback, never "no" — a stale cached baseline must not actively block the backup-agreement rule below, only decline to help.
-- **Lookouts** (what triggers a judge ask): `passwordGone` (unchanged) and a new **`landed`** lookout — an instant, *level* check (`looksLikeLoginAnswer` on the login tab's own current state, no prior observation needed, unlike an edge-triggered lookout) that catches a fast multi-step flow (password → OTP → app) racing past the poll interval before any intermediate state is sampled. The old **`journey`** lookout (host-list-based "first non-login, non-IdP host seen") is replaced by **`newTickets`**: the context's cookie/storage-key signature changing from a baseline captured **before the login window opens** (same timing as the judge's own `beforeSnapshot`, threaded through as `opts.ticketBaseline` — not lazily on the wait loop's first poll tick, which would race a sign-in completed in another tab faster than one poll interval and silently absorb it as "already there"). `firedAt` is now `{passwordGone?, newTickets?, landed?}`.
-- **Login-tab-agnostic detection preserved:** a sign-in finished in a tab the user opened themselves (never one of `mine`) is still caught — not by scanning `ctx.pages()` for it (removed), but because the judge's own throwaway probe re-fetches `entryUrl` fresh regardless of which tab the person actually used, and `newTickets` reads the context's whole cookie jar (not scoped to any one page).
+1. **Before snapshots**, taken in `beginInteractiveAuth` in a throwaway tab before the login window opens (so they can't race a fast sign-in): the judge's `beforeSnapshot` (`{url, hasPasswordBox}`) and the `ticketBaseline` (cookie names + storage key counts, never values). If the before snapshot is already not login-shaped, `alreadySignedIn` saves at once.
+2. **Lookouts:** `passwordGone`; `newTickets` (the context's ticket signature changed from the baseline); `landed` (a level check: the login tab no longer looks like a login). A **pause sign** (OTP-shaped inputs or `autocomplete="one-time-code"`) suppresses everything while visible.
+3. **`onSignIn` (mid-flow):** `_sampleLookouts` records each own tab's first sign-in state and latches `progressed` once it changes while still on a sign-in page. `ladderVerdict` returns `wait/on_sign_in` ahead of every rung while this holds. An untouched login tab never blocks, so a sign-in finished elsewhere is still found.
+4. **Judge** (`_judgeVerdict`): asked only when a new lookout has fired since the last ask, or this login's tabs moved to a different page, and never while `onSignIn`. It re-fetches the login entry URL in a throwaway tab (focus-less, parked at 0×0 in Execute) and runs `judgeFromSnapshots(before, after)`: login-shaped → **no**; different and not login-shaped → **yes**; same address → falls back to the baseline compare, which may only answer **yes**.
+5. **Backup rule:** only when `judgeSettled` (the judge answered for the page the person is on now): 2+ lookouts held for `CONXA_LOGIN_BACKUP_AGREE_MS` (default 10 s) saves.
+6. **Human override:** a file `<CONXA_DIR>/login-done/<workspace_id>__<appId>.cmd` saves unconditionally. It's rooted at `CONXA_DIR` because Execute knows that path but not `CONXA_DATA_DIR`. It's written by `conxa-runtime login-done <key>` (host subcommand) or Execute's per-tab Done button. The renderer only sees `isLogin`; `browser_panel.js::loginDone` looks up the key server-side, threaded via `loginKey` on sign-in tab creation.
 
-Everywhere a host comparison remains legitimate — never for detection, only for *attribution* (`captureReAuth`'s "which configured app does this failing page belong to", `refreshAppState`'s cookie-ownership split) — `_hostOf` now strips a leading `www.` first, so a redirect between bare and `www.`-prefixed hostnames can't make an app unrecognizable there either.
+**After "save":**
+- **Timekeeper** (`_waitForTicketsCalm`): two consecutive matching ticket samples after the decision, or `CONXA_LOGIN_TIMEKEEPER_BUDGET_MS` (default 5 s).
+- **Prover** (`_proveSession`): re-tests the captured state in an isolated `browser.newContext({storageState})` (a fresh tab of the shared context under Execute). Failure doesn't block the save; it surfaces as `login_warnings`.
+- **Account name** (`page_scripts.js::accountNameProbe`, the only text-reading probe): best-effort, surfaced as `signed_in_as`.
+- **Landing address:** `_writeLanding` remembers the first real post-login origin (never login-shaped) as a navigation hint.
 
-**Learned per-app authentication definitions (P0: Application Authentication Recording, 2026-09-25).** The baseline compare above is generic and host-list-free, but it is still a guess at what "signed in" means for an arbitrary app. This adds an optional, per-app **learned** definition that replaces the guess with a rule Build Studio actually observed for that specific app — `GroupApp.auth_definition` (`conxa_core.models.workflow`), `None` for an app connected before this feature or whose self-test never passed, in which case every mechanism above (baseline, judge, ladder) is unchanged.
+**Decision log:** every terminal outcome (`judge_yes`, `lookouts_agreed`, `human_override`, `timeout`, `closed`, `gone`, `abandoned`, `rejected_url`) is appended to `<CONXA_DIR>/logs/login_signals.log` (`login_decision_log.js`, `{ts, key, decision, waitedMs}`, size-capped) for tuning. It has no reader. `LOGIN_HUMAN_PROMPT_MS` (25 s) only logs `login_signal_inconclusive`.
 
-*Learning, at Connect's Done (Build Studio).* `cmd_finish_group_app_auth` (`handlers/groups.py`) no longer stops the session the instant `success_url` is reached — `RecordingSession`'s `wait_for_url` sweep (`recorder/session.py`) sets `reached_wait_url` as a passive hint only, never `_stop_requested`, so a transient page that merely *looks* like the success URL (a redirect hop, a brief MFA interstitial) can't close the window on a login the human hasn't finished. Only Done ends the session. While the browser is still open, `RecordingSession.learn_auth(login_url, existing)` observes the same **probe url** (`login_url`) three ways: **LIVE** (a new tab of the just-authenticated context), **OUT** (a fresh, cookie-less context), and **RELOAD** (a fresh context restored from the just-saved storageState). `existing` is the app's currently-saved definition (empty on a first Connect, populated on a Reconnect): if it still passes `self_test` against these three fresh observations, it comes back **unchanged** rather than replaced — see AUTH-15 defect (4) below for why that matters. Otherwise `conxa_compile.auth_learning.learn(live_obs, out_obs)` keeps only the signals that differ between LIVE and OUT (a positive-and-negative contrast, not a guess from one observation), and `self_test(definition, live_obs, out_obs, reload_obs)` requires all three to agree (LIVE → yes, OUT → not yes, RELOAD → yes) before anything is saved. A failed self-test does **not** end the session — `cmd_finish_group_app_auth` returns `{confirmed: false, reason}` and the window stays open so the person can keep signing in and click Done again; `GroupAuthWizard.tsx` shows the reason and a "Save anyway" (`force: true`) escape hatch that skips learning entirely and falls back to the generic ladder for that app, same as before this feature existed. A browser closed by hand (no learning attempted) leaves any existing definition exactly as it was — it is never wiped just because Done wasn't clicked. Because `RecordingSession.stop()` runs the sync Playwright driver on its own dedicated thread, `learn_auth` is a cross-thread request/poll bridge (`_learn_auth_pending`/`_learn_auth_done`), the same pattern `start()`/`stop()` already use to reach across from the async handler loop.
+Accepted trade-offs: a person who starts in the login tab and finishes elsewhere resolves via override or by closing that tab. A site whose login URL still shows a form to signed-in visitors never auto-completes, and pre-flight reads it as signed out anyway.
 
-*The definition itself* (`{version, probe_url, signed_out: {final_path, markers, password_box}, signed_in: {final_path, endpoints}, session_keys, journey_hosts}`) is a pure function of its three observations — no timestamp or other non-reproducible field — never stores a cookie *value*, a response body, or a query string/fragment — only cookie *names*, method+templated-path+status-class shapes, and role/name UI markers with account-specific-looking names filtered out (`auth_learning._clean_markers`). It ships in `pack.json`'s `groups[].apps[]` (`skill_package_builder.py`) alongside `login_url`/`success_url`, same as everything else in that block.
+Design reference: `docs/artifacts/login-desk.html`.
 
-*Evaluation, at runtime.* `login_signals.js::evaluateAuthDefinition(definition, observation)` is the JS twin of `auth_learning.evaluate()` — same rule in both languages, proven equal by one shared fixture (`runtime/test/fixtures/auth_definition_cases.json`) both unit suites run. Four signal classes, each independently yes/no/null: **url** (the observed path matches the learned signed-in or signed-out path exactly — deliberately NOT "isn't the login path," which reproduces the exact weak-signal composition AUTH-10 flags), **network** (a learned endpoint's status falls in its "ok" or "denied" class, path matching after the same `:id`-templating `stable_hash.py`-adjacent code elsewhere in the compiler uses for a similar reason), **dom** (a password box is an unconditional "no"; none of the learned signed-out markers present is a "yes"), and the weak **session** class (a learned cookie name present — never alone, never a veto). The verdict is "yes" only with 2+ positive classes, at least one not `session`; any "no" vetoes outright; an OTP-shaped page is always "unsure" regardless of everything else. `browser.js::_gatherDefinitionObservation` is the Playwright-touching gatherer (owns its own navigation to `probe_url` so a `page.on("response")` listener is attached before anything loads), reused by `_isAuthenticated` (pre-flight and the prover, via `_evaluateAgainstDefinition`) and `_probeAuthDefinitionVerdict` (the login-wait judge, a throwaway tab of the shared context — same shape as `_snapshotLoginEntry`). With a definition present, the login-wait ladder in `_waitForSessionLogin` is replaced outright: no 2-passive-signal backup-agreement save, only a confident "yes" saves; "no" or "unsure" both mean keep waiting, all the way to timeout if it never resolves — spec's "never continue while unsure."
+#### 5.3.6 Learned authentication definitions
 
-*Drift.* `cmd_update_group_app` clears `auth_definition` (via `set_group_app_auth_definition`, which — unlike `update_app`'s `**fields` — allows writing back to `None`) whenever `login_url` changes, since a definition is a probe against one specific address. `check_app_session_sync`'s "Check now" evaluates the definition when one exists instead of the old success-URL redirect check.
+An optional per-app rule Build Studio observes, replacing the generic guess. `None` means the ladder above applies unchanged.
 
-**Mid-run expiry now auto-retries for an app with a learned definition (2026-09-25) — narrows the "pre-flight-only" paragraph above.** The confidence gap that made mid-run auto-login deliberately out of scope was exactly the generic ladder's own weakness (see that paragraph's "Earlier behavior … interrupted an already-dead run" note) — a learned definition doesn't have that gap. `captureReAuth` now also reports `hasAuthDefinition` (the *resolved* app's own field, not a workspace-wide flag). `server.js`'s `session_expired` handler, when `hasAuthDefinition && authWindowOpened === false && _effAgentEnabled && failedAt !== null` and this isn't already a retried call (`args._mid_run_reauth`, capping this to one retry), fires a fresh `execute_skill` call under the **same** `run_id` with `resume_from: failedAt` set, in the background, and returns an "opening a sign-in window now" response immediately instead of only "call execute_skill again." That fresh call runs the ordinary pre-flight gate from scratch — detects the now-expired session, opens a login window, and detaches exactly like any other pending sign-in already does (§ "A run waiting for sign-in detaches" above) — no new detach/registry mechanism was needed. An app with no learned definition keeps today's behavior unchanged: fail fast, tell the person to call `execute_skill` again by hand.
+**Learning at Done.** While the browser is open, `RecordingSession.learn_auth(login_url, existing)` observes the probe URL three ways: **LIVE** (a new tab of the signed-in context), **OUT** (cookie-less context), and **RELOAD** (fresh context from the just-saved state). If `existing` still passes `self_test` against these observations it's returned **unchanged** (so a routine Reconnect doesn't look like a setup change). Otherwise `conxa_compile.auth_learning.learn(live, out)` keeps only signals that differ between LIVE and OUT, and `self_test` must see LIVE→yes, OUT→not yes, RELOAD→yes. `learn_auth` is a cross-thread request/poll bridge to the recorder's sync-Playwright thread.
 
-**A group is the unit of sign-in; `required_apps` is gone (AUTH-14, 2026-09-25).** A workflow in a group runs only when **every** app in that group is signed in. The per-skill subset — `manifest.required_apps` (computed at build from `target_url`/`protected_url`/`visited_hosts`), `getGroupAuthContext`'s `requiredAppIds` scoping and `_filterRequiredApps`, `authenticate`'s `apps` argument, the app-set component of the session-cache key, `resolveTargetHosts`' filter, and the `group-no-required-apps` early return — was deleted end to end. It was a second list that had to agree with three other id sets (the manifest, `pack.json`'s `groups`, and the live group Studio stages sessions from), it is the seam the 2026-09-25 Github→Drive failure fell through, and it gated less than the person expects: a skill that never visited an app ran while that app's login was dead. Consequences: pre-flight validates every app in the group (the TTL stamp keeps repeat runs cheap); the interruption message counts the group's apps; `resolveTargetHosts` locks on every group app's host; manifests carry only `group_id` and, when non-empty, `unclaimed_hosts` — an older manifest's `required_apps` is simply ignored, no migration. **Not changed:** `apps_for_workflow` still feeds the recording gate and the group page's platform chips, and the recording gate still scopes by the apps a workflow's URLs touch (tracked in `TODO.md`).
+**Shape:** `{version, probe_url, signed_out: {final_path, markers, password_box}, signed_in: {final_path, endpoints}, session_keys, journey_hosts}`. A pure function of its observations: no timestamp, no cookie values, bodies, or query strings. UI markers with account-specific names are filtered (`_clean_markers`). Ships in `pack.json` `groups[].apps[]`.
 
-**Run Test refuses a pack whose sign-in setup drifted; four defects behind the Github→Drive failure (AUTH-15, 2026-09-25).** *(1) The trigger.* Run Test executes the BUILT pack, but `_stage_runtime_auth` stages the LIVE group's saved sessions under the live app ids. The group's Google app had been re-Connected as `google` (the pack still said `google-drive`, with no learned definition), so the runtime read `…__google-drive` — a dead orphan from the day before — while the fresh session sat unused under `…__google`; GitHub matched by id and worked, which is why steps 0-5 passed. `cmd_test_workflow` now calls `handlers/protocol.py::_sign_in_setup_drift` before staging (each live app's `id`/`login_url`/`success_url`/`auth_definition` against the pack's `groups` entry) and raises `sign_in_setup_stale` — *"Sign-in setup for the Enterprise group changed after the last build (…). Rebuild the skill package before testing."* — the sign-in twin of the `workflow_stale` guard. *(2) Why the dead session passed pre-flight.* With no learned definition, the generic ladder judged Google's account chooser (`/v3/signin/accountchooser`, where a dead session with a remembered account lands) as signed in: `LOGIN_PATH_RE` matched a login segment only as the *first* path segment, and the page differs from the cookie-less `/v3/signin/identifier`. It now matches `login|signin|sign-in|session-expired` as a whole path segment at **any depth** (`/\/(login|signin|sign-in|session-expired)(\/|$)/i` — the shape `run.js`'s `AUTH_FAILURE_URL_RE` already used, which is why the *mid-run* detector caught the page pre-flight missed); this also narrows AUTH-10 for login-shaped pages. A learned definition already got this right (its signed-out-marker veto), but only once it is in the pack — which (1) now enforces. *(3) Why "call execute_skill again" could never recover.* The 6h validation stamp survived the failure: run 1's pre-flight stamped the dead app valid, so run 2 skipped the live check (`ttl_cached:2`) and died identically while the error promised a sign-in prompt. `captureReAuth` now calls `authCache.clearValidation(key)` (`runtime/app/auth_cache.js`) for the app it resolves as dead, so the next `execute_skill` re-validates for real and opens the window. *(4) The false positive this fix itself introduced.* After the rebuild, Reconnecting to the SAME still-working app (a routine session refresh, not a setup change) re-triggered `sign_in_setup_stale` immediately: `auth_learning.learn()` stamped a `"learned_at": time.time()` into every definition, so `_sign_in_setup_drift`'s dict `!=` compare saw a "different" definition on every single Reconnect and demanded a needless rebuild, defeating the very fix in (1). `learn()` no longer stamps a timestamp (a definition is setup, not a session, and must be a pure function of its three observations), and `learn_auth`/`_perform_learn_auth_sync` now take the app's existing definition and return it **unchanged** when it still passes `self_test` against the fresh observations, instead of unconditionally building a new one. `cmd_finish_group_app_auth` also stopped wiping an existing definition to `None` on a hand-closed browser (no learning attempted there either) — only a genuine learn/re-verify/force decides what gets saved. Regression tests: `test_login_signals.js`, `test_reauth_app_resolution.js`, `test_group_gates_every_app.js`, `conxa-cloud/tests/test_pipeline_gates.py::TestSignInSetupDrift`, `conxa-cloud/tests/test_auth_learning.py::test_learn_output_has_no_timestamp_and_is_deterministic`, `conxa-cloud/tests/test_build_studio_backend.py::test_finish_group_app_auth_reconnect_keeps_still_valid_definition_unchanged` and `::test_finish_group_app_auth_hand_closed_leaves_existing_definition_untouched`.
+**Evaluation:** `login_signals.js::evaluateAuthDefinition` mirrors `auth_learning.evaluate()`; both suites run the shared fixture `runtime/test/fixtures/auth_definition_cases.json`. Four signal classes, each yes/no/null:
+- **url**: exact match to the learned signed-in or signed-out path;
+- **network**: a learned endpoint (`:id`-templated) returns its ok or denied status class;
+- **dom**: a password box is "no"; absence of all signed-out markers is "yes";
+- **session**: a learned cookie name is present (weak; never alone, never a veto).
 
-**A run waiting for sign-in detaches from its `execute_skill` call (2026-09-21; supersedes the 2026-09-20 in-band wait and `CONXA_AUTH_GATE_WAIT_MS`).** The 45s/90s in-band wait existed only because `execute_skill` has to return inside the MCP request timeout — far shorter than an MFA/SSO/CAPTCHA login — and it ended in "still waiting, call again". Now, when sign-in is missing, `execute_skill` returns **at once** with *"Authentication required — please sign in to Salesforce and Google Drive in the browser window that just opened … the workflow then starts on its own — do not run it again … Check progress with get_execution_status (run_id: …)"* (plus `_meta["conxa/awaiting_auth"]`), releases its platform lock (a human wait must not block a platform), and `_detachUntilSignedIn` waits in the background (`AUTH_DETACH_MAX_WAIT_MS`, 25 min outer bound; each tab has its own 10). When every app is signed in it re-issues the **same request** with internal `_run_id` (so the caller's run_id stays valid) and `_after_auth`; that second call finds the warm, signed-in session the login parked (`sessions.reuse`) — same Chromium, same context — and executes exactly like any run, so nothing about execution changed, only who waits. `_after_auth` prevents a second detach (a run that already waited once fails fast). The outcome is recorded in `run_registry.js`'s recent-results ring and read through `get_execution_status`; if sign-in fails, is closed or times out, the result is *"Authentication failed or was cancelled. …"* naming the app and how to retry, and the workflow never starts with an invalid session. An identical request already waiting is joined, not duplicated (`findAwaiting`), so an impatient second `execute_skill` cannot fire the workflow twice on sign-in; `cancel_execution` with the run_id reaches a waiting run. **Not detached:** a scheduled run (nobody is there), a caller that passed `wait_for_auth: false` (AUTH-4), a launch failure (already the real answer), and a run resumed after its wait. Awaiting runs hold no run slot (they execute nothing) — the browser session they hold is what the session cap bounds. Build Studio's Run Test passes `wait_for_auth: false` (2026-09-21, AUTH-4): a sign-in gap fails the test with the sign-in message and nothing is left waiting, so a login finished later can never start an unattended run in the sandbox behind Studio's back — its own group-auth gate runs first, so this only fires when a session expires between the gate and the call.
+**Yes** requires 2+ positive classes including one that isn't session. Any "no" vetoes. An OTP-shaped page is always "unsure". `browser.js::_gatherDefinitionObservation` navigates to `probe_url` with a response listener attached first; it serves pre-flight, the prover, and the judge.
 
-**A scheduled run never opens a sign-in window (2026-09-21, PROD-4).** A scheduled run (`trigger === "scheduled"`, always `watch: false`) runs on a machine nobody is sitting at; a login window there only strands it. `server.js` passes `noPrompt` to `getCachedBrowser` → `getGroupAuthContext`, which — when an app is missing or expired — closes the session and returns `{ authPending: false, expiredApps: [names], message }` **without calling `beginInteractiveAuth`**. `server.js` turns that into a `session_expired` failure whose message names the app(s) (*"AppB is not signed in … Sign in on this machine (run the skill once, or use the authenticate tool)"*). The scheduler stores that text as the schedule's `last_run.message`, so `list_schedules` shows which app needs a person; the tray/CLI state file carries the run's status only. The run is not retried until someone signs in.
+#### 5.3.7 Waiting, scheduled runs, and mid-run expiry
 
-**Authentication is pre-flight-only (2026-08-17) — mid-execution auth failures never open a window.** `run.js`'s `isAuthFailure` short-circuits straight to failure on a login redirect, before the normal recovery cascade even runs (a login redirect is an auth condition, not a selector/DOM problem — no retry, no wait). `captureReAuth` (`browser.js`) still resolves *which* app died — by the **failing page's own URL** (passed by `server.js`, ahead of `manifest.target_url`, since a group pack's `target_url` is the app the workflow *starts* in, the wrong app when a sibling's session is the one that actually died mid-run), falling back to `opts.fallbackUrl` (`manifest.target_url`) if the failing page's host matches no app in the group, then to `group.apps[0]` as a last resort, logging `reauth_app_resolved` with which of the three paths fired — but it only builds a clear, app-named failure message now; it no longer calls `beginInteractiveAuth`. The run fails immediately. Re-authentication happens on the user's **next** `execute_skill` call, via the same pre-flight gate described above, which re-validates this exact app and opens its login window then — not at the moment of the mid-run failure. (Earlier behavior opened a headed re-auth window automatically, right at the moment of failure, which the run had already ended by; that interrupted an already-dead run instead of waiting for a fresh attempt, the mid-run twin of the recording-side flicker bug above — both traced back to authentication being handled reactively mid-operation instead of purely pre-flight.) A dormant blocking mid-run re-login path, `auth_manager.js`'s old `refreshSession`, was removed in the same pass — it had no production callers and would have directly violated this model if anything had ever called it.
+**A run waiting for sign-in detaches.** `execute_skill` returns at once with "Authentication required — please sign in to X in the browser window that just opened … the workflow then starts on its own — do not run it again … check progress with get_execution_status (run_id: …)" plus `_meta["conxa/awaiting_auth"]`. It releases its host lock, and `_detachUntilSignedIn` waits in the background (`AUTH_DETACH_MAX_WAIT_MS`, 25 min; 10 min per tab). When every app is signed in it re-issues the same request with internal `_run_id` (so the caller's id stays valid) and `_after_auth` (no second detach), reusing the parked warm session. Outcomes land in `run_registry.js`'s recent-results ring. On failure the result is "Authentication failed or was cancelled…" naming the app, and the workflow never starts. An identical waiting request is joined (`findAwaiting`), not duplicated; `cancel_execution` reaches waiting runs. Awaiting runs hold a browser session but no run slot.
 
-### 5.2b Legal Acceptance Gate (Build Studio, added 2026-08-29)
+Not detached: scheduled runs, `wait_for_auth: false` (Build Studio's Run Test passes this, so a late login can't start an unattended sandbox run), launch failures, and runs resumed after their wait.
 
-Build Studio's startup gate chain is: **deps bootstrap → mandatory update → Clerk sign-in → legal acceptance → routes** (`renderer/src/App.tsx`). The acceptance gate sits *after* sign-in on purpose — a click-through is only evidence if the accepting party is identified, so the record is written against the signed-in Clerk user, not against the machine.
+**Scheduled runs never prompt.** `server.js` passes `noPrompt`. `getGroupAuthContext` closes the session and returns `{authPending:false, expiredApps, message}` without `beginInteractiveAuth`, producing a `session_expired` failure naming the apps. The scheduler stores it as `last_run.message`.
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Studio as Build Studio (Renderer)
-    participant Backend as Python Backend
-    participant Cloud as Conxa Cloud
-
-    Studio->>Backend: {type: "legal_status"}
-    Backend->>Cloud: GET /api/v1/legal/current  (Bearer + X-Conxa-Machine)
-    Cloud-->>Backend: {version, documents:[{id,title,url,sha256}]}
-    Backend->>Cloud: GET /api/v1/legal/acceptance
-    Cloud-->>Backend: {version, accepted, accepted_at, record_id}
-    Backend-->>Studio: {version, documents, accepted, accepted_at}
-    alt already accepted
-        Studio->>Studio: mount routes
-    else not accepted
-        Studio->>User: blocking Terms & Privacy screen ("I agree" required)
-        User->>Studio: tick + Continue
-        Studio->>Backend: {type: "legal_accept", version, document_hashes, app_version}
-        Backend->>Cloud: POST /api/v1/legal/acceptance
-        Cloud->>Cloud: verify hashes match the frozen snapshots, write once
-        Cloud-->>Backend: {accepted: true, record: {...}}
-        Studio->>Studio: mount routes
-    end
-```
-
-**Fail-closed.** If the cloud cannot be reached, the Studio shows a blocking retry screen rather than assuming acceptance — the deliberate cost is that a Conxa outage stops customers opening Build Studio at all, not just publishing. Dev builds (`!window.conxa.isPackaged`) skip the gate, the same escape the deps gate uses.
-
-Endpoint contracts, the record shape, and the rule that document snapshots are frozen per version are in `docs/Backend-Schema.md` §5.11 and §7 (`legal_acceptances`).
-
-### 5.3 Cloud API Authentication
-
-Every protected API call from the Build Studio:
-1. Calls `auth_service.get_token()` — returns a valid Clerk `access_token`.
-2. Sets `Authorization: Bearer <token>` header.
-3. Cloud middleware (`ProductionRequestMiddleware`) verifies JWT via PyJWT + JWKS.
-4. Attaches `request.state.auth` with `subject`, `org_id`, `claims`.
-5. `principal_from_request()` in `saas.py` constructs a `Principal` object for RBAC.
-
-### 5.4 Runtime Sync Token (per-company, installer-embedded)
-
-The runtime uses an **installer-embedded sync token** for all Conxa Cloud communication (skill-pack delta fetches). End users never interact with Conxa auth — they only log into their own target platform.
-
-#### 5.4.1 Token lifecycle
-
-The sync token is a `secrets.token_urlsafe(32)` string minted **at publish time** and stored server-side in the `sync_tokens` KV namespace keyed by company slug. It is stable across republishes (reused if present) and can be rotated by deleting the KV entry.
-
-**Publish → installer flow:**
-
-```
-Build Studio publishes skill pack (Publish Skill Package — mandatory, primary action)
-  → POST /api/v1/workflows/publish (legacy) or /api/v1/workflows/{installer_version}/{slug}/skill-packs/upload (versioned)
-  → cloud mints sync_token (publish_routes._sync_token())
-  → sync_token + installer_version written into cloud-side pack.json
-  → publish response returns sync_token
-  → Build Studio writes sync_token into local pack.json (backend.py)
-  → installer_builder stages pack.json verbatim into NSIS — no skill file trees
-  → installer ships ONLY pack.json to $PROFILE\.conxa\skill-packs\{company}\
-  → runtime's first delta-sync (sync.js) downloads every skill and creates each
-    skill's `current` junction — exactly as it does for every later update
-```
-
-`installer_builder.py` guards that `pack.json` has `sync_token` before staging — build fails fast if the pack was never published. Build Installer (§UI-UX-Brief.md §2.10) is now a secondary, advanced action layered on top of this — it enforces the same guard (`skill_pack_not_published`) before packaging.
-
-#### 5.4.2 Runtime sync
-
-On every cold start, `sync.js:_doSync()` reads `pack.sync_token` directly from the on-disk `pack.json` and sends it as `Authorization: Bearer` to the delta endpoint. No keytar lookup, no user login.
-
-```mermaid
-sequenceDiagram
-    participant RT as Runtime (server.js)
-    participant S as sync.js
-    participant Cloud as Conxa Cloud
-
-    Note over RT: Cold start
-    RT->>S: syncSkillPacks(SKILL_PACKS_DIR)
-    S->>S: read pack.json → sync_token
-    S->>Cloud: GET /api/v1/skill-packs/{company}/delta?since=... (Bearer: sync_token)
-    Cloud->>Cloud: compare_digest(stored_sync_token, token)
-    Cloud-->>S: delta files (or 200 up-to-date / 401 invalid token)
-    S->>S: atomic write + SHA-256 verify updated files
-```
-
-`GET /api/v1/skill-packs/{company}/delta` is in `PUBLIC_SKILL_PACK_SYNC_PREFIXES` so middleware does not apply — the handler validates the sync token directly. In local dev (`SKILL_AUTH_REQUIRED=false`) validation is skipped.
-
-#### 5.4.3 Session encryption (per-machine key)
-
-When executing a skill the runtime loads the target-platform Playwright `storageState` (browser cookies/localStorage). It is encrypted at rest with AES-256-GCM using a **per-machine** key derived via HKDF (`auth_manager.js:_deriveKey()`). The key is a 32-byte random value generated on first use per company and stored in the OS keychain via keytar (service `conxa-session`).
-
-This decouples session encryption from the sync token: a leaked installer exposes the sync token (granting read-only access to that company's skill packs) but **cannot decrypt any user's session file** since the encryption key is machine-specific.
-
-### 5.5 Skill Publishing Flow
-
-```mermaid
-sequenceDiagram
-    participant Studio as Build Studio
-    participant Backend as Python Backend
-    participant Cloud as Conxa Cloud
-
-    Note over Studio: After build_installer command
-    Backend->>Backend: read skill-packs/{workspace_dir_slug}/pack.json
-    Backend->>Backend: collect all files as base64
-    Backend->>Cloud: POST /api/v1/workflows/publish
-    Note over Backend,Cloud: Bearer Clerk JWT<br/>body: {files[], skill_pack_version, skills[]}; workspace derived from JWT
-    
-    Cloud->>Cloud: write files to data/skill-packs/{workspace_dir_slug}/
-    Cloud->>Cloud: generate tracking token (secrets.token_urlsafe(32))
-    Cloud->>Cloud: store tracking_tokens[workspace_id] in kv_store
-    Cloud->>Cloud: upsert SkillPack record in kv_store
-    Cloud-->>Backend: {tracking: {tracking_token, tracking_url}, sync_url}
-    
-    Backend->>Backend: rewrite pack.json with tracking + sync_endpoint
-    Backend->>Cloud: POST /api/v1/workflows/{workspace_dir_slug}/installer/upload
-    Note over Backend,Cloud: Bearer Clerk JWT<br/>body: raw .exe bytes
-    Cloud->>Cloud: store to data/installers/{workspace_dir_slug}/installer.exe
-    Cloud->>Cloud: store meta.json (sha256, filename, version)
-    Cloud-->>Backend: {download_url, sha256}
-    Backend-->>Studio: {cloud_download_url, cloud_tracking_url}
-```
-
-### 5.5a Release System — Publish/Release Split, Immutable Versions, Stable Channel, Rollback (per skill)
-
-Full API contracts and KV shapes: `docs/Backend-Schema.md` §5.1d. Design writeup:
-`docs/Implementation-Plan.md` §3.4. End-to-end product flow: `docs/App-Flow.md`
-§8. This section covers the mechanism, not the wire format.
-
-**Re-scoped 2026-08-19 to per-skill; split 2026-08-19 into publish vs. release.**
-1 Workflow = 1 Skill = 1 Skill Package = 1 independent version history = 1
-independent release. Every write below is keyed by skill slug alone — publishing,
-releasing, or rolling back one skill never touches another skill's version history,
-stable channel, or live files, even under the same workspace.
-
-**Publishing is not deploying.** Build Studio's `POST .../skill-packs/upload`
-(`publish_routes.py`) and Cloud's `POST .../releases/{version}/release`
-(`release_routes.py`) are two separate HTTP requests, reachable from two
-different callers — Build Studio can only ever call the first; only a
-Clerk-authenticated Cloud admin (`require_admin`) can call the second. Publish
-writes the immutable snapshot and a version-history row with `status="ready"`
-and stops — it never touches the mutable mirror `_build_delta` reads, never
-writes a `component_versions` entry, and never moves the stable channel. A
-version sits "ready" for as long as it takes a Cloud admin to review it (diff,
-test status, artifact) and click Release — there's no timeout or auto-promote.
+**Mid-run expiry fails fast.** `run.js::isAuthFailure` short-circuits on a login redirect before the recovery cascade. `captureReAuth` resolves the dead app by the failing page's URL, then `manifest.target_url`, then `group.apps[0]` (logs `reauth_app_resolved`), clears that app's validation stamp (`auth_cache.clearValidation`) so the next call re-validates for real, and builds an app-named message. No window opens mid-run.
+- If the resolved app has a learned definition (`hasAuthDefinition`), no window was opened, agent recovery is enabled, and this isn't already a retry (`args._mid_run_reauth`), `server.js` fires one background `execute_skill` under the same `run_id` with `resume_from: failedAt` and replies "opening a sign-in window now". That call runs the normal pre-flight and detaches like any sign-in.
+- Otherwise the person calls `execute_skill` again.
+
+**Run Test drift guard.** Run Test executes the built pack but stages the live group's sessions. `cmd_test_workflow` calls `handlers/protocol.py::_sign_in_setup_drift` (each live app's `id`, `login_url`, `success_url`, and `auth_definition` against the pack's `groups`) and raises `sign_in_setup_stale` ("Sign-in setup for the X group changed after the last build … Rebuild the skill package before testing."), the sign-in twin of `workflow_stale`.
+
+Tests: `test_login_signals.js`, `test_login_multisignal.js`, `test_reauth_app_resolution.js`, `test_group_gates_every_app.js`, `conxa-cloud/tests/test_pipeline_gates.py::TestSignInSetupDrift`, `test_auth_learning.py`, `test_build_studio_backend.py` (finish-auth cases).
+
+### 5.4 Runtime Tokens & Session Encryption
+
+**Sync token.** `secrets.token_urlsafe(32)` minted at first publish (`publish_routes._sync_token()`), stored in `sync_tokens` KV keyed by `workspace_id`, reused across republishes, rotated by deleting the entry. Publish returns it. Studio writes it into local `pack.json`, and the installer stages `pack.json` verbatim. `installer_builder.py` fails with `skill_pack_not_published` if `sync_token` is missing.
+
+**Tracking token.** Also minted at publish (`tracking_tokens[workspace_id]`) and returned with `tracking_url`; sent as `X-Tracking-Token`.
+
+Neither token grants more than read access to the workspace's released skills or append-only telemetry. In local dev (`SKILL_AUTH_REQUIRED=false`) validation is skipped.
+
+**Session encryption.** Target-platform storageState is encrypted at rest with AES-256-GCM using a per-machine key (32 random bytes per company, stored in keytar service `conxa-session`, HKDF via `auth_manager.js::_deriveKey()`). A leaked installer exposes only the sync token and can't decrypt any session file.
+
+### 5.5 Publishing & Release
+
+**Installers are thin.** An installer stages only `pack.json` (identity, `installer_version`, sync/tracking endpoints and tokens) into `$PROFILE\.conxa\skill-packs\{ws}\`. It never contains skill files. The runtime's first delta sync downloads every skill and creates each `current` junction, exactly like a later update. `installer_version` (a small allow-list such as `v1`/`v2`) is frozen into `pack.json` and never reassigned (`docs/Backend-Schema.md` §5.1a).
+
+**Per-skill versions.** 1 workflow = 1 skill = 1 independent version history and release. Publishing, releasing, or rolling back a skill never touches another skill.
+
+**Publishing is not deploying.** Build Studio can only publish; only a Clerk-authenticated cloud admin (`require_admin`) can release.
 
 ```mermaid
 sequenceDiagram
     participant Studio as Build Studio
     participant Cloud as Conxa Cloud
-    participant Admin as Cloud Admin (dashboard)
+    participant Admin as Cloud admin
 
-    Studio->>Cloud: POST .../skill-packs/upload (same request as §5.5)
-    Cloud->>Cloud: duplicate-version gate (409 unless status in "ready"/"pending")
-    Cloud->>Cloud: byte-identical-artifact gate (409 skill_pack_artifact_unchanged)
-    Note over Cloud: Everything below happens inside one request — no cross-request transaction exists
-    Cloud->>Cloud: 1. write immutable snapshot (release_files KV + disk)
-    Cloud->>Cloud: 2. write version row, status="ready"; upsert skillpack_known_skills
-    Cloud-->>Studio: 200 — "ready", not live. No mutable-mirror/component_versions/channel write happened.
-
-    Note over Admin,Cloud: Some time later — Admin reviews the "ready" version in Skill Packages → Group → Workflow
-    Admin->>Cloud: POST .../releases/{version}/release
-    Cloud->>Cloud: precondition: row status must be "ready" (400 release_not_ready otherwise)
+    Studio->>Cloud: POST …/skill-packs/upload {files[], skill_pack_version, skills[]}
+    Cloud->>Cloud: 409 if version exists (unless status ready/pending)
+    Cloud->>Cloud: 409 skill_pack_artifact_unchanged if byte-identical
+    Cloud->>Cloud: 1. immutable snapshot (release_files KV + disk)
+    Cloud->>Cloud: 2. version row status="ready"; upsert skillpack_known_skills
+    Cloud-->>Studio: 200 {tracking, sync_token, sync_url} — ready, not live
+    Admin->>Cloud: POST …/releases/{version}/release
+    Cloud->>Cloud: require status "ready" (else 400 release_not_ready)
     Cloud->>Cloud: 3. refresh mutable mirror; fold skill into pack.json skills/skill_groups
-    Cloud->>Cloud: 4. refresh component_versions + manifest
-    Cloud->>Cloud: 5. move stable channel pointer  ◀── the single act of activation
-    Cloud->>Cloud: 6. flip version row to "published", is_latest bookkeeping
-    Cloud-->>Admin: 200 (or 5xx if steps 3-5 failed — channel never moved, row stays "ready")
+    Cloud->>Cloud: 4. refresh component_versions + signed manifest
+    Cloud->>Cloud: 5. move stable channel pointer (the activation)
+    Cloud->>Cloud: 6. row → "published", is_latest bookkeeping
 ```
 
-**Write ordering is still the whole safety property** — just now split across two
-requests instead of one. Within Release, every write that can plausibly fail
-(disk, KV) happens *before* the channel pointer moves; the pointer move is the
-last meaningful write. A failure at steps 3-5 leaves the channel untouched (a
-failed release never affects what runtimes receive) and the version row still
-`"ready"` (safe to retry the same Release call — no republish needed, since the
-snapshot from step 1 already exists). Publish's own duplicate-version gate
-treats both `"ready"` and legacy `"pending"` rows as never having actually
-been activated, so retrying an unreleased version number is likewise safe.
+- **Write ordering is the safety property.** Every write that can fail happens before the channel moves. A failure at steps 3–5 leaves the channel untouched and the row `ready`, so the release can be retried without republishing. A `ready` version waits indefinitely; there's no auto-promote.
+- **Rollback** (`…/releases/{version}/rollback`, admin): requires a `published` row, reads its immutable snapshot, moves the channel, and refreshes mirror, component versions, and manifest. Nothing is rebuilt. The prior version becomes "superseded" by derivation. Always one skill; there's no group rollback.
+- **Archive / unarchive** (`…/skills/archive|unarchive`, admin): removes the slug from `pack.json`'s `skills`/`skill_groups` union, so runtimes drop it from `list_skills` next sync (`skill_loader.js` indexes strictly against `pack.skills`). Nothing on disk, no version row, and no channel changes. Sets `archived` on `skillpack_known_skills` and records `skill_archived`/`skill_unarchived`. While archived, release and rollback return 409 `skill_archived`.
+- **Deployment "failed" status:** `runtime/sync.js` records `pack.json.last_sync_errors[slug]` (`checksum_mismatch` | `download_failed` | `activation_failed`) and clears it on the next success. `sync_errors.js` sends it at phone-home (not sticky). `GET …/deployments` shows `failed` only while the installed version still lags the desired one.
+- **Deterministic diff** (`app/services/release_diff.py`) aligns steps by semantic key (type/tab/frame/selector), not position, so a re-healed selector reads as "modified". Stdlib `difflib` only, byte-identical output, so the pre-publish preview and the `…/diff` endpoint agree.
 
-**Rollback** (`POST .../releases/{version}/rollback`, Cloud-only, same
-`require_admin` gate as Release) is structurally the same as Release minus
-steps 1-2, with the opposite precondition — it requires an already-`"published"`
-row, not a `"ready"` one. It reads the target version's already-immutable
-snapshot, moves the channel pointer, and refreshes the mutable mirror +
-`component_versions` + manifest from that snapshot — no artifact is copied,
-rebuilt, or mutated. The previously-stable version becomes "superseded" by
-derivation (its row is untouched; `is_latest` just no longer matches the
-channel). **Rollback is always scoped to one workflow/skill — never a whole
-group** — there is no bulk or group-level rollback path anywhere in this
-system.
+**Installer upload** (`…/installer/upload`, raw `.exe`) is a separate, optional step from the Build Installer page. It stores to `data/installers/{ws}/` plus KV. Failure only sets `cloud_upload_error`.
 
-**Archive / Unarchive** (`POST .../skills/archive` / `.../unarchive`, Cloud-only,
-same `require_admin` gate as Release/Rollback) is the "delete a workflow from
-Skill Packages" action, deliberately non-destructive: it removes the skill's
-slug from `pack.json`'s `skills`/`skill_groups` union — the exact same union
-Release folds a skill into and `_build_delta` reads — so every installed
-runtime drops it from `list_skills` at its next sync, but nothing already
-synced to a runtime's disk is touched or deleted, and no version row,
-snapshot, or the stable channel moves. Unarchive reverses the union removal
-(if the skill has a stable release) and clears the flag; a skill archived
-before ever being released just clears the flag, since it was never in the
-union to begin with. Both flip an `archived` bool on the `skillpack_known_skills`
-row (§Backend-Schema.md §5.1d) that `GET .../groups` surfaces to the
-dashboard, and record a `skill_archived`/`skill_unarchived` release-lifecycle
-event. While archived, Release and Rollback both reject with 409
-`skill_archived` — otherwise releasing a new version would silently
-re-deploy a skill an admin just took down. This is the entire mechanism: no
-runtime-side change was needed, because `runtime/app/skill_loader.js` (see
-§4 and `docs/Backend-Schema.md` §5.9) already indexes strictly against
-`pack.skills` and drops anything absent from it.
+Contracts and KV shapes: `docs/Backend-Schema.md` §5.1d. Product flow: `docs/App-Flow.md` §8.
 
-**Deployment "failed" status.** `runtime/sync.js` records a per-skill entry in
-`pack.json.last_sync_errors` (`checksum_mismatch` | `download_failed` |
-`activation_failed`) on a failed activation, clearing it the moment that skill
-next activates successfully. `runtime/sync_errors.js` reads it back at the next
-phone-home (`sync_errors` field, `skillpack_update_routes.TelemetryBody`) —
-unlike `skill_versions`, this field is **not sticky**, always overwritten in
-full. `GET .../deployments` (§Backend-Schema.md §5.1d) derives `failed` from
-it, ahead of `pending`/`unknown`, but only while the installed version still
-hasn't caught up to desired (a self-resolved error never counts).
-
-**Deterministic diff** (`app/services/release_diff.py`) aligns execution steps
-across two file sets by a semantic key (type/tab/frame/selector) rather than list
-position, so the compiler re-healing a selector between releases reads as one step
-"modified", not one removed and a different one added. Pure stdlib `difflib`, no
-LLM, no wall-clock — same inputs always produce byte-identical output, which is
-what lets the pre-publish preview and the after-the-fact `.../diff` endpoint agree.
-
-### 5.6 Skill Sync Flow (Runtime → Cloud)
+### 5.6 Skill Sync
 
 ```mermaid
 sequenceDiagram
-    participant RT as Runtime
+    participant RT as Runtime (sync.js)
     participant Cloud as Conxa Cloud
 
-    Note over RT: On startup (async, after MCP connect)
-    RT->>RT: read pack.json (sync_token, sync_endpoint) per company
-    RT->>RT: build since={skill_slug: last_known_version} from local skill dirs
-    RT->>Cloud: GET /api/v1/skill-packs/{co}/delta?since={json-map}
-    Note over RT,Cloud: Bearer sync_token (installer-embedded, §5.4)<br/>Rate-limited: KV-backed, shared across instances
-    Cloud->>Cloud: compare each skill's own version independently
-    Cloud-->>RT: {skills: [{name, action: "no_change"} | {name, version, action: "update", files: [...]}]}
-    loop for each skill with action "update"
-        RT->>RT: backup existing skill dir
-        RT->>RT: atomicWrite each file (SHA-256 verified)
-        RT->>RT: update component_versions for that skill
-        RT->>RT: clean up backup
+    RT->>RT: read pack.json (sync_token, sync_endpoint)
+    RT->>RT: since = {skill_slug: installed version} from nested skill dirs
+    RT->>Cloud: GET …/skill-packs/delta?since={json} (Bearer sync_token)
+    Cloud->>Cloud: compare_digest(token); compare each skill independently
+    Cloud-->>RT: {skills: [{name, group, action:"no_change"} | {name, group, version, action:"update", files}]}
+    loop each updated skill
+        RT->>RT: write files to <skill>/<version>/ (.tmp → SHA-256 verify → rename)
+        RT->>RT: version_manager.activate(keep: 3, requiredFiles: manifest.json)
     end
-    RT->>RT: reload skill index from updated files
+    RT->>RT: write pack.json (.tmp → rename); reload skill index
 ```
 
-See §5.9 / §11.1 for the full endpoint contract. Sync is per-skill, not per-company — republishing one skill never triggers a re-download of the others. Within a single changed skill, all of that skill's files are still sent (no per-file checksum diffing inside one skill) — a much smaller gap than the old whole-company retransfer this replaced, since each skill is only a handful of small JSON files.
+- `_build_delta()` (`skillpack_update_routes.py`) reads only **released** state (`pack.json` skills + `component_versions`); `ready` versions are invisible. `group` comes from `skill_groups` (fallback `_default`).
+- A changed skill ships all its files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`); no per-file diff within a skill.
+- **Legacy flat layout:** the client only checks nested paths, so a skill synced under the old flat `skill-packs/{ws}/{slug}/` redownloads once into the nested path. The cloud serves files still stored at an old flat path while reporting the resolved `group`.
+- Rate limiting is KV-backed (`rate_limits` namespace), shared across instances. No Redis (`docs/Security.md` SG-04).
+- Sync is skipped if it ran in the last 5 minutes; failures fall back to cached skills.
 
-### 5.7 Telemetry Flow
+### 5.7 Runtime Self-Update
 
-```mermaid
-sequenceDiagram
-    participant RT as Runtime (tracker.js)
-    participant Cloud as Conxa Cloud
+One **Ed25519-signed manifest** (`GET /api/v1/manifest.json`) drives everything. `manifest_manager.js` fetches it on every launch (last verified copy on failure), verifies it against a public key baked into the host exe at build time, and decides per component using:
+- semver;
+- `min_host` (an app version never activates on a host too old for it; refused outright rather than activated and rolled back);
+- `minimum_versions` (forces an update regardless of rollout);
+- a deterministic rollout bucket, `sha256(install_id + component) mod 100 < rollout.percentage`, stable across polls.
 
-    Note over RT: During/after skill execution
-    RT->>RT: createTracker(pack.tracking)
-    RT->>RT: emit events: wf_start, step_ok, step_fail, wf_ok, wf_fail
-    RT->>Cloud: POST /api/tracking/{co}/events
-    Note over RT,Cloud: Header: X-Tracking-Token: {token from pack.json}<br/>body: {rid, pid, pv, rv, uid, wid, evts[]}
-    Cloud->>Cloud: _verify_token(company, token)
-    Cloud->>Cloud: db_append("tracking/{co}", run_id, [enriched])
-    Cloud-->>RT: 202 Accepted (fire-and-forget)
-```
+A bad signature is treated like a network failure.
 
-Telemetry is compact: short event codes (`wf_start`, `wf_ok`, `wf_fail`, `step_ok`, `step_fail`, `recovery_tier{1-5}`), timestamps, and step indices. The tracking token is embedded in `pack.json` at publish time and never requires the end-user to authenticate.
+`version_manager.js::activate()` validates the new version, flips `current`, and prunes beyond retention while protecting the version live just before. `rollback()` flips `current` back.
 
-### 5.8 Runtime Self-Update Flow
-
-The runtime is driven by **one Ed25519-signed manifest** (`GET /api/v1/manifest.json`) instead of separate unsigned per-layer endpoints. `runtime/manifest_manager.js` fetches it — no local TTL cache; every launch fetches fresh, falling back to the last verified copy only on failure — verifies the signature against a public key baked into the host exe at build time (same stamping mechanism as `HOST_VERSION`), and decides whether to update, using semver comparison, a `min_host` floor (a `conxa_app` entry never activates against a host exe too old to run it — see below), the `minimum_versions` floor (forces an update regardless of rollout), and a deterministic rollout bucket (`sha256(install_id + component_name) mod 100 < rollout.percentage`, stable across polls so a staged rollout doesn't reshuffle who's "in" every check). A manifest that fails signature verification is discarded outright — treated exactly like a network failure, never partially trusted.
-
-Every component is a **versioned directory** managed by `runtime/version_manager.js` (see §4.4): `activate()` validates the new version, flips the `current` junction, and prunes old versions beyond retention (default: current + 2 previous) while protecting whichever version was live immediately before the activation, so a same-run rollback never needs a re-download. `rollback()` simply flips `current` back — no download.
-
-`manifest_manager.checkForUpdates()` takes a `components` filter and runs from two different places for that reason:
-
-**App layer — pre-load, in `bootstrap.js`, components: `["conxa_app"]`.** Downloads a zip, extracts to `conxa-app/<version>/`, validates `server.js` is present, `activate()`s — all *before* `server.js` is ever `require()`'d. Because nothing has loaded the old code into the process's module cache yet, this activation is live for the launch that downloaded it, not the next one. `manifest_manager.js`, `http_client.js`, `install_identity.js`, and `version_manager.js` are baked into the host exe alongside `bootstrap.js` for exactly this reason — they have to be runnable before any app layer exists on disk to load them from (this mirrors `version_manager.js`'s existing dual-shipped precedent: also present in the `conxa-app` zip, for `sync.js`'s use post-load). The download is on a tight budget (2 retries, 5s each) since it's launch-blocking; any failure — network, signature, download, decode — is caught and swallowed, leaving `current` exactly where it was, as if the check never ran.
-
-**Host layer — post-load, in `server.js`'s `startupSync`, components: `["conxa_runtime"]`.** Reuses the manifest `bootstrap.js` already fetched (`global.__conxaManifest`) instead of fetching again. Downloads `conxa-runtime.exe` + `keytar.node` into their own `conxa-runtime/<version>/` directory (never touching whatever file the *currently running* process loaded from — a structural improvement over the old flat-file layout, which needed an `update.bat`/`--selfcheck`/rename-over-running-exe dance specifically because the new and old files used to share one path). Before activating, the new exe is spawned once with `--selfcheck` (own environment, own `CONXA_DIR`) — if it doesn't exit 0, activation is aborted and `current` is left untouched, regardless of whether the SHA-256 checksum matched (a checksum only proves the download wasn't corrupted, not that the binary actually boots). This leg can't take effect until the *next* cold start no matter what — a running process can't replace its own executing binary — so it keeps the generous, non-blocking download budget (retry w/ backoff, up to 2 minutes per attempt).
-
-```mermaid
-sequenceDiagram
-    participant Boot as bootstrap.js (host, pre-load)
-    participant RT as server.js (app, post-load)
-    participant Cloud as Conxa Cloud
-    participant FS as Filesystem (version_manager.js)
-
-    Boot->>Cloud: GET /api/v1/manifest.json (no TTL — always fetched)
-    Cloud-->>Boot: {conxa_runtime, conxa_app, skill_packs, minimum_versions, signature}
-    Boot->>Boot: verify Ed25519 signature against baked-in public key
-    alt signature invalid
-        Boot->>FS: discard — fall back to last verified cache (or skip entirely)
-    else signature valid
-        Boot->>FS: write manifest.json cache
-    end
-
-    Boot->>FS: version_manager.currentVersion(conxa-app)
-    Boot->>Boot: decideUpdate() — semver, min_host floor, minimum_versions floor, rollout bucket
-
-    opt conxa_app update decided
-        Boot->>Cloud: download app zip (tight retry budget — launch-blocking)
-        Boot->>FS: extract to conxa-app/<version>/, validate server.js present
-        Boot->>FS: version_manager.activate() — flip conxa-app/current junction, prune
-        Note over Boot: live THIS launch — server.js not require()'d yet
-    end
-
-    Boot->>RT: require conxa-app/current/server.js
-
-    RT->>FS: version_manager.currentVersion(conxa-runtime)
-    RT->>RT: decideUpdate() — reuses Boot's already-fetched manifest
-
-    opt conxa_runtime update decided
-        RT->>Cloud: download conxa-runtime.exe + keytar.node (retry w/ backoff, SHA-256 verify each)
-        RT->>RT: spawn new exe --selfcheck (own CONXA_DIR)
-        alt selfcheck fails
-            RT->>RT: abort — current untouched, old host keeps running
-        else selfcheck passes
-            RT->>FS: version_manager.activate() — flip conxa-runtime/current junction, prune
-        end
-        Note over RT: effective on next cold start — this process can't replace its own running binary
-    end
-```
-
-**`--install-playwright` behaviour:** Uses `playwright-core/cli` bundled inside `conxa-runtime.exe` (no system npm/npx dependency). Idempotent — exits immediately if the correct Chromium revision is already on disk. Runs through `conxa-runtime/current/conxa-runtime.exe` so it always exercises whatever version is actually active.
-
-### 5.9 Data Ownership Summary
-
-| Data | Owner | Storage Location |
+| Component | Where | Behavior |
 |---|---|---|
-| Workflow metadata (local) | Build Studio | `data/workflows/{id}/workflow.json` |
-| Auth session (Playwright state) | Build Studio (LOCAL ONLY) | `data/workflows/{id}/auth/auth.json` |
-| Raw recorded events | Build Studio | `data/sessions/{id}/events.jsonl` |
-| Compiled skills | Build Studio | `data/skills/{id}/skill.json` |
-| Built skill packs | Build Studio | `data/skill-packs/{co}/` |
-| Published skill packs | Conxa Cloud | `data/skill-packs/{co}/` on Render (fast-path cache) + `kv_store` (`skillpack_files__{co}` namespace, durable) |
-| Installer binaries + version history | Conxa Cloud | `data/installers/{co}/` on Render (fast-path cache) + `kv_store` (`installer_versions__{co}` namespace, durable) |
-| Tracking tokens | Conxa Cloud | `kv_store` table (tracking_tokens namespace) |
-| Slug ownership | Conxa Cloud | `kv_store` table (publish_owners namespace) |
-| Telemetry / run events | Conxa Cloud | `kv_store` table (tracking/{co} namespace) |
-| Runtime skill packs | End-user machine | `~/.conxa/skill-packs/` |
-| Runtime auth tokens | End-user machine | OS keychain (keytar) |
-| Runtime browser sessions | End-user machine | `~/.conxa/cache/sessions/` |
+| `conxa_app` | `bootstrap.js`, pre-load | Download zip, extract to `conxa-app/<version>/`, require `server.js` present, `activate()`, live this launch. Tight budget (2 retries × 5 s), failures swallowed. `manifest_manager.js`, `http_client.js`, `install_identity.js`, `version_manager.js` are baked into the host for this (the last also ships in the app zip for `sync.js`) |
+| `conxa_runtime` | `server.js` `startupSync`, post-load, reusing `global.__conxaManifest` | Download `conxa-runtime.exe` + `keytar.node` to `conxa-runtime/<version>/`, spawn `--selfcheck` with its own `CONXA_DIR` (must exit 0 regardless of checksum), `activate()`. Effective next cold start. Generous budget (backoff, up to 2 min per attempt) |
+| Chromium | `--install-playwright` | `playwright-core/cli` inside the exe, idempotent, run via `conxa-runtime/current/conxa-runtime.exe` |
 
-**Render disk durability:** the `conxa-api` web service runs on Render's free plan (`render.yaml`), which has no persistent disk and wipes the container filesystem on idle-timeout or redeploy. Local disk under `data/skill-packs/` and `data/installers/` is therefore a fast-path cache only — `publish_routes.py` and `skillpack_update_routes.py` write every published skill-pack file and every installer version (including binary content, base64-encoded) to the existing Postgres-backed KV store (`installer_versions__{slug}`, `skillpack_files__{slug}` namespaces) as the durable source of truth, and rehydrate local disk from there on cache miss (e.g. `_load_installer_from_db`, `_ensure_skill_pack_on_disk`). This closes the gap where a disk wipe between two installer uploads made the older version unrecoverable.
+While a host update is staged but not yet running, the update gate refuses new runs (§4.2).
+
+### 5.8 Data Ownership
+
+| Data | Owner | Location |
+|---|---|---|
+| Workflows, raw events, compiled skills, built packs | Build Studio | `~/.conxa/{workflows,sessions,skills,skill-packs}/` (§2.3) |
+| Group app sessions | Build Studio (local only) | `data/groups/{group_id}/auth/{app_id}.json` |
+| Published skill files + release snapshots | Cloud | `skillpack_files__{ws}` / `release_files` KV (durable) + `data/skill-packs/` disk cache |
+| Installer binaries + history | Cloud | `installer_versions__{ws}` KV (base64, durable) + `data/installers/` disk cache |
+| Sync / tracking tokens | Cloud | `sync_tokens`, `tracking_tokens` KV |
+| Telemetry | Cloud | `tracking/{ws}` KV |
+| Installed skills | End-user machine | `~/.conxa/skill-packs/` |
+| Platform sessions | End-user machine | `%APPDATA%/Conxa/cache/sessions/` (encrypted) |
+| Session encryption keys | End-user machine | OS keychain (keytar) |
+
+**Render disk is ephemeral** (free plan, wiped on idle or redeploy). Local disk is a fast-path cache; Postgres-backed KV is the source of truth, and handlers rehydrate on miss (`_load_installer_from_db`, `_ensure_skill_pack_on_disk`).
+
 
 ---
 
@@ -1279,180 +819,70 @@ sequenceDiagram
 
 ### 6.1 Capture
 
-`session.py` — `RecorderSession` wraps a Playwright browser context:
+`session.py::RecordingSession` wraps a Playwright context seeded with the group's merged storageState (§5.3.3).
 
-1. Playwright launches Chromium with stored auth (`storageState`).
-2. `bridge.js` is injected into every frame (including iframes) via `page.addInitScript`.
-3. Bridge captures: `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`. `tab_open`/`tab_switch`/`popup`/`frame_enter`/`frame_exit` are synthesized by the compiler/session, not the DOM bridge. `dialog_appeared` is declared but has no producer anywhere. `dialog_accept`/`dialog_dismiss` come from Playwright's `page.on("dialog", ...)` in `session.py`, not the bridge — see 5b below.
-4. Each event carries: `action`, `url`, `frame` (iframe chain), `target` (element signals), `value`, `ts`.
-5. `frame_utils.py`'s `_frame_context_and_offset_sync` walks the iframe parent chain to accumulate page-level bounding box offsets; `session.py` calls it per event.
-5a. **A `filechooser` listener is attached** (`session.py::_attach_page_listeners` → `_on_file_chooser`), suppressing the native OS picker so the Studio can show its own dialog pre-pointed at the download folder instead. `FileChooser.set_files()` still dispatches the input's `change` event via CDP, so `bridge.js`'s `upload_intent` capture is unaffected. See §7.1.
-5b. **A `dialog` listener is attached** (`session.py::_attach_page_listeners` → `_on_dialog`) for native `alert`/`confirm`/`prompt` boxes. Registering the listener stops Playwright's own default auto-dismiss, but **Chromium still visually renders the native dialog** (registering the listener does not suppress it — confirmed against real behavior, correcting an earlier assumption in this doc) — so the recorder used to `accept()` it synchronously and immediately, which raced the human and usually closed it before they could see or answer it, and a `prompt` always submitted empty text regardless. It now holds the dialog open, asks the Studio (`js_dialog_request` event → `RecordWorkflowDialog.tsx` modal, pinned `alwaysOnTop` via `window:raise` so it's never hidden behind the recording browser → `cmd_resolve_js_dialog` → `resolve_js_dialog()`), and resolves it from the pump loop (`_drain_js_dialog_sync`) with the human's real choice and, for a prompt, their typed text — recorded as `dialog_accept`/`dialog_dismiss` with value `{"type","message","value"}`. Because the native dialog closes while its window is in the background (behind the pinned Studio modal), Windows can leave its now-dead pixels on screen until that window repaints; `_drain_js_dialog_sync` calls `page.bring_to_front()` immediately after `accept()`/`dismiss()` to force that repaint — no minimizing, the human lands back in the same browser window. A dialog left unanswered past `_JS_DIALOG_TIMEOUT_S` (120s) auto-accepts (also followed by `bring_to_front()`) so it can never wedge the recording. In `auth_mode` (the separate login-capture browser) this still auto-accepts immediately, unchanged — that browser's pump loop never drains a pending dialog. `beforeunload` confirmations are unhandled on both record and replay (`TODO.md`).
-6. Events stream to `session_events.py` which appends to `events.jsonl`.
-7. On stop, `session.py` closes the Playwright context and renames each tab's raw `.webm` to a stable name (§6.3). It does **not** extract video frames — that moved to compile time (§7.1) so a failed frame can be repaired by recompiling instead of being lost for the life of the session.
-7a. **Environment capture (EXEC-36).** Once, right after the start page loads,
-`_write_environment_sync` writes `session_dir/environment.json` (locale, timezone, viewport,
-device pixel ratio, a locale-formatted date sample, platform) — see §10.6a for the full capture →
-compile → replay-comparison path.
+1. `bridge.js` is injected into every frame via `page.addInitScript`. It captures `click`, `dblclick`, `right_click`, `type`, `fill`, `focus`, `select`, `select_option`, `set_checkbox`, `set_radio`, `date_pick`, `drag_drop`, `keyboard_shortcut`, `upload`, `navigate`, `scroll`.
+2. `session.py` synthesizes `tab_open`, `tab_switch`, `popup`, `frame_enter`, `frame_exit`, `browser_back`, `browser_forward`, `manual_navigate`, `dialog_accept`, `dialog_dismiss`. (`dialog_appeared` is declared but has no producer.)
+3. Each event carries `action`, `url`, `frame` (iframe chain), `tab`, `target` (element signals), `value`, `ts`. `frame_utils.py::_frame_context_and_offset_sync` accumulates page-level bounding-box offsets up the iframe chain.
+4. Events stream through `session_events.py` into `events.jsonl`.
+5. On stop, the context closes and each tab's `.webm` gets a stable name (§6.4). Frames are extracted at compile time (§7.1), so a bad frame can be repaired by recompiling.
 
-#### 6.1a Browser Back/Forward capture (2026-08-25)
+**Environment capture.** Once, after the start page loads, `_write_environment_sync` writes `environment.json` (locale, timezone, viewport, DPR, a formatted date sample, platform). See §9.7.
 
-The injected bridge only sees in-page DOM events — pressing the browser **Back**/**Forward**
-button produces none, so history navigations used to be invisible to recordings (replay then
-never reproduced them). `session.py` now captures them via per-page CDP navigation-history
-tracking:
+**File chooser.** `_on_file_chooser` suppresses the native picker so Studio shows its own dialog pointed at the download folder. `FileChooser.set_files()` still fires `change`, so `upload_intent` capture works.
 
-- Every registered page gets its own CDP session (`context.new_cdp_session(page)`) and a
-  baseline `Page.getNavigationHistory` snapshot taken at registration time (`_ensure_nav_history_session_sync`)
-  — for tab_0 that is right after the recording's own start `goto()`, so the start navigation
-  itself is never misread.
-- Each main-frame `framenavigated` queues a deferred check (`_queue_nav_history_check`);
-  the pump loop drains it (`_drain_nav_history_checks_sync`) and compares against the page's
-  previous snapshot. Classification is deliberately strict:
-  - `currentIndex` decreased → **browser_back** event;
-  - index moved forward into a slot whose URL already existed in the previous snapshot →
-    **browser_forward** (the stale-entry URL equality test is what keeps a fresh link click
-    that merely truncated forward entries from being misread as a forward);
-  - anything else (new entry, reload, replace) → not Back/Forward; classified further below
-    (§6.1b).
-- Checks are deferred to the pump loop because CDP calls are unsafe inside Playwright event
-  callbacks (same reentrancy rule as `_binding_sink_sync`). Multiple navigations between
-  checks coalesce into one comparison; strictness principle: a missed Back degrades to the old
-  behavior, a false positive would corrupt replay. Non-auth mode only.
-- Emitted as synthetic events with `value = {"from_url", "to_url"}` and stamped with the tab
-  that actually fired the navigation (`src_page`), so multi-tab recordings keep correct context
-  (§6.3 markers insert as usual).
+**Native JS dialogs.** Registering a `dialog` listener stops Playwright's auto-dismiss, but Chromium still renders the dialog. `_on_dialog` holds it open and asks Studio (`js_dialog_request` → `RecordWorkflowDialog.tsx`, pinned `alwaysOnTop` → `cmd_resolve_js_dialog`). The pump loop (`_drain_js_dialog_sync`) resolves it with the human's real choice and prompt text, recorded as `dialog_accept`/`dialog_dismiss` with value `{type, message, value}`. It then calls `page.bring_to_front()` to repaint over stale dialog pixels on Windows. Unanswered after 120 s (`_JS_DIALOG_TIMEOUT_S`) it auto-accepts. `auth_mode` auto-accepts immediately. `beforeunload` is unhandled on record and replay (`TODO.md`).
 
-The compiler turns these into real executable steps (not markers): `action=browser_back/
-browser_forward`, `intent=history_back/history_forward`, `no_recovery_block`, and a
-`wait_for: url_change` validation on the recorded post-navigation URL. At replay the runtime
-calls `page.goBack()`/`page.goForward()` on the step's resolved tab (handlers.js) — never a
-guessed URL navigation. The CI execution gate (`runtime/test/gate-skill/`) covers this:
-click a hash link → `browser_back` step with a `url_pattern` assertion on the returned-to URL.
+### 6.2 History & Address-Bar Navigation
 
-#### 6.1b Manual address-bar navigation capture (2026-08-26)
+The bridge sees only in-page events, so browser-chrome navigation is detected through CDP. Each registered page gets its own CDP session (`context.new_cdp_session`) and a baseline `Page.getNavigationHistory` snapshot at registration (for `tab_0`, after the start `goto()`). Every main-frame `framenavigated` queues a check (`_queue_nav_history_check`). The pump loop drains it (`_drain_nav_history_checks_sync`), because CDP calls are unsafe inside Playwright callbacks; multiple navigations coalesce. Non-auth mode only.
 
-A navigation that is neither Back nor Forward (§6.1a) still needs to be told apart from an
-**ordinary link click / form submit** — those are already captured as their own recorded step
-(click/submit), and replaying that step reproduces the navigation as a natural side effect, so
-compiling a *second* step for it would be redundant. But if the user instead retypes the address
-bar, picks a bookmark, or otherwise drives the browser chrome directly mid-recording, there is no
-other recorded step that will ever reproduce it — until now that navigation was silently dropped.
+Classification is strict (a missed event degrades gracefully; a false one corrupts replay):
 
-The distinguishing signal is CDP's `Page.frameRequestedNavigation`, which only fires when the
-**page itself** asks to navigate (link click, form submit, `location.href` script) — never for a
-browser-chrome-initiated navigation (address bar, bookmark, `page.goto()`). `session.py` enables
-`Page.enable` on the same per-page CDP session used for §6.1a and records the request's monotonic
-timestamp (`_nav_pending_renderer_initiated`) whenever that event fires. When
-`_drain_nav_history_checks_sync` classifies a navigation as neither Back nor Forward, it consumes
-(and clears) that timestamp:
+| Observation | Event |
+|---|---|
+| `currentIndex` decreased | `browser_back` |
+| Moved forward into a slot whose URL existed in the previous snapshot | `browser_forward` (URL equality keeps a truncating link click from reading as forward) |
+| Otherwise, and `Page.frameRequestedNavigation` fired within 2 s (`_NAV_RENDERER_INITIATED_TTL_S`) | nothing: the page asked to navigate (link, submit, script), so the click/submit step reproduces it |
+| Otherwise | `manual_navigate` (address bar, bookmark) |
 
-- timestamp present *and* within `_NAV_RENDERER_INITIATED_TTL_S` (2s) of now → renderer-initiated →
-  no event (the click/submit step already covers it).
-- timestamp absent, or older than the TTL → browser-initiated → emits a synthetic
-  **`manual_navigate`** event, `value = {"from_url", "to_url"}`, same shape as browser_back/forward.
+`frameRequestedNavigation` fires on request, not commit, so a cancelled request (`preventDefault()`) leaves a stale flag. The TTL stops it from swallowing the next genuine manual navigation. All three events carry `value = {from_url, to_url}` and the tab that fired them (`src_page`).
 
-The TTL exists because `Page.frameRequestedNavigation` fires on *request*, not on commit: a
-submit-style click whose handler calls `preventDefault()` (or any other cancelled/speculative
-request) sets the flag but is never followed by an actual navigation, so nothing ever clears it.
-Without the TTL that stale flag would silently misattribute the *next* navigation on the page —
-including a genuinely manual one — as renderer-initiated, dropping it exactly like the
-pre-`manual_navigate` bug this feature fixed.
+**Compiled as real steps:**
+- `browser_back` / `browser_forward` → `intent=history_back|history_forward`, `no_recovery_block`, `wait_for: url_change` on the recorded URL. Replay calls `page.goBack()`/`goForward()` on the resolved tab (`handlers.js`), never a guessed URL. The CI gate skill covers this.
+- `manual_navigate` → a plain `navigate` step (`build.py::_navigate_step`): `page.goto(to_url)`, no target, intent, or anchors.
 
-The compiler compiles `manual_navigate` straight into a real `action=navigate` step — the same
-step type `_insert_start_navigate_step` produces for a recording's start page, and the synthetic
-`manual_navigate` **event** `_insert_tab_markers` inserts for a user-opened tab
-(`build.py::_navigate_step`/`_make_tab_navigate_event`): `page.goto(to_url)` on replay, no
-element target, no LLM intent, no vision anchors. No runtime change was needed — the `navigate`
-action was already fully executable.
+**Two gates fail silently if a new navigation kind is missing:**
+1. `ActionKind` (`conxa_core/models/events.py`) is a strict `Literal`. An unknown kind fails validation inside `_consume_payload_safe_sync`, lands in `binding_errors`, and never reaches `events.jsonl`.
+2. `step_anchors.py::clean_steps` dedupes consecutive same-action, same-element events. Navigation kinds have empty element keys, so each must be exempted or A→B→C collapses into one step.
 
-Two gates must stay in sync with this kind, and both fail **silently** when they aren't:
+### 6.3 Iframe Chain
 
-1. **`ActionKind`** (`conxa_core/models/events.py`) is a strict `Literal`, and `RecordedEvent` is
-   validated twice on the way to a compiled step (`_finalize_payload_sync`, then `run_pipeline`).
-   A missing member raises a `ValidationError` that `_consume_payload_safe_sync` swallows into
-   `binding_errors` — the event never lands in `events.jsonl` and the step is simply absent from
-   the editor, with nothing surfaced to the user.
-2. **`step_anchors.py::clean_steps`** dedupes consecutive events with the same action *and* the
-   same element key. Every navigation kind has an **empty** element key, so that test matches any
-   two consecutive ones. `browser_back`, `browser_forward` and `manual_navigate` are all exempted
-   there; without the exemption an A→B→C address-bar sequence collapses into one step.
+Every event's `frame` carries `src`, `frame_id`, and `parent_chain` (ordered parent frame ids). The chain is preserved verbatim through compile and execution. Bounding boxes are page-level.
 
-Both were real bugs found on the first end-to-end run of this feature (see FIX.md 2026-08-26) —
-the anchor-click exclusion was verified against live pages (`anchorClick` / `formSubmissionPost`
-reasons both fire), so the classifier itself was correct while the step still never appeared.
+### 6.4 Multi-Tab Recording
 
-### 6.2 Iframe Chain Preservation
+The context-level `page` listener instruments every tab. `_register_new_pages_sync` (one pump tick, ~0.2 s) assigns:
+- `id`: `tab_0`, `tab_1`, … in discovery order;
+- `opened_by`: `initial`, `site` (`page.opener()` resolves: link or `window.open`), or `user` (Ctrl+T; no `popup` event fires). The runtime waits for `site` tabs and creates `user` tabs (§9.2);
+- `opener_tab` for `site` tabs.
 
-Every recorded event carries a `frame` object with:
-- `src` — iframe src URL
-- `frame_id` — Playwright frame ID
-- `parent_chain` — ordered list of parent frame IDs
+Every event's `RecordedEvent.tab` (`TabContext`) names its tab; the compiler derives tab markers from it (§7.1) and the runtime resolves it per step (§9.2).
 
-This chain is preserved verbatim through compile and execution. Bounding boxes are page-level (offsets accumulated up the chain during recording).
+**Listener events are stamped with the firing tab.** `_attach_page_listeners(page)` binds `page` into the `download`/`dialog`/`popup` handlers and passes it as `src_page`, not whatever tab is active. Otherwise a popup from a background tab gets stamped `tab_0`, and `_insert_tab_markers` inserts a spurious `tab_switch`.
 
-### 6.3 Multi-Tab Recording
+**A `popup` event names the popup's own tab**, resolved one tick late. `src_page` stays the opener (right for visuals and `page.url`), but the `tab` block must name the new tab, or no `tab_open` marker is derived and replay keeps driving the original tab from the background. Inside `_on_popup` no Playwright call is allowed and the popup isn't registered yet, so `_enqueue_synthetic(..., tab_key=id(popup))` stashes the key and `_consume_payload_sync` resolves it after `_register_new_pages_sync()`. A popup that closes before then falls back to the opener's tab.
 
-The recorder instruments every page in the browser context (`_context.on("page", ...)`), so a
-workflow that opens a new tab — whether the site opens it (a `target="_blank"` link, `window.open`)
-or the user does (Ctrl+T) — is captured on both tabs, not just the first. `session.py` assigns each
-page a stable identity as soon as the pump loop notices it (`_register_new_pages_sync`, one loop
-tick, ~0.2s):
+**Video is per tab.** `tab_0` writes `recording.webm`; others write `recording-<tab_id>.webm`. `videos.json` maps `{tab_id: {file, start_wall_ms}}`, where `start_wall_ms` is the tab's own creation time, so an event's `visual.timestamp_ms` is relative to its tab's video. `frame_extractor.py` uses the map; sessions without it use `recording.webm`.
 
-- `id` — `tab_0`, `tab_1`, … in discovery order.
-- `opened_by` — `"initial"` (the recording's starting tab), `"site"` (`page.opener()` resolves —
-  a link/`window.open`), or `"user"` (no opener at all — Ctrl+T or similar). This is the field the
-  runtime uses at replay time to decide whether to *wait for* the tab (`"site"`) or *create* it
-  itself (`"user"`) — see §9.1a.
-- `opener_tab` — which tab's action opened this one, when `opened_by` is `"site"`.
+### 6.5 Post-Condition Evidence
 
-Every event (`RecordedEvent.tab`, `packages/conxa-core/conxa_core/models/events.py::TabContext`)
-carries which tab produced it. This is what lets the compiler know a workflow crossed tabs at all
-(§7.1) and what the runtime resolves per step at replay time (§9.1a).
+The recorder classifies before/after evidence for the compiler's assertions (§9.5).
 
-**Video is per-tab.** Playwright records one video file per page in a video-enabled context; a
-two-tab recording produces two `.webm` files. `tab_0`'s keeps the pre-existing name
-(`recording.webm`) so single-tab recordings and every reader of that name are unaffected; every
-other tab is written as `recording-<tab_id>.webm`, with a `videos.json` alongside mapping
-`{tab_id: {file, start_wall_ms}}`. Each tab's `start_wall_ms` is its own page-creation time, not the
-session's — an event's `visual.timestamp_ms` offset (used to cut its 5 anchor frames, §7.1) is
-computed relative to *its own tab's* video start, not always tab_0's, since a second tab's video
-starts recording from zero at whatever moment that tab opened, seconds or minutes into the session.
-`frame_extractor.py` reads `videos.json` to pick the right video per event; a session recorded
-before multi-tab support (no `videos.json`) falls back to `recording.webm` for every event,
-unchanged.
+- **`post_condition`** (`bridge.js::finalizeStateWithAfter` → `buildPostCondition`): `classified_effect` (`navigation`/`dialog_opened`/`dialog_closed`/`expansion`/`value_set`/`content_change`/`none`), a redaction-safe `value_readback` (never for sensitive fields, per `isSensitiveEditable`), and `dialog_signal` (selector of the opened container). `StateChange.dom_diff` is carried through as the `content_change` signal. Both are optional on `RecordedEvent`.
+- **Click "after" capture waits for the DOM to settle.** Click listeners run in the capture phase, before the page's own handler, so a synchronous snapshot diffs the page against itself. `finalizeStateAfterSettle()` waits for a mutation-quiet window (`click_settle_quiet_ms`, 20 ms) capped at `click_settle_max_ms` (250 ms), queued in submission order.
+- **Hover capture is reveal-gated** (`hasMeaningfulHoverChange`) against `lastStableHoverSnapshot`, because CSS `:hover` applies before any JS runs. The baseline is taken at `DOMContentLoaded` and re-taken on a debounced `childList` MutationObserver, both guarded by `!pendingHover`, and never while parsing (a null baseline is safe; a blank one records noise). Hover signatures use scroll-independent `isRenderedElement`; `isVisibleElement` (rendered and on screen) decides what's worth recording. `childList`-only is deliberate: class/style reveals are attribute mutations.
 
-A manually opened tab (Ctrl+T) has nothing that opened it on the recorded page, so `popup` — which
-fires only for a real `window.open`/`target="_blank"` — never fires for it; the tab is still
-discovered and instrumented via the same context-level "page" listener, just classified
-`opened_by: "user"` instead of getting a `popup` synthetic event.
-
-**`download`/`dialog`/`popup` are stamped with the tab whose listener fired them, not whatever
-tab is "active."** `_attach_page_listeners(page)` binds `page` into each handler
-(`page.on("popup", lambda popup: self._on_popup(popup, page))`), and `_enqueue_synthetic` threads
-that page through the pending-payload queue as `src_page` instead of always falling back to
-`_active_page_sync()`. Without this, a popup opened by a click on a background tab (e.g. tab_1)
-gets stamped with whatever tab happened to be `_active_page_sync()` when the pump loop drained the
-event — usually `tab_0` — and `_insert_tab_markers` (§7.1) then inserts a spurious `tab_switch`
-back to `tab_0` before the real `tab_open` for the new tab. At replay, `runtime/tabs.js` follows
-that marker and execution bounces to the wrong tab.
-
-**A `popup` event is stamped with the POPUP's own tab, resolved one pump tick late.** `src_page`
-above stays the opener — it is still the right page for visuals and `page.url` — but the event's
-`tab` block names the new tab. `_on_popup` runs inside Playwright's own event callback, where no
-Playwright call is allowed and the popup page is not yet registered, so `_tab_id_for_page(popup)`
-returns `None` there. `_enqueue_synthetic(..., tab_key=id(popup))` stashes the raw object key (the
-same key `_tab_ids` is already keyed by, so no Playwright call is needed) and `_consume_payload_sync`
-resolves it at drain time — the pump loop calls `_register_new_pages_sync()` before draining, so the
-id exists by then. A popup that closes before the next tick is never registered and simply falls
-back to the opener's tab.
-
-This is load-bearing because `_insert_tab_markers` (§7.1) derives markers purely from a tab-id
-*transition* between consecutive events. A popup stamped with its opener produces no transition,
-therefore no `tab_open` and no `tab_switch` back — and if the recording never interacts with the new
-tab (click a `target="_blank"` link, then switch straight back), the compiled skill never mentions
-the second tab at all. At replay the click still opens a real tab, Chromium puts it in front, and
-every later step drives the original tab from the background for the rest of the run (see §9.1a).
 
 ---
 
@@ -1463,3297 +893,1088 @@ every later step drives the original tab from the background for the rest of the
 ### 7.1 Pipeline Stages
 
 ```
-recording.webm
-        │
-        ▼  recorder/frame_extractor.py:extract_frames_for_session()
-        │  • 5 ffmpeg frame captures per event (before_far/near, at, after_near/far)
-        │  • idempotent — frames already on disk from a prior attempt are not re-cut
-        │  • per-event isolated — one event's ffmpeg failure doesn't cost any other
-        │    event its frames; failures are logged and that step falls back to
-        │    deterministic anchors (see anchor_vision_llm.py below)
-        │  • writes visual.frames / visual.full_screenshot back into events.jsonl
-        │
-        ▼
-events.jsonl (raw RecordedEvents)
-        │
-        ▼  pipeline/normalize.py
-        │  • Canonicalize action types
-        │  • Filter noise events
-        │  • Resolve frame references
-        │
-        ▼  pipeline/dedupe.py
-        │  • Remove duplicate consecutive events
-        │  • Collapse rapid-fire clicks
-        │
-        ▼  pipeline/enrich.py
-        │  • Add DOM snapshot refs
-        │  • Augment with surrounding text context
-        │  • Compute visibility signals
-        │
-        ▼  pipeline/selectors.py
-        │  • Extract raw selector candidates from recorded DOM
-        │
-        ▼  compiler/build.py:compile_skill_package()
-           │
-           ├── For each step (no per-step LLM intent token — every step compiles
-           │   with the recorder's own heuristic intent from
-           │   normalize_compiler_intent; see the merged call below for why):
-           │   ├── identity_bundle.py → IdentityBundle (deterministic, zero-LLM)
-           │   │   generate_deterministic_signals() produces Playwright-native signals
-           │   │   ranked by durability. LLM is never asked to write a selector string.
-           │   ├── anchor_vision_llm.py → relational anchor phrases (optional)
-           │   ├── validation_planner.py → wait_for + success_conditions (deterministic)
-           │   ├── build.py:_build_assertions() → Assertion[] (one required per consequential
-           │   │   action, rest advisory — see §10.2a VERIFY)
-           │   ├── recovery_policy.py → RecoveryBlock
-           │   └── confidence/layered.py → confidence score
-           │
-           ├── build.py:_build_image_by_step_key() → re-derives, per step, the frame
-           │   anchor_vision_llm.py already chose (a cache hit, no new LLM call), keyed
-           │   by step_key while steps[i] still maps 1:1 onto cleaned_events[i]
-           │
-           ├── build.py:_build_compile_report() → compile_report (status, per-step confidence)
-           │
-           ├── LLM: llm/workflow_review.py → build_workflow_review() (ONE multimodal
-           │   call, LAST — after bindings are deduplicated and the report above
-           │   exists; BUILD-25 merged with BUILD-26, 2026-09-11). Merges what used to
-           │   be two text-only calls (workflow_intent.py before the step loop,
-           │   workflow_semantics.py after) into one call that also sees each step's
-           │   chosen anchor screenshot. Produces BOTH the WorkflowIntentGraph (goal +
-           │   per-step intent_token/prose — build.py:_apply_workflow_review_to_steps
-           │   backfills semantic_description always, and intent only where the
-           │   heuristic above left it blank) AND BUILD-25's second-opinion findings
-           │   (rename_binding / parameterize_literal / suggest_optional / label_phase /
-           │   suggest_assertion / flag_noise), which compiler/second_opinion.py APPLIES
-           │   to the steps. Writes meaning only (input_binding, {{placeholder}} in
-           │   value, phase, intent, semantic_description, try_dismiss branch, an
-           │   advisory text/URL/state validation.assertions entry) — never a selector
-           │   or identity bundle. flag_noise removes a step but archives it in full
-           │   under compile_report["archived_steps"] rather than deleting it.
-           │   Rules-only fallback on disable/failure/drained pool (the graph backfill
-           │   still runs against an empty WorkflowIntentGraph so a failed call is
-           │   byte-identical to a disabled one); the compile_report is rebuilt when
-           │   anything was applied, archived, or backfilled.
-           │
-           └── → SkillPackage (models/skill_spec.py)
+recording*.webm + videos.json
+   ▼ recorder/frame_extractor.py::extract_frames_for_session()   (in handlers/compile.py::cmd_compile)
+   │   5 ffmpeg frames per event (before_far/near, at, after_near/far); idempotent,
+   │   isolated per event (a failure only affects that step, which falls back to
+   │   deterministic anchors); writes visual.frames / full_screenshot into events.jsonl
+events.jsonl
+   ▼ pipeline/normalize.py    canonicalize actions, filter noise, resolve frames
+   ▼ pipeline/dedupe.py       consecutive duplicates, rapid clicks, select noise (§7.2)
+   ▼ pipeline/enrich.py       DOM snapshot refs, surrounding text, visibility
+   ▼ pipeline/selectors.py    raw selector candidates
+   ▼ compiler/build.py::compile_skill_package()
+      ├── clean_steps / fix_step_order, _insert_tab_markers
+      ├── per step (heuristic intent from normalize_compiler_intent; no per-step LLM):
+      │   ├── identity_bundle.py      IdentityBundle (deterministic, zero-LLM)   §10.2
+      │   ├── anchor_vision_llm.py    relational anchor phrases (optional LLM)
+      │   ├── validation_planner.py   wait_for + success_conditions
+      │   ├── _build_assertions()     one required assertion per consequential action   §9.1
+      │   ├── recovery_policy.py      RecoveryBlock
+      │   └── confidence/layered.py   confidence score
+      ├── _populate_hover_chains, collapse_choice_group_runs, collapse_date_picker_runs  §7.2
+      ├── _build_image_by_step_key()  re-derives each step's chosen anchor frame (cache hit)
+      ├── _build_compile_report()     status, per-step confidence
+      ├── LLM: llm/workflow_review.py::build_workflow_review()   ONE multimodal call, last  §7.3
+      └── → SkillPackage (models/skill_spec.py)
 ```
 
-**Frame extraction runs at compile time** (`handlers/compile.py:cmd_compile`), not at recorder shutdown. It used to run once in the recorder thread's `finally` block, all-or-nothing across every event in the session — a single ffmpeg timeout on one event discarded frames for every other event too, permanently, since extraction never ran again. Moving it into `cmd_compile` makes it idempotent and per-event isolated (see diagram above), so a recompile repairs only the events still missing frames.
+**Frame extraction runs at compile time**, so a recompile repairs only events still missing frames.
 
-**Tab markers are inserted at `compile_skill_package()`**, right after `clean_steps`/`fix_step_order`
-(`build.py:_insert_tab_markers`), so the synthetic marker events never have to satisfy those
-functions' assumptions about real recorded event shape. Whenever consecutive events' `tab.id`
-differs, a `tab_open` (first visit to that tab) or `tab_switch` (returning to one already seen —
-including back to `tab_0`) marker event is inserted immediately before the first event on the new
-tab. Every step also carries its own `tab` context (`SkillStep.tab`, mirroring `SkillStep.frame`) —
-`build.py:_build_tab_context`. Since 2026-08-23 every tab gets an **explicit** block, including
-`tab_0` (previously `tab_0` steps carried an empty dict, which made a return-to-the-initial-tab
-`tab_switch` marker destination-less and let the runtime's mis-stamp guard swallow it — see §9.1a);
-only events with no tab stamp at all (recordings made before multi-tab support) still compile to an
-empty `tab` field. A single-tab recording therefore carries explicit-but-uniform `tab_0` blocks on
-every step instead of empty dicts; no markers are inserted for it, and replay resolves every step
-to the same initial page exactly as before. `tab_open`
-and `tab_switch` compile through the pre-existing `MARKER_ACTIONS` path (`no_recovery_block`,
-same as `frame_enter`/`frame_exit`) — see §10.4.
+**Tab markers** (`_insert_tab_markers`, after `clean_steps`/`fix_step_order` so synthetic events don't have to satisfy their assumptions): wherever consecutive events' `tab.id` differs, a `tab_open` (first visit) or `tab_switch` (return, including to `tab_0`) marker precedes the first event on the new tab. Every step carries an explicit `SkillStep.tab` block (`_build_tab_context`), including `tab_0`; only pre-multi-tab recordings compile to an empty `tab`. Markers compile through `MARKER_ACTIONS` with `no_recovery_block`, like `frame_enter`/`frame_exit` (§10.7).
 
-**A downloaded file can bind to a later upload in the same compiled skill** (EXEC-10/W-2). When a
-recorded `upload` step's filename (browsers only ever expose `File.name`, never a path) matches an
-earlier `download_observed` event's `suggested_filename`, `conxa_compile/compiler/upload_binding.py`
-(both compile-time entry points — `apply_bindings_to_compiled_steps` for the primary compiled
-`SkillStep` list, `apply_bindings_to_export_steps` for the saved-skill export format;
-`skill_package_builder_saved_skill.py::_bind_downloads_to_uploads` is now a 3-line delegate to the
-latter) rewrites that upload step's value from the generic `{{file_path}}`
-runtime-input placeholder to `{{downloaded_file}}` (the workflow's only download) or
-`{{downloaded_file_N}}` (Nth download, FIFO-matched per filename, when several downloads share a
-name) — bound only to a download that already happened earlier in the step sequence, since a real
-upload can never precede the download that produced its file. These two placeholders are excluded
-from `_merge_saved_inputs_with_execution_placeholders`'s auto-declared-input scan (they are
-populated automatically at replay time by `run.js`'s `download_observed` handler, never something a
-user/agent supplies) — see §9.1a. An upload with no matching download is left completely
-untouched, still falling back to `{{file_path}}` as before.
+**Alignment rule:** passes that read `cleaned_events[i]` for `steps[i]` (`_populate_hover_chains`, choice and date-picker collapsing, `_build_image_by_step_key`) must run while the two still align 1:1, or receive a synced representative-event list (as `collapse_choice_group_runs` returns).
 
-**A bulk (multi-select) upload can bind to the whole run's download folder, not just one file**
-(resolved 2026-08-16). When an upload step's recorded `File[]` metadata lists more than one
-filename (one `<input multiple>` picked several files in a single recording action — the natural
-shape of "upload all N files"), `upload_binding.py` only rewrites its value when *every*
-recorded filename matches an earlier, not-yet-consumed `download_observed` entry; on a full match
-it consumes all of them and sets the step's value to `{{downloaded_files_dir}}` instead of chaining
-several `{{downloaded_file_N}}` scalars. `server.js` sets `inputs.downloaded_files_dir` to the
-current run's own isolated `{CONXA_DATA_DIR}/runs/{runId}/` folder before `runPlan` starts, and
-`run.js::resolveUploadPaths` already expands a folder into every file inside it, so no runtime
-upload-handler change was needed. A partial match (even one recorded filename with no matching
-earlier download) leaves the step completely untouched, same fallback guarantee as the single-file
-case — this is what keeps the binding from ever handing an upload control a folder that also
-contains a file it was never meant to see. `downloaded_files_dir` is excluded from the
-auto-declared-input scan the same way `downloaded_file`/`downloaded_file_N` are.
+### 7.2 Control-Specific Compilation
 
-**BUILD-31 correction (2026-09-18): "no runtime upload-handler change was needed" was wrong for
-the zero-downloads case.** `server.js` sets `inputs.downloaded_files_dir` unconditionally at run
-start — it is never the empty string, so the `upload` handler's "no file path" guard (which fires
-only on an empty interpolated value) could never catch it, unlike `downloaded_file`/
-`downloaded_file_N` (bound lazily by the `download_observed` handler only once a real file
-exists, throwing `badInput` otherwise). `resolveUploadPaths`'s own `statSync`-catch fallback then
-handed a nonexistent directory straight to `setInputFiles`. `handlers.js`'s `upload` handler now
-checks, specifically when the resolved value equals `inputs.downloaded_files_dir`, whether that
-directory exists and contains at least one file before calling `resolveUploadPaths` — throwing
-the same clear message with `badInput: true` (skipping the Tier 1-2 recovery cascade, matching
-`download_observed`'s own precedent for this failure family) when it doesn't. The general
-plain-`{{file_path}}` fallback in `resolveUploadPaths` is untouched — that one is deliberate (its
-own comment: "let setInputFiles raise its own not-found error for a plain file path").
+Each feature follows the same shape: the recorder captures context, the compiler derives `handler_hints.control_kind` plus a payload, and a pure runtime module (unit-tested without a browser) drives replay. Everything is Tier A (zero LLM). A skill compiled without `control_kind` is unaffected.
 
-**A custom calendar widget's open→nav→day-cell click run collapses into one parameterized
-`date_pick` step** (2026-08-30). Native `<input type=date|datetime-local|time|month|week>` already
-compiled correctly (a `date_pick` action straight off the recorder's `change` listener); a custom
-calendar widget (MUI, react-datepicker, flatpickr, Ant Design, jQuery UI, ...) instead recorded as
-several unrelated `click` steps whose month-nav count was frozen to the recording day and whose
-day-cell text ("15") was ambiguous against the adjacent month's greyed-out overflow days — neither
-replays correctly, and no recovery tier can fix a semantics problem (the right element just isn't
-rendered yet). `recorder/bridge.js::buildDateContext` tags a click landing inside a detected
-calendar grid with `date_context` — which cell/nav/time role, the resolved ISO date, and, for a day
-cell, which DOM attribute (`data-date`, `aria-label`, ...) it was parsed from, so a *different*
-target date can be re-queried at replay instead of reusing the recording's own (often a full
-locale sentence) cell selector. `compiler/date_picker.py::collapse_date_picker_runs` — called from
-`build.py` immediately after `_populate_hover_chains`, the same point that function itself must run
-at for the same reason: steps[i] must still align 1:1 with cleaned_events[i] — finds a maximal run
-of consecutive click steps sharing a `date_context.grid` selector and replaces it with one
-`date_pick` step (two for a date range, tagged `role: range_start`/`range_end`) carrying:
-- `value`/`input_binding` — a run input via the same label→placeholder→aria_label priority ladder
-  `input_binding.py` already uses (so a "Due Date" field still binds to `{{due_date}}`), falling
-  back to a generic name (`due_date`, `start_date`/`end_date`, `due_datetime`) when no field was
-  found. The declared input's `default` is the recorded date —
-  `editor/workflow_mutations.py::reconcile_inputs_with_step_values` reads it off
-  `handler_hints.date_picker.recorded_value` and declares the input `type: "date"`
-  (`editor/dto.py`'s `SkillInputVariable.type` now includes it; the packaged manifest still emits
-  JSON-Schema `type: "string"` with `format: "date"`/`"date-time"` — see
-  `skill_package_builder_saved_skill.py::_normalize_saved_skill_inputs`).
-- `handler_hints.control_kind = "date_picker"` — `HandlerHints`' first populated `control_kind`,
-  the seam `research-analysis/04-architecture/03-replay-algorithm.md` §5 described as
-  "dispatch by handler_hints.control_kind" before anything actually set it — plus a `date_picker`
-  block: open/grid/header/prev/
-  next selectors, the day cell's attribute (for rebuilding, never reusing, the cell query),
-  `display_format` (best-effort MM/DD/YYYY-shaped guess from the field's own post-pick readback,
-  feeding the runtime's typed-first attempt), `kind` (single/range/datetime), and `strategy`
-  (`typed_first` when the day event's own `date_context.field` names an anchored field —
-  independent of whether a preceding step actually folded into the base step, below —
-  `grid_only` for an inline always-visible calendar with none). A preceding `click` **or**
-  `focus` step is folded into the date_pick step's base (donating its identity_bundle/selector)
-  when its own recorded selector matches `date_context.field` by identity — `focus`, not just
-  `click`, because `step_anchors.py::_normalize_prep_click_to_focus` (which runs before this
-  pass) already rewrote a plain click on an editable target to `focus`; a click-only check could
-  never match that common case (fixed 2026-09-01).
-- No compile-time `value_equals` against the field: the field's own display formatting is only
-  knowable at replay, so the runtime's typed-first readback (`handlers.js`, format-aware via
-  `_dateValueMatches`) is the enforced post-condition instead — it now throws on a mismatch
-  rather than returning silently (fixed 2026-09-01; a literal recorded date baked into
-  `expected` here previously failed VERIFY for every caller-supplied date other than the one
-  recorded, even after a correct pick). For `grid_only`, a `selector_present` assertion built
-  from the step's own `{{binding}}` token (not the recorded date) when the cell carries a
-  machine attribute whose value the token interpolates to verbatim; otherwise no compile-time
-  assertion at all — the runtime's grid drive already throws when it can't land the target-date
-  click, which is the real post-condition there too.
+#### Date pickers (`control_kind = "date_picker"`)
 
-At replay, `runtime/app/date_picker.js` (pure — month-delta arithmetic, header parsing, date
-formatting, selector construction; unit-tested standalone with no browser) backs
-`handlers.js`'s `date_pick` handler: try typed-first (fill the field with its own display format,
-verify the readback) for everything parseable as a full ISO date/datetime — covers native
-`type=date|datetime-local` and most custom widgets outright — and only fall back to driving the
-grid (open → bounded, boundary-aware month navigation, asserting the header actually changed each
-click so a disabled min/max limit can't spin the loop forever → day-cell click, preferring the
-target date rebuilt through the recorded machine attribute over a locale-agnostic exact-day-text
-match that excludes disabled/adjacent-month cells → optional time-option click for a datetime) for
-a compiled custom-picker step (`control_kind === "date_picker"`) whose typed attempt didn't stick.
-Native `<input type=month|week|time>` is untouched — their recorded values (`"2026-09"`,
-`"2026-W38"`, `"14:30"`) aren't full ISO dates, so `date_picker.js`'s parser correctly declines them
-and the handler falls through to its original unconditional fill/click. Zero LLM calls throughout —
-the Tier A zero-token invariant (§10.2b) holds for this handler exactly as for every other.
+Native `<input type=date|datetime-local|…>` already records a `date_pick` from `change`. Custom widgets (MUI, react-datepicker, flatpickr, Ant, jQuery UI) record as unrelated clicks with a frozen month-nav count and an ambiguous day text, and no recovery tier can fix that.
 
-**Select-based month/year navigation is a first-class date-picker interaction too** (2026-08-30
-follow-up, found in a real demoqa.com Practice Form recording: react-datepicker's
-`showMonthDropdown`/`showYearDropdown` mode — the pattern its own docs recommend for a far-back
-date like a date of birth; MUI's and Ant Design's year/decade pickers use the equivalent idiom —
-renders native `<select class="…year-select">`/`<select class="…month-select">` elements for
-month/year instead of click-through prev/next buttons). `buildDateContext` originally fired only
-on `actionKind === "click"`, so a `<select>`'s own `"select"` action never reached it at all,
-leaving every event's `date_context` null. It now also fires on `"select"`, and detects a
-`<select>` whose class/`aria-label`/`name`/`id` matches `/year/i` or `/month/i` inside a detected
-grid, emitting `date_context: { role: "year_select" | "month_select", grid, select, value }`
-(`select` = the `<select>`'s own selector; `value` = the newly-committed option's label text —
-checked *before* the day/nav/time branches, since a `<select>` never matches any of those anyway).
-`compiler/date_picker.py::collapse_date_picker_runs` treats these two roles as both valid run-
-starters and valid continuations alongside `day`/`nav`/`time`, so a select-driven run that *does*
-end in a day-cell click collapses into one `date_pick` step exactly like a click-driven one — its
-`handler_hints.date_picker` carries `year_select`/`month_select` selectors, and the runtime drives
-them via `selectOption({ label })` (by label, never by the option's raw value — react-datepicker's
-month value is 0-indexed, other libraries use 1-indexed or the month name itself, and matching the
-rendered English month name sidesteps every convention) in place of the click-nav loop entirely
-when present. A run with year/month selects but **no day cell** (the real recording's actual
-shape — the human set month/year and moved on without clicking a day) is deliberately left
-uncollapsed, same as a pure nav-only run always was: inventing a day nobody picked would be worse
-than an honest, still-parameterizable pair of `select` steps.
+- **Record** (`bridge.js::buildDateContext`, on `click` and `select`): tags events inside a detected calendar grid with `date_context`: the role (`day`/`nav`/`time`/`year_select`/`month_select`), `grid`, the resolved ISO date, and the day cell's source attribute (`data-date`, `aria-label`, …) so a different date can be re-queried.
+- **Compile** (`compiler/date_picker.py::collapse_date_picker_runs`): a maximal run of steps sharing a `date_context.grid` becomes one `date_pick` step (two for a range: `role: range_start|range_end`). A run with no day cell (for example year/month selects only) is left uncollapsed rather than inventing a day.
+  - `value`/`input_binding`: named by `input_binding.py`'s label→placeholder→aria_label ladder, falling back to `due_date`, `start_date`/`end_date`, or `due_datetime`. `reconcile_inputs_with_step_values` declares it `type: "date"` with the recorded date as default (the packaged manifest emits JSON-Schema `string` + `format: date|date-time`).
+  - `handler_hints.date_picker`: open/grid/header/prev/next selectors, `year_select`/`month_select` selectors, day-cell attribute, `display_format` (best-effort guess from the field's readback), `kind` (single/range/datetime), and `strategy`: `typed_first` when `date_context.field` names an anchored field, `grid_only` for an inline calendar.
+  - A preceding `click` or `focus` step whose selector matches `date_context.field` folds into the base step. (`focus` counts because `_normalize_prep_click_to_focus` already rewrote clicks on editable targets.)
+  - No compile-time `value_equals` (display format is only knowable at replay). `grid_only` gets a `selector_present` built from the `{{binding}}` token when the cell has a machine attribute; otherwise none.
+- **Replay** (`runtime/app/date_picker.js` + `handlers.js`): typed-first for any full ISO date (fill in the display format, verify readback via `_dateValueMatches`, throw on mismatch). Otherwise drive the grid: open, bounded month navigation that asserts the header changed on every click (so a min/max limit can't loop), `selectOption({label})` on year/month selects (by label, since option values are library-specific), a day click preferring the rebuilt machine attribute over exact day text (excluding disabled and adjacent-month cells), then an optional time click. Native `month`/`week`/`time` values aren't full ISO dates and fall through to plain fill.
 
-Two more bugs surfaced by that same recording, both pre-existing and unrelated to date pickers
-specifically, both fixed alongside the above:
-- **`pipeline/dedupe.py` had no dedup for click/type noise bracketing a `select` event.** One
-  logical dropdown pick recorded as 4 raw events on the identical element — `click` (opens it) →
-  `select` (the one authoritative value) → `click` again (closes it) → `type` (the browser's native
-  type-ahead-to-select jump, which bridge.js's generic input-flush listener wrongly treated as text
-  entry on a non-editable `<select>`). `collapse_select_interaction_noise` (wired into
-  `pipeline/run.py`, ahead of the pre-existing `drop_superseded_focus_events`) now collapses any
-  `click`/`type`/`fill` run immediately bracketing a `select` on the same `_selector_key()` down to
-  just the `select`. General-purpose — applies to every `<select>` in every recording, not only
-  ones inside a calendar; this alone took the real recording's date-of-birth region from 8 compiled
-  steps to 2.
-- **`captureAssociatedLabel`'s last-resort "nearest sibling text" fallback (`bridge.js`) read a
-  calendar's own live "current month" display as the field's label.** Confirmed directly against
-  the recording: a year `<select>`'s `label_text` was captured as `"August 2026"`, later
-  `"August 2006"` as react-datepicker re-rendered its header live — `input_binding.py`'s label
-  priority wins first, so this became the run input's actual name every time. The fallback now
-  skips any sibling whose entire text is a month+year string (a new anchored `_MONTH_YEAR_EXACT_RE`,
-  distinct from the substring-matching `_MONTH_YEAR_RE` already used for header detection — a
-  legitimate label like "Enter the August 2026 report ID" must not be discarded) and keeps walking.
+#### Choice controls (`control_kind = "choice"`)
 
-Both of these are **record-time** fixes (`bridge.js`) or operate on the raw event stream at compile
-time from data `bridge.js` produced — recompiling a session recorded *before* this change still
-carries the old, garbage `label_text` and still has zero `date_context` on its select events (only
-the dedup fix retroactively helps an old recording, since it runs at compile time against whatever
-raw events already exist). Getting the full benefit — clean bindings and, if a day is also clicked,
-one collapsed `date_pick` step for a select-driven picker — requires a fresh recording.
+Radio/checkbox groups, native `<select>`, and ARIA radiogroup/listbox record their whole option set and compile to a multiple-choice input named after the **question**, not the recorded answer.
 
-**Multiple-choice controls (radio/checkbox groups, native `<select>`, ARIA
-radiogroup/listbox widgets) record their full option set and compile to a real MCQ input**
-(resolved 2026-08-31). Recording a gender radio group used to compile to
-`role=radio[name="gender"]` — `name` is the HTML group attribute every sibling radio shares, not
-any one option's accessible name (Playwright's `role=…[name=…]` matches the accessible name, so
-this selector matched every option or none), plus a duplicate phantom `Focus` step, and the
-declared input was named after the recorded ANSWER (`{{male}}`) rather than the QUESTION
-(`{{gender}}`) — so passing a different value at execution had no effect on which radio actually
-got clicked. Three coordinated fixes, mirroring the date-picker feature's own structure (same
-recorder-context → compile-time-derivation → runtime-pure-module shape):
-- **`identity_bundle.py::_accessible_name` no longer lists `target.name` as a candidate** — it
-  never was a real accessible-name source, for any element, not just radios; a form control's real
-  accessible name still comes from `label_text` (unchanged). `ElementFingerprint.name` is untouched
-  (the resolver scores it separately).
-- **`action_semantics.py::is_editable_target` excludes `radio`/`checkbox`**, alongside the existing
-  `file` exclusion — a radio/checkbox click commits in one gesture (fires its own `change` →
-  `set_radio`/`set_checkbox`), it never acquires a caret to type into, so treating it as editable
-  made `step_anchors.py::_normalize_prep_click_to_focus` rewrite the click into a phantom `focus`
-  step. `clean_steps`'s prep-click merge (previously `{"type", "upload", "upload_intent"}` only) now
-  covers every value-setting action (`_VALUE_SET_ACTIONS`: adds `select`/`select_option`/
-  `set_checkbox`/`set_radio`/`date_pick`), so the merge — not just the rewrite-suppression — closes
-  the gap for every control kind, not only radios.
-- **`recorder/bridge.js::buildChoiceContext`** (gated the same way `buildDateContext` is, and
-  skipped when a `date_context` already claimed the event — a year/month `<select>` inside a
-  calendar grid is date-picker navigation, not an independent MCQ) tags a radio/checkbox/select/ARIA-
-  radiogroup-or-listbox event with the group's `kind`, `multi`, `group_key`, `group_label`, and every
-  member's `{value, label, selector, checked}` (`_CHOICE_GROUP_MIN = 2`: a lone standalone checkbox
-  never gets a `choice_context` at all). An ARIA custom widget (`<div role="radio">`/`[role="option"]`)
-  never fires a native `change`, so the click handler itself reclassifies such a click as
-  `set_radio`/`select_option` (never a bare `click`) when it resolves to one of these roles.
-- **`compiler/choice.py`** (new): `derive_choice(ev)` handles the single-shot kinds
-  (radio/select/aria_radio/aria_listbox) — names the input from `group_label`/`group_key` (never
-  the answer), builds `handler_hints.control_kind = "choice"` + a `choice` payload carrying every
-  option. `collapse_choice_group_runs(steps, events, policy)` handles checkbox groups, which span
-  multiple `set_checkbox` events — collapses a "pick all that apply" run into ONE step with
-  `multi: true` and `recorded_values` (absolute final state, read straight off the LAST event's own
-  live-DOM option snapshot, not reconstructed toggle-by-toggle). Runs from `build.py` immediately
-  before `collapse_date_picker_runs` (same 1:1-alignment requirement as `_populate_hover_chains`)
-  and returns a synced "representative event per output step" list so the date-picker pass, which
-  shares the same alignment assumption, still sees a length-matched view even though this pass may
-  have already shrunk `steps`.
-- **`editor/workflow_mutations.py::_choice_specs`** (beside `_date_pick_defaults`) auto-declares the
-  input as `type: "select"` (or `"multiselect"` for a checkbox group) with `options` = every
-  recorded label and `default` = the recorded pick(s) — a real JSON-Schema `enum` (or an array
-  `items.enum` for multiselect) reaches `input.json` and the MCP tool schema
-  (`skill_package_builder_saved_skill.py::_normalize_saved_skill_inputs`, `server.js`'s
-  `_skillToolDefinitions`), constraining what the calling agent can even attempt to send.
-- **`runtime/app/choice.js`** (pure, unit-tested standalone): `matchOption`/`matchOptions` resolve a
-  caller's value ("male", "M", "Male ") against the recorded option set through a three-rung ladder
-  — exact match, normalized match, unique-prefix match — stopping at the first rung with EXACTLY one
-  hit. An ambiguous rung (e.g. "M" against both "Male" and "Married") or no match at all returns
-  `null`; the handler never guesses and never falls back to the recorded answer. `handlers.js`'s
-  `set_radio`/`select`/`select_option`/`set_checkbox` gain a `control_kind === "choice"` branch that
-  acts on the MATCHED option's own selector (`select` uses `selectOption({label})` — never the raw
-  `value`, which is library-specific and unguessable, same reasoning as `date_picker.js`'s
-  `monthLabel`; an ARIA listbox option is clicked directly, since `.selectOption()` only works on a
-  native `<select>`) and throws a `{badInput: true}`-marked error naming every valid option on a
-  mismatch — `run.js`'s existing `primaryErr.badInput` check (already used by the upload handler's
-  analogous "folder given to a single-file control" case) fails the step straight through instead of
-  burning Tier B LLM recovery on a value that was never going to resolve by re-finding the element.
-  A checkbox-group step reads `inputs[step.input_binding]` directly (bypassing `interpolate()`,
-  which only substitutes inside a string template) since its value is a list, then sets every
-  group member's checked state to match — absolute, not relative.
-**A popup listbox records the control that opens it** (2026-09-01). A custom dropdown
-(react-select and friends) renders its `[role="option"]` children ONLY while its menu is open, and
-the click that opens the menu lands on a role-less, id-less container that
-`resolveMeaningfulTarget` correctly discards as noise — so no compiled step ever reopened the menu
-and `select_option` could only ever miss. `bridge.js::_choiceOpenerSelector` now captures the
-group's opener into `choice_context.opener_selector`, preferring the ARIA contract
-(`[role=combobox][aria-controls=<listbox id>]`, or `[aria-haspopup=listbox]`) and falling back to
-the nearest ancestor carrying a stable id; an owner rendered inside the popup itself is rejected,
-being no more reachable at replay than the options were. `compiler/choice.py` carries it through to
-`handler_hints.choice.opener_selector`, and `handlers.js::_ensureChoiceMenuOpen` clicks it before
-the `aria_listbox` branch resolves its option — but only when the option is not already on the
-page, so an open menu is never toggled shut. This stays Tier A (deterministic, zero-LLM): the
-opener is a compile-time recorded selector, never a guess. It is `""` for an always-visible group
-(a native `<select>`, a radio fieldset), and for any skill compiled before this change — in both
-cases the helper is a no-op and the caller's own locator wait still decides the outcome.
+- **Record** (`bridge.js::buildChoiceContext`, skipped when `date_context` claimed the event): `kind`, `multi`, `group_key`, `group_label`, and every member's `{value, label, selector, checked}`. Needs ≥ 2 members (`_CHOICE_GROUP_MIN`). ARIA `role=radio|option` clicks are reclassified as `set_radio`/`select_option`. `_choiceOpenerSelector` records the control that opens a popup listbox (`[role=combobox][aria-controls=…]`, `[aria-haspopup=listbox]`, else the nearest ancestor with a stable id; rejects owners inside the popup) as `opener_selector`.
+- **Compile** (`compiler/choice.py`): `derive_choice(ev)` for single-shot kinds; `collapse_choice_group_runs` merges a checkbox run into one `multi: true` step with `recorded_values` read from the last event's live snapshot (absolute state). `workflow_mutations.py::_choice_specs` declares `type: "select"` or `"multiselect"` with `options` and defaults. A real JSON-Schema `enum` reaches `inputs.json` and the MCP tool schema (`_normalize_saved_skill_inputs`, `server.js::_skillToolDefinitions`).
+- **Replay** (`runtime/app/choice.js`): `matchOption`/`matchOptions` try exact, then normalized, then unique-prefix matching, stopping at the first rung with exactly one hit. Ambiguous or no match → `badInput` error listing valid options (skips recovery). No guessing and no falling back to the recorded answer. `handlers.js` acts on the matched option's selector (`selectOption({label})` for native select; direct click for ARIA options, after `_ensureChoiceMenuOpen` clicks the opener if the option isn't on the page). Checkbox groups read `inputs[input_binding]` as a list and set every member absolutely.
 
-A skill recorded before this exists CANNOT be healed by recompiling: the observation is absent
-from the recording, so such a workflow must be re-recorded. See TODO.md's REC-STALE-1.
+Related fixes that apply to all controls:
+- `identity_bundle.py::_accessible_name` never uses `target.name` (the HTML group attribute).
+- `action_semantics.py::is_editable_target` excludes `radio`/`checkbox`/`file`.
+- `clean_steps`' prep-click merge covers every value-setting action (`_VALUE_SET_ACTIONS`).
+- `pipeline/dedupe.py::collapse_select_interaction_noise` reduces `click`/`type`/`fill` events bracketing a `select` on the same element to just the `select`.
+- `bridge.js::captureAssociatedLabel`'s nearest-sibling fallback skips text that is exactly a month+year (`_MONTH_YEAR_EXACT_RE`), so a calendar header can't become a field label.
 
-Every branch above is additive on `handler_hints.control_kind` being absent, so a skill compiled
-before this feature is completely unaffected and needs no recompile to keep working.
+Record-time fixes need a fresh recording; old sessions lack the context (Done.md REC-STALE-1).
 
-**A bulk upload deletes its consumed files from the shared download folder** (EXEC-19, resolved
-2026-08-25). The compile-time FIFO guarantee above only says a downloaded file is *bound* to at
-most one upload step — it doesn't stop that file from still sitting on disk in the run's shared
-`{CONXA_DATA_DIR}/runs/{runId}/` folder afterward. For a workflow chaining more than two
-download/upload hops in one run (A downloads → B bulk-uploads → C downloads more → D
-bulk-uploads), D's own `downloaded_files_dir` scan could otherwise pick up A's stale files
-alongside C's. `handlers.js`'s `upload` handler now deletes every file in `filePaths` right after
-`setInputFiles` succeeds, but only when the resolved value was an exact match for
-`inputs.downloaded_files_dir` — a hand-authored `{{file_path}}` that happens to point at a real
-directory is never touched. Deletion is best-effort (a failed unlink doesn't fail an
-already-successful upload step).
+#### Downloads and uploads
 
-**Downloads live in an isolated, self-cleaning per-run workspace, not the OS Downloads folder**
-(EXEC-10/W-7, resolved 2026-08-17). `server.js` saves every download under
-`{CONXA_DATA_DIR}/runs/{runId}/` — `CONXA_DATA_DIR`, not the read-only install dir `CONXA_DIR` —
-so a run's files are fully isolated from both the customer's own Downloads/Documents folders and
-from any other run's workspace. `run.js::sweepOldRuns` runs once at the start of every
-`execute_skill`/`execute_sequence` call, before the new run's directory is created, and deletes any
-*other* run directory under `runs/` whose mtime is older than `CONXA_RUN_RETENTION_DAYS` (default
-7). Running the sweep at run start rather than on the previous run's success/failure/cancel path
-means cleanup fires regardless of how that prior run ended — the retry-budget bug in §10 (cleared
-only on success) is deliberately not repeated here.
+**Workspaces.**
+- Recording saves downloads to `data/sessions/{session_id}/downloads/` (`_on_download`, collision-safe `_unique_download_name`). `cmd_start_recording` returns `downloads_dir`.
+- Replay saves to `{CONXA_DATA_DIR}/runs/{runId}/`. `run.js::sweepOldRuns` runs at the start of every call and deletes other run dirs older than `CONXA_RUN_RETENTION_DAYS` (default 7), regardless of how they ended.
+- A `.zip` is extracted immediately into a sibling folder on both sides (`extractZipOnce`; one wrapping top-level folder is unwrapped). Members are recorded as `zip_members`.
 
-**A downloaded zip is always extracted immediately, and an upload replays exactly what was
-recorded** (EXEC-20, resolved 2026-08-16, superseding EXEC-17's replay-time inference below).
-Both `session.py::_on_download` (recording) and `server.js`'s download listener (replay) extract
-a `.zip` download into a sibling folder — `extractZipOnce` (`run.js`, stdlib `zipfile` on the
-Python side) the instant the file is saved, unconditionally, never waiting to see what an upload
-step later needs. Extraction is idempotent and unwraps one single top-level wrapping folder the
-same way it always has; needs no separate cleanup, since the extracted folder lives inside
-`runs/{runId}/` (replay) or `sessions/{session_id}/downloads/` (recording) and is swept the same
-way the rest of that workspace is. `upload_binding.py`'s `_BindingState`
-now reads a zip download's member filenames (recorded on `download_observed` as `zip_members`) and
-binds an upload step to *exactly what was picked while recording*: the zip's own filename still
-binds to `{{downloaded_file}}` and uploads the zip verbatim; a single file matching one member binds
-to that exact extracted file (`{{downloaded_file_N_dir}}/name.pdf`); a multi-select matching a
-zip's *entire* remaining member set binds to the whole extracted folder (`{{downloaded_file_N_dir}}`);
-and a multi-select matching only a *partial* subset of a zip's members (some picked, some not) binds
-to a JSON array of explicit paths, e.g. `["{{downloaded_file_N_dir}}/a.pdf",
-"{{downloaded_file_N_dir}}/b.pdf"]` — `run.js::resolveUploadPaths` detects the leading `[` and
-parses it as a path list before falling through to its single-file/folder handling.
-`resolveUploadPaths` no longer special-cases `.zip` itself at all — a zip
-target now just uploads verbatim, the same as any other single file.
+**Binding** (`compiler/upload_binding.py`, via `apply_bindings_to_compiled_steps` and `apply_bindings_to_export_steps`): browsers expose only `File.name`, so an upload binds to an **earlier** `download_observed` by filename, FIFO per name:
 
-*Superseded design (EXEC-17, resolved 2026-08-17, kept for history):* `resolveUploadPaths` used to
-detect a `.zip` upload target and silently extract it before upload, inferring "this must want the
-contents" — because at record time nothing but the zip existed on disk to pick, so the person
-recording had no way to express wanting the contents specifically. Once extraction moved to record
-time too (giving the person recording an actual choice), that inference became a liability rather
-than a convenience — it made "I genuinely want to upload the zip" unrepresentable — so it was
-replaced by the literal record→replay fidelity described above. A skill compiled under the old
-behavior needs re-recording (or hand-pointing its `file_path` input at the already-extracted folder)
-to keep working.
+| Recorded pick | Bound value |
+|---|---|
+| The only download's file | `{{downloaded_file}}` |
+| The Nth of several same-named downloads | `{{downloaded_file_N}}` |
+| A zip itself | the zip, uploaded verbatim |
+| One member of a zip | `{{downloaded_file_N_dir}}/name.pdf` |
+| All remaining members of a zip | `{{downloaded_file_N_dir}}` |
+| Some members of a zip | JSON path list `["{{…_dir}}/a.pdf", …]` (parsed by `resolveUploadPaths`) |
+| Multi-select where every file matches unconsumed downloads | `{{downloaded_files_dir}}` (the run folder) |
+| Anything partial or unmatched | untouched: `{{file_path}}` |
 
-**Recording has its own workspace too** (EXEC-18), one phase earlier than the replay-time story
-above. `session.py`'s recording browser saves each download to `data/sessions/{session_id}/downloads/`
-— mirroring the runtime's `runs/{runId}/` — via `_on_download` calling `download.save_as(...)` with a
-collision-safe name (`RecordingSession._unique_download_name`, a Python port of
-`uniqueDownloadName`), and (per EXEC-20 above) extracts it immediately if it's a zip. `cmd_start_recording`
-returns the resulting `downloads_dir` so the UI can surface it.
+These placeholders are excluded from auto-declared inputs; `run.js`'s `download_observed` handler binds them at replay (a missing file throws `badInput`).
 
-**The recording-time "Choose File" dialog is Studio-owned, not Chromium's** (resolved 2026-08-17,
-after three earlier attempts to steer Chromium's own picker — via a dedicated persistent profile
-seeded with a `selectfile.last_directory` preference — failed to reliably land on the right folder;
-that machinery has been removed). `session.py` attaches a `page.on("filechooser", ...)` listener
-(`_on_file_chooser`) that suppresses the native OS picker and instead invokes
-`on_file_picker_request(request_id, default_dir, multiple)` — wired in `handlers/session.py` to emit a
-`file_picker_request` event over the same JSON-RPC event stream every other backend progress event
-uses (`id: null`, since it isn't a reply to any in-flight command). The renderer
-(`RecordWorkflowDialog.tsx`) shows Electron's own `dialog.showOpenDialog` with an **All Files** filter
-(so PDFs, zips, and other non-image downloads are visible — the installer-logo picker on Build
-Installer is the only caller that passes an Images-only filter), pre-pointed at `default_dir` —
-the most recent download's folder, or the unwrapped zip-extract folder when a single top-level
-wrapping directory was inside the zip (see `_last_download_dir` / `_zip_extract_dir`) — and posts
-the result back via `cmd_resolve_file_picker`. Before the dialog opens, downloads are fsync'd to
-disk and Windows is notified of the folder change (`SHChangeNotify`) so the picker lists files
-written during the current recording. `RecordingSession.resolve_file_pick()`
-queues the answer; the pump loop (the only thread allowed to touch Playwright's sync API) drains it
-and calls `chooser.set_files(...)`, which still dispatches the input's `change` event via CDP, so
-`bridge.js`'s `upload_intent` capture is unaffected. A canceled pick is a no-op; the page sees a
-normal dialog cancel.
+**Replay rules** (`handlers.js` `upload`):
+- `downloaded_files_dir` is always set, so when the value equals it the handler checks that the folder exists and has at least one file, else throws `badInput`.
+- After a successful `setInputFiles` from `downloaded_files_dir`, the consumed files are deleted best-effort, so a later hop doesn't re-upload them. A hand-authored directory is never touched.
+- A plain `{{file_path}}` is passed through for `setInputFiles` to report not-found itself.
 
-### 7.2 LLM Calls Per Step
+**Studio-owned file picker at record time.** `_on_file_chooser` suppresses Chromium's picker and emits `file_picker_request` (`id: null`). `RecordWorkflowDialog.tsx` opens Electron's `dialog.showOpenDialog` (All Files) at `default_dir`: the latest download's folder or the unwrapped zip folder (`_last_download_dir`/`_zip_extract_dir`). Downloads are fsync'd and `SHChangeNotify` is sent first so new files appear. `cmd_resolve_file_picker` → `resolve_file_pick()` queues the answer, and the pump loop calls `chooser.set_files(...)`. Cancel is a no-op.
 
-All LLM calls route through `conxa_core.llm.get_router()`. In Build Studio, the router singleton is replaced with `LLMProxyClient` which forwards to the cloud's metered proxy. The cloud proxy itself has the multi-provider pool (Groq, Google AI Studio, NVIDIA NIM, etc.).
 
-| LLM Client | Call | Token cost (approx) |
+### 7.3 LLM Usage & the Second Opinion
+
+All compile-side LLM calls go through `conxa_core.llm.get_router()`. In Build Studio the router is `LLMProxyClient`, which forwards to the cloud's metered proxy (§13).
+
+| Client | When | Cost |
 |---|---|---|
-| `anchor_vision_llm.py` | Per-step relational anchor phrases (if enabled) | Medium (screenshot) |
-| `recovery_llm.py` | Not on the primary compile path (Human Edit layered check / 1-click fix) | Medium |
-| `workflow_review.py` | One whole-workflow multimodal call, sited after `_build_compile_report` (BUILD-25 merged with BUILD-26, 2026-09-11; wiring fixed BUILD-29, 2026-09-12 — the merge was un-registered as a vision task and had no prompt branch at all, so it silently ran as a promptless text request and every compile went rules-only with no error). Merges the old separate `workflow_intent.py` call (per-workflow intent graph — every step's snake_case token AND review prose) and `workflow_semantics.py`'s second opinion (`rename_binding` / `parameterize_literal` / `suggest_optional` / `label_phase` / `suggest_assertion` / `flag_noise`) into one call that also sees each step's already-chosen anchor screenshot, sent as `image_url` content blocks keyed by `step_key` (never inlined into the JSON text). A step's images are trimmed to a byte budget before the request is built (`compiler/build.py::_trim_review_images` — highest-confidence steps' images drop first) and excluded from the local response cache key, so a differently-trimmed request can't collide with another's cached answer. A step the graph leaves tokenless just keeps its heuristic intent — no per-step LLM fallback. `compiler/second_opinion.py` writes the findings onto the steps: `input_binding`, `{{placeholder}}` tokens in `value`, `phase`, the `try_dismiss` branch, an advisory text/URL/state `validation.assertions` entry, or removing (archiving) a step; `build.py:_apply_workflow_review_to_steps` writes the graph's `intent`/`semantic_description`. Never a selector or identity bundle. | Medium (screenshot) |
+| `anchor_vision_llm.py` | Per step, relational anchor phrases (optional) | Medium (screenshot) |
+| `workflow_review.py` | Once per compile, last | Medium (screenshots) |
+| `recovery_llm.py`, `semantic_llm.py` (`enrich_semantic`) | Human Edit 1-click fix only (`compiler/patch.py`), never on compile | Medium |
+| `selector_regeneration.py` (`selector_generation`, text) | 1-click fix re-target only | — |
+| `region_selector_vision.py` (`region_selector`, vision) | "Draw a new region" re-target only; screenshot + highlighted region + DOM, because recordings store no per-element geometry | — |
 
-`semantic_llm.py` (`semantic_enrichment`) is **not** called during normalize or compile. Missing `input_type` is inferred with policy regex only. `enrich_semantic` remains on Human Edit 1-click fix (`compiler/patch.py`).
+**Selectors are deterministic on the primary path.** `identity_bundle.py::generate_deterministic_signals()` reads the recorded DOM and emits Playwright-grammar signals ranked by durability. No LLM writes or scores selector strings (LLM-written selectors hallucinate ~30% of the time). `llm_selector_generator_v2.to_playwright_grammar()` survives only as a string formatter. Missing `input_type` is inferred by policy regex.
 
-**Merged into one multimodal call (BUILD-26, 2026-09-11).** `llm/workflow_review.py::build_workflow_review` is now the single call that decides both the workflow-intent graph and the second-opinion findings below — see the `workflow_review.py` row above and its own module docstring for the merge's shape and consequences (chiefly: intent-token resolution moves from before the per-step compile loop to after it, so vision-anchor selection and each step's initial `intent` fall back to the recorder's own heuristic instead of an LLM token). `workflow_intent.py::_graph_from_raw` and `workflow_semantics.py::_validate_findings` still do the parsing/validation, unchanged; only the orchestration (one call instead of two) moved.
+**Vision anchors.** `_downscale_and_encode` always re-encodes the screenshot as JPEG ≤ 1024 px on the long side, including when the bbox is missing; a raw frame is never sent. Recoverable failures (`_RECOVERABLE_VISION_ANCHOR_REASONS`) produce a per-step `vision_anchor_fallback` warning plus one aggregate `vision_anchor_fallback_summary` log event per compile.
 
-**The compiler's second opinion — what it writes, and what it never writes (BUILD-25).** `llm/workflow_review.py::build_workflow_review` decides; `compiler/second_opinion.py::apply_second_opinion` writes (and, for the one destructive kind, `archive_flagged_steps` removes). Four kinds rewrite a field in place: `rename_binding` sets `input_binding` and rewrites the matching `{{token}}` inside `value`; `parameterize_literal` binds a recorded literal (only on a step that has no binding yet — it never re-points an existing one); `label_phase` sets `SkillStep.phase`; `suggest_optional` converts a step the recorder already flagged stochastic into a `try_dismiss` branch via the shared `build_try_dismiss_from_hint`, clearing `optional_hint`. Two stage-(d) kinds are narrower: `suggest_assertion` additively appends one `Assertion` to `validation.assertions` — always `required=False`, and restricted to `text_present`/`text_absent`/`url_changed`/`url_pattern`/`state_changed`, never a selector-bearing type, since that `target` is a raw Playwright selector this pass may never write; `flag_noise` removes a step the recorder itself observed to have no effect (`post_condition.classified_effect == "none"`), never the model's own opinion alone, and archives it in full under `compile_report["archived_steps"]` rather than deleting it — see "Why archive, not delete" below. One exception: a `navigate` step has no `post_condition_effect` signal, so it may instead be flagged `duplicate_action` when the step immediately before it is a navigate to the identical `url` on the identical `tab_id` — e.g. a user-opened tab's synthetic navigate immediately followed by the recorder's own navigation to the same page (`_insert_tab_markers`). Still a rule-checked fact, never the model's own say-so. The pass never touches `target`, `identity_bundle`, `compiled_selectors`, `wait_for`/`success_conditions`, or the frame/tab chain — element identity stays fully deterministic (CLAUDE.md Key Invariants).
+**Workflow review** (`llm/workflow_review.py::build_workflow_review`): one multimodal call, after bindings are deduplicated and the first compile report exists. It sees every step's chosen anchor screenshot as `image_url` blocks keyed by `step_key`. Images are trimmed to a byte budget (`build.py::_trim_review_images`; highest-confidence steps drop first) and excluded from the cache key. It returns:
 
-**Why archive, not delete (stage d, 2026-09-10).** `flag_noise` is the pass's only kind that changes the *shape* of `steps` rather than one field on one step, and the only one where a wrong call is not cheaply reversible in Human Edit — a deleted step's `IdentityBundle` only ever comes from a DOM snapshot at record time, so recreating it means re-recording. `archive_flagged_steps` (`compiler/second_opinion.py`) removes the step from what ships but writes its full serialized form into `compile_report["archived_steps"]` (`{step_key, step, category, why}`), which never reaches the shipped pack (`skill_package_builder_saved_skill.py` only copies from the *returned*, filtered `steps`). No restore command exists yet — the archive is written and persisted, but nothing in the editor consumes it, the same "written, no reader yet" posture `label_phase` had before stage (e).
+1. the **WorkflowIntentGraph** (goal, per-step `intent_token` and prose; parsed by `workflow_intent.py::_graph_from_raw`). `_apply_workflow_review_to_steps` always backfills `semantic_description` and fills `intent` only where the heuristic left it blank. There's no per-step LLM fallback;
+2. the **second-opinion findings** (validated by `workflow_semantics.py::_validate_findings`), applied by `compiler/second_opinion.py::apply_second_opinion`.
 
-**Why applied rather than suggested.** Stage (c) of BUILD-25 was going to put accept/reject chips in Human Edit; that was dropped on 2026-09-09. A reviewer opens Human Review and sees finished work — `sender_email`, not an offer to rename `email_2` — and Human Review is itself the gate for a wrong call. Nothing in the renderer marks a second-opinion change: it is simply part of the compiled workflow, indistinguishable from what the fixed rules produced. Two consequences were accepted knowingly. First, **a compile is no longer byte-identical whether the pass ran or not** — only the routes that apply nothing (disabled, failed, empty, every finding rejected by validation) still are, and the content-hash cache keeps repeat compiles of the same recording stable. Second, `suggest_optional` retires the older *"branch steps compile only from observed states + human confirmation"* rule: the observed state is still required (the pass can only judge hints the recorder already produced — it never invents one), but the confirmation now happens after the fact in Human Review. `confirm_optional_interstitial` remains for hints the pass left alone; there is no un-confirm command, so reversing one means editing the step back by hand.
+| Finding | Effect |
+|---|---|
+| `rename_binding` | Sets `input_binding`, rewrites the matching `{{token}}` in `value` |
+| `parameterize_literal` | Binds a literal, only on a step without a binding |
+| `label_phase` | Sets `SkillStep.phase` |
+| `suggest_optional` | Converts a step the recorder flagged stochastic (`optional_hint`) into a `try_dismiss` branch via `build_try_dismiss_from_hint`; clears the hint |
+| `suggest_assertion` | Appends one `required=False` assertion of type `text_present`/`text_absent`/`url_changed`/`url_pattern`/`state_changed` only (never a selector-bearing type) |
+| `flag_noise` | Removes a step the recorder observed to have no effect (`post_condition.classified_effect == "none"`), or a `navigate` identical to the previous navigate on the same tab (`duplicate_action`). Archived in full to `compile_report["archived_steps"]` (`{step_key, step, category, why}`), which never ships and has no restore command yet |
 
-**Failure / cost / silence behaviour.** The `suggestions` half is gated by `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED` (default on); the intent-graph half generates unconditionally, matching its old ungated behavior. A local cache (`llm/llm_cache.py`) keyed on a content hash of the per-step payload + page URLs + sibling bindings; a failed or empty response is never cached, so a recompile retries; any exception degrades to `(WorkflowIntentGraph(), [])` — the rules-only compile — rather than failing it. `build.py:_apply_workflow_review_to_steps` runs unconditionally against whatever graph resulted (empty on failure), outside the try/except guarding the findings application, so a disabled and a failed call stay byte-identical instead of one applying the semantic_description fallback and the other skipping it. `compile_report["second_opinion"]` records what was actually applied, as an audit trail for the compile log — nothing in Human Edit reads it — and appears only when at least one finding was applied. When anything was applied or backfilled the report is **rebuilt** from the mutated steps (`_build_compile_report` is a pure local function over `steps`), because a `suggest_optional` conversion or an intent backfill changes what the first report was computed against.
+The pass **never** touches `target`, `identity_bundle`, `compiled_selectors`, `wait_for`/`success_conditions`, or the frame/tab chain.
 
-**Validation is the trust boundary, and it matters more now that findings are applied than it did when they were shown.** Findings are keyed on `step_key` (`compiler/step_key.py` — `identity_bundle.stable_hash` plus an occurrence ordinal, with a hashed action+url fallback for element-less steps), never `step_index`, so a reorder or insert cannot misattribute one. `workflow_semantics.py::_validate_findings` (still the validator, now called from `workflow_review.py`) silently drops any finding with an unrecognized `step_key`, an unknown `kind`, an invalid binding name, a name colliding with one `_deduplicate_input_bindings` already assigned, a `suggest_optional` on a step with no recorder-observed `optional_hint`, an invalid `label_phase` value, or anything past a precision-first cap of ~1 finding per 2 steps. `apply_second_opinion` adds the shape guards validation cannot see (a rename on a step with no binding, a conversion on a step whose hint is already consumed). "No findings" is a first-class, expected, and common outcome — the prompt explicitly asks for an empty list when nothing is clearly wrong.
+**Applied, not suggested.** The reviewer sees finished work in Human Review, which is the gate; nothing marks a second-opinion change. Consequences, accepted knowingly:
+- A compile is not byte-identical whether the pass ran or not. Only routes that apply nothing are; the content-hash cache keeps repeat compiles stable.
+- `suggest_optional` still needs a recorder-observed state; confirmation happens in Human Review. `confirm_optional_interstitial` handles hints the pass left alone, and there's no un-confirm.
 
-**Reviewer edit log (BUILD-25 stage a, 2026-09-09).** `editor/edit_log.py` appends one JSON line per changed field to `data/skills/{skill_id}/edits.jsonl` (see §2.3) for every mutating Human Edit command, hooked once in `backend.py::Backend.dispatch` rather than per-command so undo/redo are covered too. Records are keyed on `step_key`, the same key space as `compile_report.second_opinion` above, and compare only a small allow-list of reviewer-editable fields (`input_binding`, `value`, `intent`, `semantic_description`, `action.action`, `optional_hint`, `branch`, `validation.assertions`) — never the whole step. Writing is failure-silent, matching every other local cache/log in the compile pipeline. It is the eval set for the pass above, scored by `conxa-cloud/scripts/eval_suggestions.py`, and the training pair for any future fine-tune. The join changed meaning when the pass went from suggesting to applying: an edit on a `(step_key, field)` the pass wrote is now a reviewer **overriding** it, so the harness reports `override_rate` (lower is better) rather than a precision score, alongside the unchanged `miss_rate` (edits on the same fields where the pass said nothing). Neither is a verdict on its own — a rename the reviewer preferred differently costs nothing, a reverted `parameterize_literal` would have shipped a broken input, and the log does not distinguish them.
+**Trust boundary.** Findings are keyed on `step_key` (`compiler/step_key.py`: `stable_hash` plus an occurrence ordinal; a hashed action+url fallback for element-less steps), never `step_index`. Validation silently drops unknown keys or kinds, invalid or colliding binding names, `suggest_optional` without `optional_hint`, invalid phases, and anything beyond ~1 finding per 2 steps. `apply_second_opinion` adds shape guards (for example a rename on a step with no binding). An empty list is a normal outcome.
 
-`anchor_vision_llm.py` always downscales the recorder's screenshot to JPEG bounded at 1024px
-on the longest side (`_downscale_and_encode`) before sending it to a vision provider — every
-return path, including a missing/degenerate bbox that skips the target-highlight overlay,
-goes through the same re-encode. A raw full-resolution PNG video frame is never sent. When a
-step's vision call fails for a recoverable reason (see `_RECOVERABLE_VISION_ANCHOR_REASONS`),
-`compile_skill_package` emits one aggregate `vision_anchor_fallback_summary` compile-log event
-after all steps compile — count of steps that fell back, out of the total, plus the first
-distinct reason/hint — in addition to each step's own `vision_anchor_fallback` compile warning,
-so a provider outage degrading many steps in one compile is visible at a glance rather than
-buried per-step.
+**Failure and cost.** `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED` (default on) gates findings; the intent graph always generates. `llm/llm_cache.py` caches by content hash of the payload, URLs, and sibling bindings; failed or empty responses aren't cached. Any exception degrades to `(WorkflowIntentGraph(), [])`. The backfill runs outside the findings `try`, so disabled and failed stay identical. `compile_report["second_opinion"]` records what was applied (only when something was), and the report is rebuilt whenever anything was applied, archived, or backfilled.
 
-Selector generation is **fully deterministic** on the primary compile path, with two narrow,
-user-initiated re-compile exceptions: the 1-click-fix API's `selector_regeneration.py` (task
-`selector_generation`, text-only) and the Human Edit re-target wizard's "draw a new region" path,
-`region_selector_vision.py` (task `region_selector`, vision — screenshot + drawn region highlight
-+ DOM snippet, since no recording stores per-element geometry a text prompt could resolve a drawn
-region against). Neither runs during normal compile.
+**Reviewer edit log** (`editor/edit_log.py`): every mutating Human Edit command (hooked once in `backend.py::Backend.dispatch`, so undo/redo are covered) appends one line per changed field to `data/skills/{skill_id}/edits.jsonl`. Keyed on `step_key`, allow-listed fields only (`input_binding`, `value`, `intent`, `semantic_description`, `action.action`, `optional_hint`, `branch`, `validation.assertions`); failure-silent. `conxa-cloud/scripts/eval_suggestions.py` reports `override_rate` (edits on fields the pass wrote), `miss_rate`, and the copilot's accept and verified-fix rates.
 
-**The calendar root is the widget, not the clicked day** (2026-09-01).
-`CALENDAR_ROOT_SELECTORS` matches on class substrings (`[class*='datepicker']`), and every
-descendant of a widget repeats its library prefix — react-datepicker's day cell is
-`react-datepicker__day`, which matches that selector itself. `findCalendarRoot` returned the
-first match walking up, i.e. the CELL, so `date_context.grid` and `.cell` were the same
-date-specific selector. The runtime then scoped its day search *inside* the recorded cell (which
-has no day-number descendant, only its own text) and `header`/`prev`/`next`/`year_select`/
-`month_select` — all of which live above the cell — came back empty. It now keeps widening to the
-outermost calendar-matching ancestor before the existing nav-chrome widen step, which is what
-makes `date_pick` able to reach a date OTHER than the recorded one.
+### 7.4 Human Review Copilot
 
-**Recorded observations reached the compiler for the first time** (2026-09-01).
-`session.py::_finalize_payload_sync` assembles its `body` dict as an explicit allow-list before
-`RecordedEvent.model_validate`, and never copied `branch_hint`, `date_context`, `choice_context`,
-`optionality` or `post_condition` out of the bridge payload. All five are declared optional with a
-`None` default, so validation silently filled in None — every recording ever made had them null in
-every event. Both the date-picker collapse and the multiple-choice compile were therefore dead
-end-to-end (the compiler had nothing to collapse or derive a payload from) even though both sides
-of the boundary were implemented and unit-tested. The finalizer now copies each observation
-through when present. `ChoiceContext` also gained `opener_selector`; an undeclared field is
-dropped by Pydantic just as silently as an uncopied one.
+"Conxa Copilot" is a chat panel in Human Edit (`components/copilot/CopilotPanel.tsx`, `CopilotLauncher.tsx`; floating, not in the Tools rail). It diagnoses the latest test failure and proposes edits as accept/reject diffs. **The copilot proposes, the reviewer disposes.** It's a user-initiated editor action and never writes an element address.
 
-**A11y snapshot capture had never run** (2026-09-01). `_capture_a11y_async` invoked
-`page.locator("body").aria_snapshot()` inside a `threading.Thread` to bound it to 2s, but
-Playwright's sync API is greenlet-based and bound to its creating thread, so every call raised
-`Cannot switch to a different thread` and the method returned None — visible only as a single
-`a11y_capture_error` line in the session's recorder_diag.json. With no a11y tree on disk,
-`identity_bundle.py`'s `resolves_to_nothing()` could not confirm that a role+name selector
-resolves in the page it came from, so fabricated accessible names shipped as the bundle's
-highest-durability (0.95) signal: `captureAssociatedLabel`'s last-resort surrounding-text walk
-named a react-select input after the "State and City" heading above it, producing
-`internal:role=combobox[name="State and City"]`, which Playwright never matches. Now
-`_capture_a11y_snapshot`, called in-thread with `aria_snapshot(timeout=…)` — the native bound the
-thread only ever existed to provide.
+#### Evidence bundle
 
-**A calendar day cell is an interactive target** (2026-09-01). `isInteractiveNode`'s ARIA role
-allow-list enumerates individual activatable controls but omitted `gridcell`, which is what
-react-datepicker gives a day (`<div role="gridcell" tabindex="-1">`); the `tabindex` check cannot
-cover it, since roving-tabindex widgets give every unfocused item `-1` by design. So
-`resolveMeaningfulTarget` walked past the day, found no interactive ancestor and returned null,
-and the click that COMMITS a date was never recorded — the run replayed as open/change-year/
-change-month with no day pick, the calendar visibly moving while the field kept its original
-date. `gridcell`, `treeitem`, `menuitemcheckbox`, `menuitemradio`, `searchbox`, `spinbutton` and
-`slider` were added; container roles (grid, listbox, menu, tree, radiogroup) stay out, since a
-click belongs to the item, not the widget around it.
+`editor/evidence.py::build_evidence_bundle`, keyed on `step_key`:
+- Runtime failure capture: `runs/{run_id}/_evidence/{evidence.json, failure.jpg, pre_step.jpg?, overlays.jsonl}` in Studio's sandbox `data/`.
+- The compiled step's `identity_bundle`, `compiled_selectors`, `validation.assertions`, `target`, `intent`, `semantic_description`, `phase`, `consequence`.
+- Compile-report confidence/warnings, `second_opinion`, `archived_steps`, or `{"available": false, "reason": "workflow edited since last compile"}` when `_invalidate_compile_report` has staled it.
+- The recorded event's `post_condition.classified_effect` / `state_change.dom_diff` (`retarget.py::find_source_event`), deterministic prose (`describe.py::describe_step`), and prior edits (`edit_log.read_edits`).
+- `last_test` (`{status, error, at}` from the `Workflow` record) and `runtime_evidence_absent` (a reason when evidence is empty). The prompt then treats `last_test.error` as authoritative instead of inferring a cause.
 
-**Recorded dates were a day early outside UTC** (2026-09-01). `_parseDateFromString` returned
-`new Date(...).toISOString().slice(0, 10)`. A date string with no time parses to LOCAL midnight,
-which `toISOString()` converts to UTC — on any positive-offset zone (IST, CET, …) that lands on
-the previous day, so `2007-03-15` was recorded as `2007-03-14`. It now formats from local parts.
-The same function also fed `Date.parse` raw aria-label prose; react-datepicker writes
-`aria-label="Choose Thursday, March 15th, 2007"`, which `Date.parse` rejects for both the leading
-words and the `15th` ordinal, so every aria-labelled cell parsed to null and no `iso_date` ever
-reached `DateContext`. It now strips ordinals and extracts an embedded ISO / `Month D, YYYY` /
-`D Month YYYY` date before parsing.
+`Workflow.last_test_run_id` (set by `cmd_test_workflow` whatever the outcome) is the fallback run id.
 
-**An element identified only by its CSS class keeps that identity** (2026-09-01). Three separate
-stages each discarded the only durable signal a nameless, id-less, testid-less element had, and
-together they compiled `react-datepicker`'s year/month `<select>` down to a bundle whose every
-signal was structurally unmatchable — a guaranteed `{miss:true}` at replay with nothing to fall
-back on:
+**Failed-step resolution.** `failed_step_key = keys[failed_at]` uses a position frozen at failure against the current document. `evidence.json` also stores `failed_stable_hash`, and `_resolve_failed_step_key` nulls the key (and explains in `runtime_evidence_absent`) when the resolved key's base hash differs. With no recorded hash (older evidence, multi-skill sequences, marker steps) the position is trusted. Residual gaps: a reorder of two steps sharing a `stable_hash`, and `observed_overlays` resolution (no hash to check). The full fix is persisting `step_key` into `execution.json`.
 
-- `bridge.js::buildTextSelector` built `text="1900 1901 … 1915 "` from the `<select>`'s
-  `innerText`, i.e. its concatenated `<option>` list. Playwright's text engine never matches a
-  `<select>` by its options, and `text="…"` is an EXACT match, so the 80-char truncation made it
-  unmatchable a second time over. It now emits `""` for option-content elements
-  (`select`/`datalist`/`optgroup`) and for any text over the cap, rather than a selector that
-  cannot resolve. `identity_bundle.py` applies the same option-content gate to the `text_based`
-  channel, which is what heals sessions recorded before the bridge fix without a re-record.
-- `bridge.js::buildXPath` stops at `xpath_max_depth`, then prefixed `/` — emitting a RELATIVE path
-  as an ABSOLUTE one, so anything deeper than the cap matched nothing. It now emits `//` unless the
-  walk actually reached the document root.
-- `selector_filters.py::is_brittle_deep_chain` rejected the recorded CSS chain wholesale (8 levels,
-  cap 6) even though its last segment, `select.react-datepicker__year-select`, is unique, semantic
-  and non-positional. `salvage_deep_css_tail()` now keeps the shortest identifying tail — free of
-  `:nth-*` pseudo-classes, naming the element by class/id/attribute, and still subject to every
-  ordinary quality gate — instead of dropping the channel to `""`. The over-deep chain itself is
-  still rejected; only the salvageable tail survives.
+**Runtime capture.** `failure_response.js::_writeStudioEvidence` runs on Studio failures (`!agentRecoveryEnabled`, since Studio forces tier 2). It writes `evidence.json` (element inventory, overlay probe, a slug + `ts`-filtered recovery-log tail, `failed_stable_hash`, `action_may_have_taken_effect`, `recovery_halt_reason`, `destructive_halt`, `verify_fail`) and a live `failure.jpg`. It never throws; `sweepOldRuns` reaps it.
 
-**The resolver stopped charging weight it could never earn** (2026-09-01). Even once such an element
-was findable, `resolver.js::scoreCandidate` scored it against two fields it could not possibly
-agree on, dropping a UNIQUELY matched candidate to 0.444 against the 0.5 threshold: `inner_text`
-(the compiler records `innerText`, "1900 1901 1902"; `page_scripts.js::extractDescriptor` reads
-`textContent`, "190019011902" — never equal, never a substring) and `anchor_phrases` (whose
-`node.anchorNeighbors` came back empty, because the extractor only collects neighbour text under 60
-chars). `inner_text` is now skipped for option-content tags/roles, mirroring the existing
-`NAME_FROM_CONTENT_ROLES` gate on `fpName`, and the anchor weight is skipped entirely when the
-candidate exposes no neighbour text — absence of agreement is not contradiction, the same principle
-`contradicts()` already encodes. Both gates only remove weight that was unearnable; the uniqueness
-margin gate is untouched.
+#### LLM tasks and routing
 
-On the primary compile path itself, `identity_bundle.py:generate_deterministic_signals()` reads the recorded DOM at compile time and emits Playwright-native-grammar signals ranked by durability. No LLM call is made to produce or score selector strings (SeeAct Finding 3: ~30% hallucination rate for LLM-written selectors). `llm_selector_generator_v2.to_playwright_grammar()` is still used as a pure string-formatting utility by `identity_bundle.py`.
+- `copilot_reply`: streamed prose the reviewer reads live (plain text, no JSON mode).
+- `copilot_diagnose`: strict JSON `{reply, proposals, need?}` for proposals. Its `reply` is a fallback when streaming produced nothing. The system prompt forbids `target`, `identity_bundle`, `compiled_selectors`, `primary_selector`, `fallback_selectors`.
+- Both use `usage_class="human_edit"`. Image-then-text content when a failure screenshot exists; plain text otherwise.
+- **Modality is payload-conditional** (`client.py::_copilot_modality`): no `image_base64` → `route_text`; with one → `route_vision` on the entry's `multimodal_model` slot (own cooldown, falls back to `vision_model`). In dev (`CONXA_ENV` unset or `dev`) it always picks `text_model` but still sends the screenshot, so point dev's text model at a multimodal model.
+- **Stateless backend:** `copilot.py::copilot_turn` flattens evidence + transcript + latest message into one `user_text` each turn; `copilotStore.ts` holds the conversation. Editing an earlier message (`editFromIndex`) truncates the transcript client-side.
 
-### 7.2a Human Review Conxa Copilot (BUILD-26)
+**Streaming path:** `stream_llm` → `LLMProxyClient.route_*(on_delta)` → `POST /api/v1/llm/proxy/{text,vision}/stream` → `LLMRouter._call_provider(on_delta)` with `"stream": true` and `_iter_sse_text_deltas`. The cloud frames `data: {"delta": …}` and a final `data: {"done": true, "text": …}`. Metering happens once after completion; a metering error after headers are sent is only logged. Failover works between attempts; a mid-stream failure keeps partial text. BYOK returns one immediate chunk. `cmd_copilot_turn` relays `{"phase": "copilot_delta", "text"}` on the generic event channel. The panel shows a thinking indicator from send until the first delta (no "call started" event exists).
 
-Displayed to reviewers as "Conxa Copilot" (`components/copilot/CopilotPanel.tsx`,
-`CopilotLauncher.tsx`); code identifiers (RPC command names, module names) are unchanged.
+**Reasoning-only streams.** A reasoning model can spend the whole budget on hidden reasoning and emit no content. `_iter_sse_text_deltas` tracks `reasoning_chars` and `finish_reason`. Empty text with reasoning or `finish_reason == "length"` raises `_DeterministicRejection` (one attempt, no cooldown), reported as `llm_reasoning_only_no_content`. OpenRouter endpoints get `reasoning: {"enabled": false}` for every task except `execute_chat`. There, `_iter_sse_deltas` yields `{"type":"reasoning"}` chunks that Execute renders live as "Thinking…" (`execute_client.js` `onDelta` → `chat:delta` keyed by `requestId` → `App.tsx`).
 
-A chat panel in Human Edit — floating launcher + card (`components/copilot/`), not a Tools-rail
-tab (that rail is a shared modal dialog and would hide the step list mid-conversation) — that
-diagnoses a workflow's most recent test failure and proposes editor changes as accept/reject
-diffs. **The copilot proposes, the reviewer disposes**: a proposal never applies itself, and a
-rejection is logged as loudly as an acceptance (§ below). This is a user-initiated editor action,
-the same sanctioned category as the two existing "LLM does not write selector strings" exceptions
-in `CLAUDE.md` — and deliberately narrower, since it never touches an element address at all.
+#### Proposals
 
-**Evidence bundle** (`conxa_compile/editor/evidence.py::build_evidence_bundle`). Merges, all keyed
-on `step_key` (never `step_index`, which renumbers on any edit):
-- the runtime's own failure capture, written by `failure_response.js` on a Studio test failure
-  (see below) — `runs/{run_id}/_evidence/{evidence.json, failure.jpg, pre_step.jpg?}` under the
-  Studio's test sandbox `data/` dir;
-- the compiled skill document's per-step `identity_bundle`, `compiled_selectors`,
-  `validation.assertions`, `target`, `intent`, `semantic_description`, `phase`, `consequence`;
-- `compile_report`'s per-step confidence/warnings and BUILD-25's `second_opinion`/`archived_steps`
-  — degraded explicitly to `{"available": false, "reason": "workflow edited since last compile"}`
-  when `editor/workflow_mutations.py::_invalidate_compile_report` has staled the report (an
-  insert/delete/reorder since the last compile empties its `steps`), never a misleading 0%;
-  - the original recorded event's `post_condition.classified_effect` / `state_change.dom_diff` —
-    these live on the recording, not the compiled `SkillStep` — via
-    `editor/retarget.py::find_source_event`, the same `snapshot_ref` lookup the 1-click-fix path
-    already uses;
-  - deterministic step prose (`editor/describe.py::describe_step`) and prior reviewer edits on the
-    step (`edit_log.read_edits`, filtered by `step_key`).
+Three kinds, all gated before display and accepted through existing editor RPCs (same undo, `patch_gate`, and `edits.jsonl` path as a manual edit):
 
-`Workflow.last_test_run_id` (set by `cmd_test_workflow` from the run's own `test_phase` log line,
-regardless of pass/fail/error) is the fallback when no `run_id` is given — stable across a Studio
-restart, unlike the in-memory `_active_test_runs` map.
+1. **Field patches** `{step_key, field, patch, why}` (`copilot_proposals.py::gate_proposals`) run through `patch_gate.py::validate_editor_patch`. Allowed fields (`_ALLOWED_FIELDS`): `value`, `input_binding`, `intent`, `semantic_description`, `validation.assertions`, `consequence`, `entity_binding.confirmed`, `branch.timeout_ms`, `for_each.max_iterations`, `for_each.on_row_error`, `handler_hints.hover_chain`, `ai_review_*`, `handover_*`. Not `recovery` (the runtime never reads it). Accept re-resolves `step_key` (`resolve_step_index`, else `proposal_stale`) and calls `cmd_patch_step`.
+2. **Overlay branches** `{overlay_id, control_index, primitive: try_dismiss|if_present, after_step_key, why}` (`gate_overlay_proposals`). The model picks from captured overlays and Python materializes selectors:
+   - *Capture:* `cascade.js`'s `dismiss-overlay` remedy (on an `INTERCEPTED` classification) probes via `page_scripts.js::overlayProbe` (controls carry the resolver's six fields via a duplicated `controlDescriptor`; the container gets a `signal` from the id > role > css-path ladder). `overlay_capture.js::recordOverlayObservation` writes `overlays.jsonl`, deduped per run, whether or not the step passes. This is the only overlay capture on passing runs. `runId` is threaded explicitly for concurrency.
+   - *Reading:* `evidence.py::_read_runtime_evidence` reads `evidence.json` and `overlays.jsonl` independently and exposes `observed_overlays`.
+   - *Synthesis:* `editor/overlay_identity.py::bundle_from_descriptor` (pure) builds testid/css-id/role+name/text candidates with the compiler's own durability table, grammar, and filters. Signals get `source="runtime"`, `unique_at_compile=False`, and a Python-computed `stable_hash` (the resolver uses it only as a tie-breaker).
+   - *Gating:* unknown `overlay_id` is dropped. `try_dismiss` uses `build_try_dismiss_from_hint` (its third caller). `if_present` targets the container signal with one nested click; with no container signal it downgrades to `try_dismiss` (an empty target makes `_saved_branch_step` silently drop the step).
+   - *Accept:* `cmd_insert_step` + `cmd_patch_step` (+ `cmd_insert_branch_step` and a nested `cmd_patch_step` at `branch.steps[0]`) in one dispatch. Undo takes several presses. Rejections log against `overlay:{overlay_id}`.
+3. **Structural ops** `{op, why, evidence_refs, …}` with `op` ∈ `insert_step`/`delete_step`/`move_step`/`update_inputs`/`replace_literals` (`gate_structural_proposals`). `evidence_refs` is required. An `insert_step` of a `SELECTOR_ACTIONS` kind must name `identity_from_step_key` (an existing step whose `identity_bundle`/`target` Python copies verbatim); other kinds must not. Accept (`_accept_structural_proposal`) is all-or-nothing: snapshot, run each op through its `cmd_*`, restore and drop undo entries on failure, collapse to one undo entry on success.
 
-**`last_test` / `runtime_evidence_absent` (added 2026-09-18, BUILD-26 stage h).** A run can fail
-with `evidence.json` never written — the Studio's installed app layer predates the failure-capture
-writer above, or the run's evidence was already swept — and that degrades `runtime_evidence` to
-`{}` and `failed_step_key` to `None`, identically to a run that simply passed. Left alone, that
-ambiguity is exactly what let a real diagnosis session invent a wrong root cause: with nothing
-saying otherwise, the copilot read "no failure recorded" and reasoned from unrelated fields
-instead. Two additions close it, both read straight from the `Workflow` record (which persists
-`last_test_error` unconditionally, independent of anything written under `runs/`):
-- `bundle["last_test"]` — `{status, error, at}` from `workflow.last_test_status/last_test_error/
-  last_test_at`, or `None` when no `Workflow` exists for the skill. Always available when a test
-  ever ran, even when `runtime_evidence` is empty.
-- `bundle["runtime_evidence_absent"]` — `None` when `runtime_evidence` is non-empty; otherwise a
-  short reason string ("no test run recorded for this skill" / "run `{run_id}` left no evidence on
-  disk (swept after retention, or written by an app layer built before failure capture)").
+**Decision log:** `edit_log.append_edit` records `source: "copilot"` and `proposal_id` on accept. `append_decision` records rejections (`decision: "rejected"`). `append_verification` records verify verdicts. All go to the same `edits.jsonl`.
 
-`llm/copilot.py::_base_user_text` turns a set `runtime_evidence_absent` into an explicit
-instruction in the prompt: treat `last_test.error` as the authoritative failure and say the page
-could not be inspected, rather than inferring a different cause from `compile_status`, step kinds,
-or anything else in the digest.
+#### Context, retrieval, and sessions
 
-**`failed_stable_hash` cross-check (BUILD-31, added 2026-09-18).** A separate gap in the same
-resolution: `failed_step_key = keys[failed_at]` looks up a raw index (frozen at the moment the run
-failed) against `keys = step_keys(steps)` computed from the CURRENT document on every call. An
-insert/delete before that index shifts every later position, and the only guard was a bounds
-check — the lookup silently returned the *wrong* step's key rather than nulling out, so a reviewer
-or the copilot could be pointed at the wrong step after any edit with no indication anything was
-wrong. Fixed without reimplementing `compiler/step_key.py`'s hashing/ordinal logic in the runtime
-(which has no concept of `step_key` at all): `failure_response.js::_writeStudioEvidence` now also
-writes `failed_stable_hash` — the failing step's own `identity_bundle.stable_hash` at write time,
-when `steps` is in scope and that step has one — into `evidence.json`. `editor/evidence.py`'s new
-`_resolve_failed_step_key(keys, failed_at, failed_stable_hash)` cross-checks the resolved key's own
-base hash (the part before its `#N` ordinal) against it: a mismatch nulls `failed_step_key` and
-sets `runtime_evidence_absent` to explain why, instead of trusting a stale position. No
-`failed_stable_hash` recorded (older evidence, `steps` was `null` at write time for a multi-skill
-`execute_sequence` failure, or a marker step with no `identity_bundle`) skips the check and trusts
-the position exactly as before — this only narrows, never widens, when a position is trusted.
-Known residual gap: a pure reorder of two steps that happen to share the same `stable_hash` (the
-reason the `#N` ordinal exists) can still be missed; full elimination needs the compiler to
-persist each step's own `step_key` into `execution.json` and thread it through unchanged — not
-attempted here. The identical positional exposure in the `observed_overlays` `step_key` resolution
-a few lines below is unfixed (overlays carry no `stable_hash` to cross-check against).
+- **Capability manifest** (`editor/capability_manifest.py`): generated from the same `*_ALLOWED_KEYS` constants `validate_editor_patch` reads plus `action_registry.py`'s sets, so it can't drift. Hand-written `RUNTIME_NOTES` per kind. Sent once per session.
+- **Digest** (`build_evidence_bundle(detail="digest")`): one compact triage row per step, no heavy fields, plus `inputs` and `prior_decisions` (last 30 accepts/rejects) so rejected ideas aren't re-proposed. Other callers use `detail="full"`.
+- **Retrieval loop** (`editor/copilot_retrieval.py`): `copilot_diagnose` may return `need: [{tool, args}]` (`expand_step`, `get_step_screenshot`, `get_failure_evidence`, `get_edit_history`, `list_workflows`). Results are appended as a `Fetched:` block for up to `MAX_RETRIEVAL_ROUNDS` (2) extra calls. There are no provider tool calls, since the pool's support is uneven. Screenshots are resolved to file paths and re-encoded server-side.
+- **Sessions:** "New session" archives the transcript to `skills/{skill_id}/copilot_sessions.jsonl` (`copilot_save_session`; an undecided pending proposal is dropped unlogged). `cmd_copilot_load_session` resumes the last one when a skill's panel first opens (`copilotStore.ts::ensureFor`).
 
-**Runtime failure evidence — a gap this closed.** `failure_response.js::buildFailureResponse`'s
-`!agentRecoveryEnabled` branch (the one every Studio test failure takes — Studio forces
-`CONXA_MAX_RECOVERY_TIER=2`) used to return four lines of text and discard everything the function
-computes below that point: the live element inventory, the overlay probe, a failure screenshot.
-It now calls `_writeStudioEvidence` first, reusing those same helpers to persist
-`evidence.json` + `failure.jpg` (a live capture at the failure moment — not `err.preShot`, which
-is pre-action and null for non-interactive step types) into
-`${CONXA_DATA_DIR}/runs/{run_id}/_evidence/`, a subdirectory of the run workspace
-`sweepOldRuns()` already reaps after `CONXA_RUN_RETENTION_DAYS` (default 7). Never throws — a
-logging failure must not turn a clean failure into a worse one, same contract as
-`recovery_log.js`. The recovery-log tail included is filtered by `slug` + a `ts` floor (most
-`appendRecoveryEvent` call sites carry no `run_id`), not threaded through ~25 call sites for one
-reader.
+#### Verified retest
 
-**`copilot_diagnose` — the LLM task** (`conxa_core/llm/client.py::_openai_messages_for_task`,
-executed cloud-side, same as `workflow_semantics`). Image-then-text user content when a failure
-screenshot is attached (mirrors `region_selector`'s ordering), plain text otherwise — no vision
-provider or no screenshot on disk both degrade gracefully, never an error. Returns strict JSON
-`{reply, proposals}`; the system prompt forbids `target`, `identity_bundle`, `compiled_selectors`,
-`primary_selector`, `fallback_selectors` in any proposal. `usage_class="human_edit"` — the same
-metering bucket the re-target wizard's regenerate path uses.
+`cmd_copilot_verify` is two-phase:
+1. Without confirmation it counts steps with `consequence == "irreversible"` and returns `confirm_required`. This count is narrower than the runtime's `isNonIdempotent`, so the copy says "N steps that commit or destroy data" and always warns that the run hits the real system.
+2. Confirmed, it runs `cmd_build_skill_package` then `cmd_test_workflow` (accepting always makes the workflow stale) and compares the new run's `failed_step_key` against the step under verification: `fixed`, `still_failing`, or `progressed`. A cancelled run writes no verdict.
 
-**Modality routing is payload-conditional, not task-name-fixed (added 2026-09-10).** Unlike every
-other vision task (`anchor_vision`, `region_selector`, ...), `copilot_diagnose`/`copilot_reply`
-don't carry a fixed modality — the same task sends a plain-text turn when no screenshot is
-attached and a screenshot-bearing turn when one is, since both calls in one Copilot turn (see
-Streaming below) share the same payload. `conxa_core/llm/client.py::_copilot_modality(task,
-payload)` classifies each call as `"text"`/`"multimodal"`/`None` (the last meaning "not a Copilot
-task, use the flat vision-task set as before") from `payload["image_base64"]`'s presence — text
-turns now route through `route_text` (previously *every* Copilot turn was hardcoded into the
-vision-task set and burned the shared vision model even with no screenshot). A screenshot-bearing
-turn routes through `route_vision`, but resolves to its own `multimodal_model` `PoolEntry` field —
-separate from `vision_model` and from `cooled_until_vision` — so a dedicated model can be
-configured for Copilot's screenshot+conversation turns without affecting the compiler's other
-vision tasks on the same provider, and a rate-limited vision model never falsely cools down the
-multimodal slot (or vice versa). Falls back to `vision_model` when `multimodal_model` is unset —
-never an error. Config: `*_MULTIMODAL_MODEL` per provider + `LLM_STARTER_MULTIMODAL_MODEL`/
-`LLM_PRO_MULTIMODAL_MODEL` tier overrides (`conxa-cloud/backend/ROUTER_SETUP.md`). The
-"registered in the vision-task literal set" triplication note still applies to every *other* task
-in that set — `_copilot_modality` is new code layered on top, not a collapse of it.
+`cmd_test_workflow` returns `run_id`, and `_CommandError("workflow_test_failed")` carries it.
 
-**Dev-mode override (added 2026-09-10).** When `settings.environment == "dev"` (the default —
-`CONXA_ENV` unset or `"dev"`, see `conxa_core/config.py::active_environment`),
-`_copilot_modality` always returns `"text"`, so routing picks `text_model` regardless of
-`payload["image_base64"]`. This only changes which `PoolEntry` model slot is picked — the
-screenshot itself, when attached, is still included in the request body exactly as in prod (see
-`_openai_body_dict`'s `copilot_diagnose`/`copilot_reply` branches), so it reaches whatever model
-`text_model` names. Point dev's `text_model` at a multimodal-capable model to keep screenshots
-readable without configuring a separate `multimodal_model`/`vision_model` for local iteration.
-The payload-conditional split above (routing to the dedicated `multimodal_model` slot) only
-takes effect in prod.
+### 7.5 Identity-Capture Rules
 
-**No multi-turn *session* on this call path.** `ProxyBody` carries no `messages` field; every task
-builds a fresh `[system, user]` pair per call. `conxa_compile/llm/copilot.py::copilot_turn`
-flattens the whole conversation (evidence + transcript + the reviewer's latest message) into one
-`user_text` payload each turn — the backend stays stateless, the renderer's `copilotStore.ts`
-holds the conversation.
+Rules the recorder and compiler rely on for durable element identity. Violating one silently produces unmatchable bundles.
 
-**Streaming (BUILD-26 stage c).** One turn now makes two LLM calls instead of one:
+- **Recorded observations must be copied through.** `session.py::_finalize_payload_sync` builds an allow-listed `body` before `RecordedEvent.model_validate`. It must copy `branch_hint`, `date_context`, `choice_context`, `optionality`, and `post_condition`, and every field must be declared on the model (Pydantic silently drops undeclared ones).
+- **A11y snapshots are captured in-thread** (`_capture_a11y_snapshot`, `aria_snapshot(timeout=…)`). Playwright's sync API is greenlet-bound, so a worker thread always fails. Without the tree, `resolves_to_nothing()` can't reject fabricated role+name signals.
+- **Interactive roles** in `isInteractiveNode` include `gridcell`, `treeitem`, `menuitemcheckbox`, `menuitemradio`, `searchbox`, `spinbutton`, `slider`. Container roles (grid, listbox, menu, tree, radiogroup) stay out.
+- **Calendar root is the outermost matching ancestor** (`findCalendarRoot`). Class-substring matches also hit day cells.
+- **Dates format from local parts**, never `toISOString()`. `_parseDateFromString` strips ordinals and extracts embedded ISO / `Month D, YYYY` / `D Month YYYY` from aria-label prose.
+- **No text selectors for option-content elements** (`select`/`datalist`/`optgroup`) or text over the cap: `buildTextSelector` emits `""`, and `identity_bundle.py` gates the `text_based` channel the same way (healing old recordings).
+- **XPath** starts with `//` unless the walk reached the document root.
+- **Deep CSS chains** are rejected (`is_brittle_deep_chain`), but `salvage_deep_css_tail()` keeps the shortest identifying tail without `:nth-*`, still subject to every quality gate.
 
-1. A streamed `copilot_reply` call — the prose the reviewer reads live. Plain text, no
-   `response_format: json_object`, because streaming a JSON-object response would show the
-   reviewer a raw `{"reply": "..."` scrolling past. Runs through a parallel `on_delta` path
-   threaded end-to-end: `conxa_compile/llm/client.py::stream_llm` →
-   `LLMProxyClient.route_text/route_vision(..., on_delta=...)` → the cloud's
-   `POST /api/v1/llm/proxy/{text,vision}/stream` (`llm_proxy_routes.py`, `StreamingResponse`,
-   `text/event-stream`) → `LLMRouter._call_provider(..., on_delta=...)`, which sets
-   `"stream": true` on the provider request and reads the response as SSE
-   (`conxa_core/llm/client.py::_iter_sse_text_deltas`) instead of one blocking `.read()`.
-   Cross-provider failover between *attempts* is unchanged (still goes through `_route`'s
-   existing pool/cooldown/quarantine logic); a failure mid-stream, after some text already
-   reached the reviewer, is not retried — the caller keeps whatever text arrived.
-2. The existing `copilot_diagnose` call, unchanged, still runs for proposals. Its own `reply`
-   field is now a fallback only, used when streaming produced nothing (see `copilot_turn`).
-
-The cloud's own SSE-ish framing to Build Studio is `data: {"delta": "..."}` per chunk and a
-final `data: {"done": true, "text": "..."}` — a proxy-internal contract, not raw provider SSE.
-Usage metering (`_meter_and_stream` in `llm_proxy_routes.py`) happens once, after the stream
-completes and the full text is known, exactly like the blocking path — never per chunk. One
-consequence of streaming that the blocking path didn't have: `record_llm_usage`'s entitlement
-bookkeeping can no longer turn a failure into an HTTP error once the reply has already streamed
-to the client (headers are long committed) — a recording failure here is only logged, not
-surfaced. BYOK has no streaming call path (`call_entry_directly` takes no `on_delta`); a BYOK
-tenant gets the streamed endpoint's shape back, but as one immediate chunk rather than
-incremental delivery.
-
-**Reasoning-only streams (BUILD-33).** A routed reasoning-capable model (observed live:
-OpenRouter's `z-ai/glm-5.3-flash`) can spend its whole completion budget on hidden
-chain-of-thought and write zero content — the stream carries real tokens (billed) but
-`_iter_sse_text_deltas` yields nothing, which used to look identical to a dead provider:
-`_route` retried the same call up to `max_retries` times before the proxy answered
-`llm_all_providers_failed`. `_iter_sse_text_deltas` now takes an optional `observed` out-param
-tracking `reasoning_chars` (from `delta.reasoning`/`delta.reasoning_content`) and the stream's
-`finish_reason`. When `_call_provider`'s streaming branch sees an empty `full_text` alongside
-reasoning chars or `finish_reason == "length"`, it raises `_DeterministicRejection` instead of
-returning `None` — `_route` already treats that as "every provider would fail this identically,"
-so it stops after one attempt without cooling the (healthy) entry, the same short-circuit the
-400/413/422 deterministic-rejection path uses. `_meter_and_stream` reports this distinctly as
-`llm_reasoning_only_no_content` rather than `llm_all_providers_failed`. Separately, `_call_provider`
-sets OpenRouter's `reasoning: {"enabled": false}` body field whenever the target entry's endpoint
-is `openrouter.ai`, gated on the endpoint rather than `entry.provider` since other OpenAI-compatible
-endpoints reject an unrecognised body key — for every task except `execute_chat` (below), which
-wants the tokens rather than paying for wasted ones.
-
-**`execute_chat` reasoning deltas (thinking).** Conxa Execute's desktop chat is the one caller that
-keeps reasoning enabled on OpenRouter and surfaces it live, rather than suppressing it as wasted
-budget. `conxa_core/llm/client.py::_iter_sse_deltas` — the tool-call-aware sibling of
-`_iter_sse_text_deltas`, used only for `execute_chat` — yields a third tagged chunk shape,
-`{"type": "reasoning", "text": ...}`, alongside its existing `"text"`/`"tool_call"` chunks whenever
-a delta carries `delta.reasoning`/`delta.reasoning_content`. `_meter_and_stream` forwards it
-unchanged over SSE (only `"text"` chunks count toward the metered `full_text`/`saw_tool_call`
-state). On the desktop side, `conxa-execute/app/electron/execute_client.js::makeChatCompletion`
-takes an optional `onDelta({type, text})` callback invoked per `"text"`/`"reasoning"` chunk as the
-stream arrives — `main.js`'s `chat:send` handler wires it to `mainWindow.webContents.send("chat:delta", {requestId, ...chunk})`,
-keyed by a per-turn `requestId` the renderer generates and passes through so a stray delta from an
-abandoned turn is dropped instead of misapplied. The renderer (`App.tsx::sendChat`) subscribes via
-`onChatDelta` (added to `preload.js`/`bridge.d.ts`) and paints both the streaming answer and a
-"Thinking…" block into a transient `streamingMsg` state, replaced by the persisted transcript once
-`loadSession` resolves after the turn completes. The `runTurn` step loop itself
-(`vendor/opencode/loop/run_turn.js`) stays delta-agnostic — it still awaits one resolved message
-per step to decide on tool dispatch; streaming is entirely out-of-band via the transport's own
-`onDelta` closure, not a change to the loop's per-step contract.
-
-`handlers/copilot.py::cmd_copilot_turn` relays each delta over the existing generic
-`{"type": "event", "id": rid, ...}` channel (`handlers/protocol.py::_event_sink`) as
-`{"phase": "copilot_delta", "text": chunk}` — the same transport `build_skill_pack_stream`'s
-`pack_log` events and compile's `compile_log` events already use, no new IPC primitive. The
-final `result` frame still carries the complete `{reply, proposals}`, so a caller that ignores
-events entirely still works. `workflowApi.ts::copilotTurn` takes an optional `onDelta` callback
-that subscribes to this phase for the duration of the call; `copilotStore.ts` holds the
-in-progress reply as `streamingText`, cleared once the turn resolves and the complete reply
-lands in `messages`.
-
-**Thinking indicator.** There is no "call started" event on this path — `LLMProxyClient`'s
-`on_api_call` sink (the `{"phase": "api_call", ...}` events `_install_proxy_router` wires) fires
-only after a call *completes*, not when it's dispatched — so the panel shows a thinking
-indicator from the moment `sending` goes true (client-side, immediate) and swaps to the
-streaming text bubble the moment the first `copilot_delta` chunk arrives.
-
-**Edit and re-send a prior turn.** Client-only (`copilotStore.ts::editFromIndex`): editing an
-earlier user message truncates `messages` to before it (and clears any pending proposal, since
-it would otherwise reference a turn no longer in the transcript) and re-seeds the composer with
-its text. Re-sending is an ordinary `copilotTurn` call against the now-shorter history — the
-backend needs no changes since it was already stateless per call.
-
-**Proposal gating** (`conxa_compile/editor/copilot_proposals.py::gate_proposals`). Every raw
-`{step_key, field, patch, why}` object from the model is pre-validated through the SAME
-`patch_gate.py::validate_editor_patch` a manual `cmd_patch_step` call clears, restricted to
-`value` / `input_binding` / `intent` / `semantic_description` / `validation.assertions` — a
-proposal that fails any check is dropped silently, never shown broken. At accept time,
-`resolve_step_index` re-resolves the proposal's `step_key` against the CURRENT document and
-refuses (`proposal_stale`) if it is gone — an insert/delete/reorder between proposal and accept
-must never land the patch on the wrong step. Accept then delegates to the existing
-`cmd_patch_step` handler itself (one RPC call, `handlers/copilot.py::cmd_accept_copilot_proposal`)
-rather than duplicating mutation logic — same undo entry, same `patch_gate` re-run, same
-`edits.jsonl` line a manual edit produces.
-
-**Decision log — shares BUILD-25's `edits.jsonl`, not a second file.** `edit_log.py::append_edit`
-gained `source` (`"human"` default, `"copilot"` when `backend.py::dispatch()` sees the top-level
-command `accept_copilot_proposal`) and `proposal_id`. A **rejection** changes no document, so the
-diff-based `dispatch()` hook writes nothing on its own — `append_decision` logs it directly into
-the same file (`decision: "rejected"`, `step_key`, `field`, `why`, no `before`/`after`), so the
-correction dataset never keeps only the flattering half. `conxa-cloud/scripts/eval_suggestions.py`
-reports the copilot's own accept rate from these lines, alongside BUILD-25's override rate.
-
-**Session archive, not a decision log (added 2026-09-10).** `copilot_save_session`
-(`conxa_compile/editor/copilot_sessions.py`) is a separate, simpler append-only file —
-`{CONXA_DATA_DIR}/skills/{skill_id}/copilot_sessions.jsonl`, one `{ts, skill_id, messages}` line
-per archived conversation — not another line in `edits.jsonl`, since it captures the whole prose
-transcript rather than a field-level diff. The renderer calls it from the panel's "new session"
-button right before clearing the in-memory conversation (Zustand `reset()`), so switching topics
-never silently drops the prior thread; a no-op for an empty transcript, and fails silently on a
-disk error like every other append log in this pipeline (never blocks starting the fresh
-session). Known, accepted gap: an undecided pending proposal at the moment of "new session" is
-dropped with no `append_decision` line — the archive captures the prose, not the proposal state.
-
-**Deleted as part of building this:** `cmd_list_runs`/`cmd_get_run` (`handlers/runs.py`) read
-`data/runs/*.jsonl`, a file nothing in the codebase ever wrote — confirmed by repo-wide search
-while scoping this feature. Removed along with the renderer's dead `fetchRuns`/`fetchRun`, rather
-than left beside the new `cmd_get_failure_evidence` reader, which is exactly what led this
-feature's own spec to believe a run log already existed.
-
-**Verified retest loop (stage e).** `handlers/copilot.py::cmd_copilot_verify` is the one new RPC.
-Two-phase: `confirmed=false` (default) only counts the workflow's steps whose compiled
-`consequence == "irreversible"` (PROD-3's own classification, already on every step and already
-in the evidence bundle) and returns `{status: "confirm_required", irreversible_count,
-irreversible_steps}` — no build, no browser. `confirmed=true` runs
-`self.cmd_build_skill_package` then `self.cmd_test_workflow` as plain method calls (accepting a
-proposal always makes the workflow stale — `workflow_stale` — so the rebuild is not optional),
-relaying both commands' own progress events plus a `copilot_verify` phase into the panel. The
-verdict compares the new run's `failed_step_key` (a fresh `build_evidence_bundle(skill_id,
-run_id=<the new run's id>)`, never the workflow's stale `last_test_run_id` fallback) against the
-step under verification: `fixed` (passed), `still_failing` (same step), `progressed` (a
-different step now fails). A `status: "cancelled"` result (EXEC-35) writes no verdict at all —
-recording one would poison the correction dataset with a false label. `cmd_test_workflow` now
-returns its run's `run_id` directly (`_active_test_runs[workflow_id]["run_id"]`) rather than
-being inferred from the workflow record, and `_CommandError("workflow_test_failed", ...)` now
-carries `run_id` too (`protocol.py::_CommandError`'s new optional field), so the failure path has
-it without re-deriving it.
-
-Known ceiling on the pre-flight count, deliberate: `classify_consequence` only marks a
-destructive/commit **click** irreversible, while the runtime's `isNonIdempotent`
-(`runtime/app/step_utils.js`) also treats `upload`/`keyboard_shortcut`/`drag_drop`/
-`set_checkbox`/`set_radio` as non-reversible. The two are not mirrored into one table — the
-Studio-side pre-flight runs before a browser exists (it can't call runtime JS), so it reads the
-one source already compiled into the step. The confirm copy names what it actually counted
-("N steps that commit or destroy data") and always states the run acts against the real system,
-rather than implying a full audit.
-
-`evidence.json` gained four fields from the halt flags already computed on `err` at
-`_writeStudioEvidence`'s call site but never persisted before now: `action_may_have_taken_effect`,
-`recovery_halt_reason`, `destructive_halt`, `verify_fail` — without them the copilot could not
-tell "the click may already have fired" from "the element was never found."
-
-The verdict is written by a third `edit_log.py` function, `append_verification` — alongside
-`append_edit`'s "accepted" and `append_decision`'s "rejected", into the same `edits.jsonl`, one
-line: `{command: "copilot_verify", source: "copilot", proposal_id, decision: <verdict>, step_key,
-run_id, why: <message>}`. `conxa-cloud/scripts/eval_suggestions.py::copilot_verified_fix_rate`
-reports it.
-
-**Overlay identity capture and branch-insertion proposals (stage f).** Case 2 of the spec ("a
-popup sometimes appears — add a condition") needed an `IdentityBundle` for an overlay the
-compiler never recorded. Writing one from the model would break the "LLM does not write selector
-strings" invariant, so the shape is a **second proposal kind**, not a wider `gate_proposals` field
-allow-list: the model emits `{overlay_id, control_index, primitive, after_step_key, why}` — an
-index into the run's captured overlay set plus a choice of primitive (`try_dismiss` /
-`if_present`) — and every selector is materialized by deterministic Python. The model never
-writes one.
-
-*Capture.* `runtime/app/cascade.js`'s `dismiss-overlay` remedy — the one point the runtime already
-knows something is covering the target (an `INTERCEPTED` classification) — probes the page
-(`page_scripts.js::overlayProbe`, enriched: `controls` now carry the same six fields
-`resolver.js::scoreCandidate` reads — role/name/text/testid/anchorNeighbors — via a
-`controlDescriptor` helper duplicated from `extractDescriptor` rather than calling it, since
-`page.evaluate()` re-parses `overlayProbe`'s source standalone and cannot close over a sibling
-function; `container` gained a `signal`, built by the same id > role > css-path ladder
-`recorder/bridge.js::buildDialogSignal` uses) and writes it via new `runtime/app/
-overlay_capture.js::recordOverlayObservation` — regardless of whether the dismissal attempt
-succeeded, and regardless of whether the step ultimately passes. This is deliberately the ONE
-place a passing run's overlay is ever captured: `_writeStudioEvidence` only runs on failure.
-Writes `runs/{run_id}/_evidence/overlays.jsonl` (creating the `_evidence/` directory itself,
-since a passing run never creates it otherwise), deduped on container signal within a run. `runId`
-threads down as an explicit parameter (`server.js` → `run.js::runPlan`'s options →
-`cascade.js::recoverStep`/`layer1Ladder`) rather than a module-level var, because several runs can
-be active concurrently (RT-3) and a shared mutable "current run" would race between them.
-
-*Reading.* `editor/evidence.py::_read_runtime_evidence` now reads `evidence.json` and
-`overlays.jsonl` **independently** — a missing `evidence.json` (the passing-run case) must not
-also hide the overlay captures. Exposes `runtime_evidence.observed_overlays`, each entry's
-`step_index` resolved to a `step_key` the same way `failed_step_key` already is.
-
-*Synthesis.* New `editor/overlay_identity.py::bundle_from_descriptor` — pure, no LLM. Builds
-`testid` / `css-id` / `role`+`name` / `text_based` candidates from one control descriptor via the
-SAME durability table and orthogonality classes the primary compiler uses
-(`compiler/selector_score.py::rank_by_durability`, `compiler/selector_grammar.py`), filtered
-through the same `selector_filters.selector_passes_filters` gate a compile-time signal clears.
-Signals carry `source="runtime"` — a new value alongside `IdentitySignal.source`'s documented
-`compiler | llm | input_bound | user`. `unique_at_compile` is always `False` (no DOM snapshot to
-verify against). `stable_hash` is computed directly via `compiler/stable_hash.py::
-compute_stable_hash`, not matched byte-for-byte against the runtime's own live computation —
-`resolver.js` only uses `stable_hash` as a scoring tie-breaker (`resolver.js:201`), never a gate,
-so an internally-consistent Python-side hash is sufficient. Returns `None` when nothing survives
-filtering, and the caller then only offers `try_dismiss` (which needs no bundle at all).
-
-*Gating.* `editor/copilot_proposals.py::gate_overlay_proposals`. Drops a proposal whose
-`overlay_id` names nothing this evidence bundle observed. `try_dismiss` routes through
-`compiler/second_opinion.py::build_try_dismiss_from_hint` — its **third caller**, alongside the
-compiler's second opinion and the editor's `confirm_optional_interstitial`, so all three ways a
-try_dismiss branch gets built stay one shared shape. `if_present` sets the scaffold's
-`target.primary_selector` to the overlay's container signal plus one nested `click` step whose
-`identity_bundle` comes from `bundle_from_descriptor`; if the container has no signal at all, the
-proposal silently downgrades to `try_dismiss` rather than ever emitting an `if_present` with an
-empty `target` — `skill_package_builder_saved_skill.py::_saved_branch_step` returns `None` (the
-step silently vanishes from `execution.json`) when `_step_selector(step)` is empty, so this is a
-gate-time defense against that trap, not just a code comment. Every resulting patch is run through
-`patch_gate.py::validate_editor_patch` before the proposal is ever shown — the nested step's
-patch with `in_branch_body=True`, matching `cmd_patch_step`'s own `path`-addressed validation.
-
-*Accept.* `handlers/copilot.py::cmd_accept_copilot_proposal` branches on the proposal's `command`.
-`insert_overlay_branch` composes three existing, already-gate-validated RPCs as plain method
-calls — `cmd_insert_step` (scaffold), `cmd_patch_step` (top-level fields), and for `if_present`
-only `cmd_insert_branch_step` + a second `cmd_patch_step` with `path="branch.steps[0]"` for the
-nested click — no new mutation logic. `after_step_key` is re-resolved against the current
-document at accept time exactly like `resolve_step_index` does for `patch_step` proposals,
-refusing `proposal_stale` if it's gone. All three (or four) internal calls land inside ONE
-`cmd_accept_copilot_proposal` dispatch, so `edit_log.py::append_edit`'s before/after document diff
-(computed once by `backend.py::dispatch()`, wrapping the whole handler call) captures the entire
-insertion as one attributed batch — known ceiling: several internal undo pushes means several
-undo presses to fully undo one accept, not a single compound entry. `cmd_reject_copilot_proposal`
-accepts a missing `step_key` for this proposal kind (it inserts rather than edits) and logs
-against `f"overlay:{overlay_id}"` instead, keeping `edits.jsonl` one shape.
-
-**Stage g — capability manifest, digest context, retrieval loop, structural ops, session
-resume.** Four additions, none changing the propose/dispose contract above.
-
-*Capability manifest* (`conxa_compile/editor/capability_manifest.py::build_capability_manifest`).
-Generated from the SAME data `patch_gate.py` enforces — the per-kind `*_ALLOWED_KEYS` constants
-`validate_editor_patch` itself now reads (extracted so gate and manifest can never drift, being
-one object rather than two hand-synced lists) plus `action_registry.py`'s kind/category/
-insertable/selector/value sets — so the model is told exactly what the gate will accept, never
-more. The only hand-maintained content is `RUNTIME_NOTES`, one line per kind naming what the
-runtime actually does with it (`ai_review` pauses and never enters recovery; `for_each` requires
-`max_iterations`; `recovery.max_attempts`/`no_recovery_block` are never read at all). Sent once
-per Copilot session, cached module-level.
-
-*Digest context* (`evidence.py`'s `detail="digest"` on `build_evidence_bundle`). Every step as a
-compact triage row — description, action kind, intent, phase, consequence, compile confidence,
-has-assertions/has-branch/has-for_each — with NO heavy fields (target/identity_bundle/
-compiled_selectors/validation/recorded_event) on any step, not even the failing one. Replaces the
-old always-full bundle on the copilot's own path (`handlers/copilot.py::cmd_copilot_turn`); every
-other caller keeps the original `detail="full"` behaviour unchanged. Also carries `inputs` and a
-new `prior_decisions` block (every prior copilot accept/reject for this skill, from `edits.jsonl`,
-capped at 30) so the model stops re-proposing what a reviewer already turned down.
-
-*Retrieval loop* (`conxa_compile/editor/copilot_retrieval.py` + `llm/copilot.py::copilot_turn`).
-The cloud proxy has no tool-calling primitive and the provider pool is uneven on the ones that do,
-so retrieval rides the existing `copilot_diagnose` JSON contract instead: the model may return a
-`need` array of `{tool, args}` entries — `expand_step`, `get_step_screenshot`,
-`get_failure_evidence`, `get_edit_history`, `list_workflows`, each a thin wrapper over a reader
-that already existed — resolved and folded back into the SAME base `user_text` as a `Fetched:`
-block for up to `MAX_RETRIEVAL_ROUNDS` (2) extra `copilot_diagnose` calls. The streamed
-`copilot_reply` call never participates — it gets the digest once and answers in prose
-immediately; only the `copilot_diagnose` proposals side loops. `get_step_screenshot`
-(`copilot_retrieval.py::_get_step_screenshot`) resolves a step's recorded screenshot to a
-filesystem path via `retarget.py::find_source_event` + `assets.py::resolve_skill_asset` — never a
-URL, since this is read server-side and re-encoded exactly like the failure screenshot
-(`llm/copilot.py::_encode_screenshot`).
-
-*A third proposal kind — typed structural ops* (`copilot_proposals.py::gate_structural_proposals`).
-`{op, why, evidence_refs, ...}` where `op` is `insert_step` / `delete_step` / `move_step` /
-`update_inputs` / `replace_literals`. Every op requires non-empty `evidence_refs` (unlike the two
-pre-existing kinds, which keep evidence_refs optional/cosmetic for backward compatibility) — a
-proposal with none is dropped before the reviewer ever sees it. The selector rule is enforced
-exactly once, here: `insert_step` of a kind in `SELECTOR_ACTIONS` is refused unless it names
-`identity_from_step_key`, an EXISTING step whose `identity_bundle`/`target` are then copied
-verbatim by Python — the model names a source, it never writes a signal. A kind outside
-`SELECTOR_ACTIONS` (`ai_review`, `handover`, `wait`, `check`, `assert`, `navigate`, `scroll`,
-`screenshot`) never needs one and is refused if one is given anyway (a model error, not silently
-ignored). The widened field allow-list for `patch_step`-style edits
-(`copilot_proposals.py::_ALLOWED_FIELDS`) now also covers `consequence`,
-`entity_binding.confirmed`, `branch.timeout_ms`, `for_each.max_iterations`,
-`for_each.on_row_error`, `handler_hints.hover_chain`, and the `ai_review_*`/`handover_*` families
-— every field that changes execution behaviour without touching an element address. `recovery`
-stays excluded: the runtime never reads its tunables (see CLAUDE.md's Key Invariants correction).
-
-Accept (`handlers/copilot.py::_accept_structural_proposal`) applies one or more ops as a single
-all-or-nothing batch: it snapshots the document once, runs each op through the SAME `cmd_*` RPC a
-manual edit uses (`cmd_insert_step`, `cmd_patch_step`, `cmd_delete_step`, `cmd_reorder_steps`,
-`cmd_update_workflow_inputs`, `cmd_replace_literals` — no new mutation logic), and on any failure
-restores the pre-batch snapshot and discards every undo entry the batch's own `cmd_*` calls
-pushed, so a partial structural change is never left half-applied. On success it collapses
-however many undo entries the batch pushed down to exactly ONE — the pre-batch snapshot — fixing
-the multi-undo-entry ceiling `_accept_overlay_branch_proposal` above accepted as unavoidable for
-its own (smaller, fixed-shape) composition.
-
-*Session resume* (`copilot_sessions.py::load_last_session`, new RPC `cmd_copilot_load_session`).
-The session archive (`copilot_sessions.jsonl`) was write-only before this — a reviewer reopening
-Human Edit always started the copilot cold. Reads the last archived transcript's `messages` back
-(scanning from the end, falling back past a corrupt trailing line rather than failing outright);
-`copilotStore.ts::ensureFor` now fires this fire-and-forget the first time a skill's panel opens
-in a session, guarding against a stale resume landing after a newer conversation has already
-started.
-
-### 7.3 SkillPackage Output Schema
+### 7.6 SkillPackage Schema
 
 ```python
 SkillPackage:
-  meta: SkillMeta                      # id, version, title, source_session_id
-  inputs: list[dict]                   # parameterizable inputs schema
-  skills: list[SkillBlock]             # one block per workflow
+  meta: SkillMeta                     # id, version, title, source_session_id, visited_hosts
+  inputs: list[dict]                  # input schema
+  skills: list[SkillBlock]
     └── steps: list[SkillStep]
-          action: str | dict            # action type + params
-          intent: str                   # human-readable intent
-          tab: dict                     # {id, index, opened_by, opener_tab} — empty = tab_0 (§9.1a)
-          element_fingerprint: ElementFingerprint
-            role, tag, inner_text, aria_label, name,
-            placeholder, label_text, alt, title, data_testid,
-            input_type, css_class_tokens, anchor_phrases,
-            position_hint
-          compiled_selectors: list[str] # ranked CSS/XPath selectors
-          validation: ValidationBlock
-            assertions: list[Assertion] # url_changed, url_pattern, selector_present/absent,
-                                         # text_present/absent, value_equals, state_changed
-          recovery: RecoveryBlock
-            intent, anchors, strategies, confidence_threshold
+          action: str | dict
+          intent: str
           semantic_description: str
-          snapshot_ref: str             # DOM snapshot blob ref
+          phase: str
+          tab: dict                   # {id, index, opened_by, opener_tab}
+          frame: dict                 # iframe chain
+          identity_bundle: IdentityBundle
+          element_fingerprint: ElementFingerprint
+            role, tag, inner_text, aria_label, name, placeholder, label_text, alt,
+            title, data_testid, input_type, css_class_tokens, anchor_phrases, position_hint
+          compiled_selectors: list[str]
+          validation: ValidationBlock
+            assertions: list[Assertion]   # url_changed, url_pattern, selector_present/absent,
+                                          # text_present/absent, value_equals, state_changed
+          handler_hints: HandlerHints     # control_kind, date_picker, choice, hover_chain
+          branch / for_each / ai_review_* / handover_*   # §11
+          consequence, destructive
+          recovery: RecoveryBlock
+          snapshot_ref: str
   intent_graph: WorkflowIntentGraph    # goal, steps, decision_points
-  compile_report: dict                  # status, steps_total, min_confidence
+  compile_report: dict                 # status, steps_total, min_confidence, second_opinion, archived_steps
 ```
 
-### 7.3a Contract vs. Executor Boundary (ARCH-3 design note)
+Full field reference: `docs/Backend-Schema.md` §3.
 
-Browser replay is the first pluggable executor backend, not the permanent one — the plan is
-to graduate individual skills onto a native API connector where one exists (PROD-7) and,
-longer-term, to support a computer-use-style agent executor. Conxa's defensible position is
-the layer *above* the executor: per-step intent, verification, entity bindings, and audit
-requirements. That position only survives if the skill schema keeps those two concerns
-separated as it evolves, rather than letting Playwright/DOM assumptions bleed into fields that
-are supposed to describe intent and success criteria.
+### 7.7 Contract vs. Executor Boundary
 
-`skill_spec.py` now tags every field `[contract]` (executor-independent — must hold for any
-future executor) or `[executor]` (browser-replay implementation detail — free to change per
-backend). The full per-class breakdown lives in `docs/Backend-Schema.md` §3.0; that table is
-the source of truth and must be kept in sync with the code. Two consequences for future schema
-work:
+Browser replay is the first executor, not the last: skills may graduate to native API connectors (PROD-7) or a computer-use executor. Conxa's value is the layer above the executor (intent, verification, entity bindings, audit). So `skill_spec.py` tags every field `[contract]` (must hold for any executor) or `[executor]` (browser-replay detail). `docs/Backend-Schema.md` §3.0 is the source of truth.
 
-- **EXEC-1's branch primitives** (`if_present`/`try_dismiss`/`wait_for_one_of`) must define
-  their condition in contract terms (an identity/state check) with browser-specific evaluation
-  kept on the executor side — see the `branch` row in Backend-Schema.md §3.0.
-- **Any new `SkillStep`/`SkillPackage` field** must be tagged at introduction and the
-  Backend-Schema.md §3.0 table updated in the same change; an untagged field is a review
-  omission.
+- Branch primitives define their condition in contract terms (identity/state), with browser evaluation on the executor side.
+- Every new `SkillStep`/`SkillPackage` field must be tagged at introduction and added to `docs/Backend-Schema.md` §3.0 in the same change (ARCH-3).
 
-This is a documentation-and-review-discipline item, not a refactor — no runtime behavior
-changed. See `TODO.md` ARCH-3.
 
 ---
 
-## 8. Skill Packaging Pipeline
+## 8. Skill Packaging
 
 **Location:** `conxa-builder/python/conxa_compile/skill_package_builder.py`
 
-After compilation, `build_skill_package(workspace_id)` gathers all workflows in the workspace and produces a data-only skill package folder:
+`build_skill_package(workspace_id)` gathers every workflow in the workspace into a data-only package:
 
 ```
 output/skill_package/{workspace_dir_slug}-skill-package/
-├── skill_package.json   (manifest: workspace_id, display_name, skills[])
-├── CLAUDE.md            (rendered from skill_package_templates/skill_package/Claude.md.tmpl)
-├── index.md             (rendered from skill_package_templates/skill_package/index.md.tmpl)
-├── pack.json            (version manifest)
-└── skills/
-    └── {skill_slug}/
-        ├── execution.json   (compiled steps + selectors)
-        ├── recovery.json    (recovery blocks + anchors)
-        └── inputs.json      (input schema)
+├── skill_package.json   workspace_id, display_name, skills[]
+├── CLAUDE.md, index.md  rendered from skill_package_templates/skill_package/
+├── pack.json            groups, skill_groups, sync/tracking (§5.3.1, §5.4)
+└── skills/{group_id|_default}/{skill_slug}/
+    ├── execution.json   compiled steps
+    ├── recovery.json    recovery blocks + anchors
+    ├── inputs.json      input schema
+    ├── manifest.json    group_id, unclaimed_hosts, target_url, …
+    └── validation.json
 ```
 
-**Invariant:** Auth files (`auth.json`) are NEVER placed in the build output. The `build_installer` command explicitly checks and refuses if `auth.json` is found under the skill pack dir.
+**Invariant: auth never enters build output.** `skill_package_builder.py` excludes `auth/` and credentials. `handlers/workflows.py` refuses both publish and installer build if any `auth.json` is found under the built pack.
 
-The installer (`installer_builder.py`) wraps this with NSIS to produce a per-user `.exe` (no UAC) that:
-1. Installs the skill pack to `$PROFILE\.conxa\skill-packs\{company}\`.
-2. Installs `conxa-runtime.exe` + `keytar.node` + `conxa-app\` (pre-extracted app layer) to `$PROFILE\.conxa\`.
-3. Installs Chromium to `$PROFILE\.conxa\chromium\` (via `conxa-runtime.exe --install-playwright`, run with `CONXA_DIR` set explicitly to `$PROFILE\.conxa` so it lands in the same place the runtime reads from later).
-4. Registers the MCP server by invoking `conxa-runtime.exe register-mcp` (see §4.2a) — every detected agent host (Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, and 20+ more), not just the two Claude surfaces, ownership-checked and atomically written.
+**Installer** (`installer_builder.py` + `installer_templates/setup.nsi.tmpl`): a per-user NSIS `.exe` (no UAC) that
+1. stages `conxa-runtime.exe` + `keytar.node` into `conxa-runtime/<ver>/` and the app layer into `conxa-app/<ver>/`, with `current` junctions;
+2. runs `conxa-runtime.exe --install-playwright` with `CONXA_DIR` set, so Chromium lands where the runtime reads it;
+3. stages only `pack.json` into `skill-packs/{ws}/` (§5.5), then runs `conxa-runtime.exe sync` to pull the released skills (the `min_host` gate applies, §4.1);
+4. runs `conxa-runtime.exe register-mcp` (§4.3) with `CONXA_ENV`/`CONXA_UPDATE_CHANNEL` set; the uninstaller runs `unregister-mcp`.
 
 ---
 
 ## 9. Execution Pipeline
 
-**Location:** `runtime/run.js`
+**Location:** `runtime/app/run.js` (+ `handlers.js`, `resolution.js`, `tabs.js`, `cascade.js`)
 
-### 9.1 Step Execution Loop
+### 9.1 Step Loop
 
-**`runPlan`'s top-level loop is a thin `for` over `executeOneStep(ctx, state, steps, i)`** — the
-per-step body below, extracted (EXEC-38) so `for_each`'s loop body can call the exact same
-function per row instead of the best-effort, no-recovery path other branch primitives use (§10.7,
-§10.8). `ctx` is run-constant config (tabs, watch, dryRun, slug, the tracker/cancelCheck/onStep
-callbacks); `state` is what steps mutate across the run (recoveredSteps, prevPage/prevStepType,
-warnings, dryRunSkipped, and the flat `inputs` namespace). For each step in `execution.json`:
+`runPlan` is a thin `for` over `executeOneStep(ctx, state, steps, i)`. `for_each` reuses the same function per row (§11.2). `ctx` is run-constant (tabs, watch, dryRun, slug, tracker, cancelCheck, onStep, runId, hostRunId). `state` is mutated across steps (recoveredSteps, prevPage/prevStepType, warnings, dryRunSkipped, the flat `inputs` namespace).
 
 ```
-1. Poll pause signal (control file: allow pause/resume via API)
-2. waitForPageLoad() — waits for domcontentloaded (+ networkidle if CONXA_WAIT_NETWORKIDLE=1) after a navigation-triggering step
-3. waitForUrlState() — pre-step URL gate (if step.url defined)
-4. executeStep() — primary action
-   ├── interpolate input variables ({{variable}} substitution)
-   ├── resolveStep() — IdentityBundle resolution over the live DOM
-   │   ├── Tier A: exception ladder, then a11y re-probe / transient retry / re-hover /
-   │   │           dialog-scope — same element or uniqueness-gated (in-process, zero-token)
-   │   └── Tier B: armed agent recovery — ranked digest + screenshots + reference image →
-   │               Claude nominates, runtime verifies (agent-mediated; ceiling ≥ 3, two rounds)
-   └── withLocator() — perform the action
-5. verifyStep() — check Assertion[] (§10.2a) independently of the action's own success
-   ├── required (enforced) assertion → verify-fail descends into recovery, re-verified on
-   │   every re-run; unrecovered → step (and run) fails, never silently continues
-   └── advisory assertions → log warning only
-6. writeCheckpoint() — step-level recovery point
-7. tracker.emit() — telemetry event
+1. poll the pause control file
+2. waitForPageLoad()          only after a NAVIGATION_STEP_TYPES step (§9.3)
+3. waitForUrlState()          pre-step URL gate, if step.url is set
+4. resolveStepPage()          live page for step.tab (§9.2)
+5. executeStep()
+   ├── interpolate {{inputs}}
+   ├── resolveStep()          IdentityBundle resolution (§10.2)
+   ├── withLocator()          GATE, then the action handler (handlers.js)
+   └── on miss: settle retry (§9.3) → recovery cascade (§10.1)
+6. verifyStep()               assertions, independent of the action's own success (§9.5)
+7. writeCheckpoint()          step-level resume point
+8. tracker.emit()             telemetry
 ```
 
-### 9.1a Multi-Tab Step Resolution
+There's no artificial pacing between steps. The whole run is bounded by `EXECUTION_DEADLINE_MS` (`server.js`, 210 s default via `CONXA_EXECUTION_DEADLINE_MS`), sized to return an actionable failure inside Claude Desktop's ~240 s tool timeout.
 
-**Location:** `runtime/tabs.js`
+**Short-circuits that skip recovery:** `isAuthFailure` (login redirect, §5.3.7) and errors marked `badInput` (wrong caller input, such as an unmatched choice, a folder for a single-file control, or a missing download). Re-finding the element can't fix those, so they must never spend Tier B tokens.
 
-Each compiled step's optional `tab` block (`SkillStep.tab` — id/index/opened_by/opener_tab, empty
-means the initial page) is resolved to a live Playwright `Page` fresh on every step, the same
-declarative-per-step pattern `frame_chain` uses for iframes (§10.2a) rather than stateful enter/exit
-handling. `runPlan()` creates one `tabs.js::createTabRegistry(startPage)` per run, binding `tab_0` to
-the run's initial page and registering the browser context's `"page"` listener immediately — before
-any step executes — so a tab opened by an early step is queued even if a later step is the first one
-to ask for it (this is the race a lazily-registered listener would otherwise have).
+### 9.2 Multi-Tab Step Resolution
 
-`resolveStepPage(registry, step)`:
-1. No `tab` (or `tab.id === "tab_0"`) → the initial page. Every skill compiled before multi-tab
-   support has no `tab` on any step, so it takes this path unchanged for every step.
-2. Already bound and still open → that page, reused.
-3. `opened_by === "site"` → drain the queue first, else `context.waitForEvent("page")`
-   (`CONXA_TAB_OPEN_TIMEOUT_MS`, default 30s).
-4. `opened_by === "user"` → nothing on the recorded page ever opens this tab (it was a Ctrl+T at
-   record time), so the runtime creates it itself via `context.newPage()`. The recorded first action
-   on that tab is a `navigate`, which then runs normally against the fresh page.
-5. Unresolvable → throws with `.tabNotFound = true`. **Never falls back to the current page** — the
-   same rule `rootCandidates()`/`isFrameNotFound()` (§10.2a) apply to a missing frame: a
-   same-looking element on the wrong tab is worse than a clean, diagnosable failure.
+**Location:** `runtime/app/tabs.js`
 
-**The registry never hands out a page it has already bound to a tab.** `createTabRegistry` tracks
-a `bound` set alongside `pendingPages` — seeded with the initial page, and added to every time a
-page is bound to a tab id (drained from the queue, returned by `waitForEvent`, or created via
-`context.newPage()` for an `opened_by: "user"` tab). The step-3 drain and the step-4 `newPage()`
-call both add their result to `bound` before returning. This matters because Playwright fires the
-context's `"page"` event for *every* new page, including ones the registry creates itself — so
-without `bound`, a blank page created for a user-opened tab (step 4) would sit in `pendingPages`
-and could be handed straight back out as a *different*, later, site-opened tab (step 3), pointing
-two different `tab.id`s at the same page. This was the actual defect behind a workflow that opens
-a tab manually (Ctrl+T) and later gets a real popup: the popup step drained the manually-opened
-tab's own blank page instead of waiting for the real popup, and every subsequent step ran against
-the wrong page.
+Each step's `tab` block resolves to a live `Page` fresh on every step: declarative, like `frame_chain`, not stateful enter/exit. `runPlan` creates one `createTabRegistry(startPage)` per run, binding `tab_0` and registering the context `page` listener before any step runs, so an early-opened tab is queued.
 
-Resolving a named tab also settles it before returning (`_settle`): waits for `domcontentloaded`
-up to `opts.loadTimeoutMs` (the caller, `run.js`, passes `PAGE_LOAD_TIMEOUT_MS` —
-`CONXA_PAGE_LOAD_TIMEOUT_MS`, default 60s), and, **only for a site-opened tab**
-(`opened_by !== "user"`), first waits for the page to leave `about:blank` if it's still there — a
-`target="_blank"` popup is created blank and navigates a beat later, so without this a step could
-fire before the tab has actually loaded anything. This wait is gated on `opened_by` rather than
-running unconditionally: a **user-opened** (Ctrl+T) tab is created blank by this registry itself
-(step 3 above) and stays blank until the compiler's own synthesized `navigate` step runs against
-it — nothing external is ever going to navigate it — so waiting for it to leave `about:blank`
-would just burn the full `loadTimeoutMs` twice for no reason: once resolving the `tab_open` marker
-step, again resolving the `navigate` step that immediately follows it on the same tab. Both waits
-are best-effort; a tab that never leaves `about:blank` still proceeds rather than hard-failing. The
-`navigate` step handler's own `page.goto()` and the runtime's `url_changed`/`url_exact`/
-`url_pattern`/`url` assertion timeouts share this same 60s default — a slow site (e.g. a cold
-Vercel deployment) gets one consistent page-load budget everywhere it matters, not the 15s/8s
-patchwork of hardcoded values this replaced. This does eat into `run.js`'s whole-run wall-clock cap
-(`EXECUTION_DEADLINE_MS` in `server.js`, 210s default, sized to return an actionable failure inside
-Claude Desktop's ~240s MCP client timeout) faster than before on a workflow with several genuinely
-slow navigations; `CONXA_EXECUTION_DEADLINE_MS` remains the escape hatch for Build Studio-only
-testing.
+`resolveStepPage(registry, step, {prevPage})`:
+1. No `tab` or `tab_0` → the initial page.
+2. Already bound and open → reuse.
+3. `opened_by: "site"` → drain the queue, else `context.waitForEvent("page")` (`CONXA_TAB_OPEN_TIMEOUT_MS`, default 30 s).
+4. `opened_by: "user"` → `context.newPage()` (the recorded `navigate` step then loads it). Under Execute, `host_browser.newTab` (§4.7).
+5. Unresolvable → throw `.tabNotFound`. **Never fall back to the current page.**
 
-`tab_open`/`tab_switch`/`popup` steps have empty handlers in `run.js` — the tab switch they mark
-already happened via `resolveStepPage()` before `executeStep()` runs for any step, including these
-markers themselves. They are declared explicitly rather than folded into `NOOP_STEP_TYPES`, so "no-op
-step type" isn't read as "nothing happens around this step" for the one category where something very
-much does.
+- **A bound page is never handed out again.** The registry tracks a `bound` set (initial page, drained pages, and pages it created). Playwright fires `page` for pages the registry creates too, so without it a blank Ctrl+T page could be returned as a later popup.
+- **Settling:** whenever execution moves to a different page than the previous step (including returning to an open tab), wait for `domcontentloaded` up to `CONXA_PAGE_LOAD_TIMEOUT_MS` (default 60 s), plus `bringToFront()` under watch. Site-opened tabs first wait to leave `about:blank`; user-opened tabs don't (nothing else will navigate them). Both waits are best-effort. The same 60 s budget applies to `navigate`'s `goto()` and URL assertions.
+- **Foreground reclaim:** Chromium foregrounds every new tab, including unreferenced popups, and background tabs get rAF/timers throttled (stalling Playwright's `stable` check). The `page` listener sets `foregroundStale`; the next step settles with `forceFront` (even headless) and emits `foreground_reclaimed`. Calling `bringToFront()` on every step was rejected because concurrent watch runs would fight for focus.
+- **Markers:** `tab_open`/`tab_switch`/`popup` have explicit empty handlers (the switch already happened in `resolveStepPage`). `stepInheritsPage(step)` keeps a marker with no `tab` block on the current page, a guard for legacy or mis-stamped packs; new packs always carry explicit blocks.
+- **Diagnostics follow tabs:** `server.js` attaches console/request/download listeners to every tab. Parks and failure responses use `runErr.failedPage`.
+- **Cleanup:** `closeExtraTabs` (per-call `_openedTabs`) closes extra tabs on every exit path; a parkable failure keeps only the parked tab. This matters because headless browsers are cached and reused.
 
-**A tab marker with no `tab` block at all inherits the current page instead of resolving `tab_0`.**
-`tabs.js::stepInheritsPage(step)` is true only for a `tab_open`/`tab_switch`/`popup` step whose
-`tab` field is absent — the shape a mis-stamped recorder event produces (§6.3's `download`/`dialog`/
-`popup` src-page fix addresses the recorder side; this is the runtime-side guard for packs compiled
-before that fix, and any other case the recorder mis-stamp handles miss). `run.js`'s step loop
-checks this before calling `resolveStepPage` and, when true, keeps executing on the page the run
-was already on. Since 2026-08-23 this guard never fires on a *newly compiled* pack: `_build_tab_context`
-emits an explicit block for every tab including `tab_0`, so a return-to-the-initial-tab `tab_switch`
-marker names its destination and resolves like any other tab. The guard exists purely as a
-legacy-pack/mis-stamp fallback — before that compiler change, a return-to-`tab_0` marker carried an
-empty block, was swallowed by this guard, and its destination was only recovered implicitly by the
-next real step's tab_0 default.
+### 9.3 Page-Load Waiting & Settle Fallback
 
-**Every cross-page step settles — including returns to an already-open tab** (`tabs.js::resolveStepPage`,
-`opts.prevPage`). Resolution settles a step whenever it moves execution to a different page than the
-previous step ran on: load-state wait always, `bringToFront()` under watch mode. Previously only
-newly-created/found pages settled; the implicit jump back to `tab_0` returned the cached page raw, so
-the A→B→A return leg replayed with no wait and no visibility change while clicks fired at a background
-tab. Same-page steps skip the settle — `run.js`'s `waitForPageLoad` already covers their
-post-navigation load wait.
+The only inter-step wait is `waitForPageLoad()` after a step whose type is in `NAVIGATION_STEP_TYPES`: `domcontentloaded`, plus `networkidle` when `CONXA_WAIT_NETWORKIDLE=1`.
 
-**A page the runtime does not own also moves the foreground** (`tabs.js`, `registry.foregroundStale`).
-The rule above tracks *which page the steps run on*; it cannot see the browser's own foreground
-moving. Chromium hands the foreground to every newly created tab, so a site-opened popup — even one
-no step ever references — leaves every following same-page step driving a background tab: invisible
-under watch, and with rAF/timers throttled, which stalls Playwright's actionability `stable` wait.
-The registry's existing `context.on("page", ...)` listener now sets `foregroundStale`;
-`_settleIfSwitched` consumes and clears it, and a set flag suppresses the same-page early return so
-the step settles with `forceFront`. `forceFront` deliberately ignores `watch` — throttling applies
-headless too — and emits a `foreground_reclaimed` phase marker. Rejected alternative: calling
-`bringToFront()` on every step, which would make concurrent watch-mode runs (§4.5) fight for the OS
-foreground continuously rather than only on switches.
+**Settle fallback** (`runtime/app/settle.js`): the compiled `wait_for` shape is inferred from one recorded load (`validation_planner.py::infer_wait_for_shape`) and lowered into assertions at compile time, so it can under-wait on a slow day. After an ordinary resolution or verify miss, and before recovery, settle polls `page_scripts.js::settleSignature` (text length, interactive count, node count, visible busy indicators) until two consecutive samples match with no busy indicator (`CONXA_SETTLE_BUDGET_MS` 8000, `CONXA_SETTLE_POLL_MS` 250).
 
-`server.js` attaches its per-page diagnostics (console errors, failed requests, downloads) to every
-tab opened during a run (`_context.on("page", _attachPageListeners)`), not just the initial one —
-previously a download triggered from a second tab was never captured at all. On a step failure, the
-Tier B park (§10.1) and the failure response use the tab the failing step actually ran on
-(`runErr.failedPage`), not always the initial page, so the recovery request's DOM fingerprint
-describes the page that failed.
+If the page actually changed, the step retries once. A step whose action never dispatched retries action + verify. A step that may have acted (`verifyFail`/`mayHaveActed`) is only re-verified, so non-idempotent steps (`step_utils.js::isNonIdempotent`) are never double-submitted.
 
-**Extra tabs are closed on every exit path** (`tabs.js::closeExtraTabs`, EXEC-14). A second
-`_context.on("page", ...)` listener feeds a per-call `_openedTabs` set; every exit path — success,
-cancelled, session-expired, non-parkable failure, and the parkable-failure branch (which keeps only
-the tab being parked) — closes everything in that set it isn't keeping. Without this, a tab opened
-mid-run was closed only when `watch: true` closed the whole browser context; in the default headless
-path, whose browser is cached and reused per-company (`browser.js`), an unclosed extra tab would
-otherwise leak for the life of that cache.
+Kill switch: `CONXA_SETTLE_RETRY=0`. Telemetry: `settle_retry`, and `tier_ok` with `tier1_compiled_settled`.
 
-### 9.2 Page-Load Waiting
+### 9.4 File Uploads
 
-There is no artificial per-action pacing — steps execute back-to-back as fast as resolution and
-the target page allow. The only wait between steps is `waitForPageLoad()`, and only when the
-*previous* step's type is in `NAVIGATION_STEP_TYPES` (i.e. could have triggered navigation): it
-waits for `domcontentloaded` (and `networkidle` too, if `CONXA_WAIT_NETWORKIDLE=1`) before the
-next step resolves against the new page. Non-navigation steps have no inter-step wait at all.
+Browsers expose only `File.name`, so nothing recorded is a valid path on the replay machine. Uploads are parameterized end to end (download binding: §7.2).
 
-(Earlier revisions added randomized human-like delays per action type and a minimum
-"observer pause" after navigation, gated by `CONXA_HUMAN_PACING` and a per-company
-`pack.pacing.observer_ms` — both were removed to make execution as fast as the page allows.)
-
-**Settle-detection fallback (EXEC-37).** The compiled `wait_for` shape is inferred from ONE
-observed page load at record time (`validation_planner.py::infer_wait_for_shape`) and never
-reaches the runtime directly — it is lowered into `validation.assertions` at compile time
-(`build.py::_build_assertions`). A single observation is calibrated to whatever network/server
-conditions happened to exist during that one recording, so it silently under- or over-waits on a
-slow morning, a cold cache, or a server under load. `runtime/app/settle.js` adds settle detection
-as a **failure-path fallback only** — after an ordinary resolution/verify miss, before the
-recovery cascade — never as a new inter-step wait, so a currently-passing run's timing is
-unaffected. It polls a page-shape signature (`page_scripts.js::settleSignature`: text length,
-interactive-element count, total node count, visible busy-indicator count) through the
-`page_eval.js` deadline seam until two consecutive samples match with no busy indicator, or a
-budget (`CONXA_SETTLE_BUDGET_MS`, default 8000ms, poll `CONXA_SETTLE_POLL_MS`, default 250ms)
-expires. If the page actually had to wait (more than one poll interval), `run.js` retries once:
-a step whose action never dispatched gets the whole action + verify retried; a step whose action
-may already have landed (`verifyFail`, or `mayHaveActed` — the same signal `cascade.js`'s own
-guard uses at EXEC-24) only gets re-verified, never re-acted, so a non-idempotent step
-(`step_utils.js::isNonIdempotent`) can never be double-submitted by the retry itself. Kill switch:
-`CONXA_SETTLE_RETRY=0` restores today's behavior exactly. Emits `settle_retry` telemetry
-(§12.1) on every attempt, `tier_ok` with `tier: "tier1_compiled_settled"` on a successful retry.
-
-### 9.3 File Upload Steps
-
-A browser never exposes a picked file's full path — only `File.name` — so **nothing captured
-while recording can ever be a valid upload target on the machine that replays the skill**. Upload
-steps are therefore always parameterised, end to end:
-
-| Stage | Behaviour | Where |
+| Stage | Behavior | Where |
 |---|---|---|
-| Record | Native OS picker is suppressed and replaced by the Studio's own dialog (§6.1, §7.1); the resulting `set_files()` call still fires the input's `change` event via CDP, and `bridge.js` emits `upload_intent` off it, carrying `JSON.stringify(files)` metadata (`[{name, size, type}]`) for **every** file selected — a multi-select is captured in full — never a path. `upload_intent` never gets its own extracted screenshot/frames — the click that opens the file picker, recorded immediately before it, already has one, and clicking the input again on replay is exactly the reopen-an-undrivable-dialog case the Clean row below exists to prevent, so a second, near-identical screenshot would just be waste | `recorder/session.py`, `bridge.js`, `recorder/frame_extractor.py` |
-| Clean | An `upload`/`upload_intent` on a file input **supersedes any earlier click/focus on the same target**, even when another click (e.g. Drive's "File upload" menu item) sits between them. Immediate-predecessor merge is not enough: those sites programmatically activate a hidden file input, so the recorder emits click(file), click(menu), upload(file). Replay must never see the file-input click — it is often a 0×0 control whose compiled identity is garbage, and clicking it reopens an OS dialog nothing can drive unattended. Other value-set actions still merge only the immediate predecessor | `compiler/step_anchors.py::clean_steps` |
-| Compile | A file input is **not** an "editable target", so the click→focus rewrite never fires on it (the runtime's `focus` handler clicks before it focuses, which would reopen the dialog) | `compiler/action_semantics.py::is_editable_target` |
-| Bind | Uploads always bind to the input name `file_path`, never a label-derived name — otherwise "File Uploader" / "Attach document" / "Upload CSV" would each yield a differently named input for the same concept | `compiler/input_binding.py::derive_input_binding` |
-| Package | Recorded file *metadata* is recognised explicitly (it is truthy JSON, so an `or` fallback would pass it through as if it were a path) and replaced with `{{file_path}}`; a literal path or custom placeholder typed by hand in Human Edit is preserved as authored. The auto-declared input's description is enriched with the recorded example filename and states that **a folder path may be given** when the page's control accepts more than one file. It deliberately does **not** claim how many files the control takes — that is a property of the live page (`multiple`), not of how many files happened to be picked while recording, and a single-file recording against a multi-select control is normal | `skill_package_builder_saved_skill.py::_upload_input_descriptions` |
-| Execute | `interpolate()` → `trim()` → strip one matching pair of surrounding double quotes (Windows Explorer's "Copy as path" quotes any path containing spaces, and Node only treats a bare drive letter as absolute — a quoted path would be silently joined onto the runtime's CWD) → **if the result is a directory, expand it to every file directly inside** (non-recursive, subdirectories excluded, naturally sorted so `invoice-2` precedes `invoice-10`) → `locator.setInputFiles(paths)`. Hidden file inputs skip the pre-action visibility GATE (`attached` only) — a 0×0 Drive input is never "visible". A page-level `filechooser` listener suppresses the native OS picker so a recorded "File upload" menu click cannot hang a headed run. An empty resolved path, or a folder containing no files, **throws** rather than skipping: silently not uploading a document while reporting success is this action's worst failure mode. `server.js`'s required-input gate should already have rejected the empty case; this is defence in depth | `runtime/run.js::resolveUploadPaths`, `HANDLERS.upload`, `resolution.js::gateLocator` |
-| Gate | When more than one file resolved, the handler asks the **live element** whether it accepts multiple (`locator.evaluate(el => el.multiple)`) before acting. An explicit `false` throws a `badInput` error naming the file count and what to pass instead; an unreadable probe stays permissive and lets `setInputFiles` have its say. `badInput` surfaces immediately from `withLocator`'s retry loop and **skips the recovery cascade entirely** in `runPlan` — re-finding the element cannot fix wrong input, and letting it reach Tier B would spend LLM tokens on a caller mistake the message already explains. Same short-circuit shape as the `isAuthFailure` check beside it | `runtime/run.js::HANDLERS.upload`, `withLocator`, `runPlan` |
-| Validate | An upload's recorded `state_diff` rarely shows a URL or DOM change (most sites don't react until a later, separate submit), so without a fallback the compiled step got **zero** assertions — unlike a consequential click, which already synthesizes a required `state_changed` check when it has no other evidence. Upload now shares that same fallback: a required `state_changed` assertion whenever nothing stronger (a real `url_change`, a promoted `selector_present` from genuine recorded DOM evidence) already claimed the enforced slot. No runtime change — `state_changed` was already a generic, target-less assertion type | `compiler/build.py::_build_assertions` |
+| Record | Studio's own picker (§6.1). `upload_intent` carries `[{name,size,type}]` for every selected file, never a path, and gets no frames of its own (the preceding click has them) | `session.py`, `bridge.js`, `frame_extractor.py` |
+| Clean | An `upload`/`upload_intent` supersedes every earlier click/focus on the same file input, even with a menu click between (sites activate hidden inputs programmatically). Replay must never click a file input | `step_anchors.py::clean_steps` |
+| Compile | File inputs aren't "editable", so no click→focus rewrite (the `focus` handler clicks first) | `action_semantics.py::is_editable_target` |
+| Bind | Always the input name `file_path` | `input_binding.py::derive_input_binding` |
+| Package | Recorded metadata (truthy JSON) is detected and replaced with `{{file_path}}`; hand-typed paths are kept. The input description gives the example filename and says a folder may be passed when the control accepts multiple files (it doesn't claim a count) | `skill_package_builder_saved_skill.py::_upload_input_descriptions` |
+| Execute | `interpolate` → trim → strip one pair of surrounding quotes ("Copy as path") → a directory expands to its direct files, naturally sorted → `setInputFiles`. Hidden inputs skip the visibility GATE (`attached` only). A page `filechooser` listener suppresses native pickers. An empty path or empty folder **throws** | `run.js::resolveUploadPaths`, `HANDLERS.upload`, `resolution.js::gateLocator` |
+| Gate | Multiple files against a live `el.multiple === false` → `badInput` (skips recovery). An unreadable probe stays permissive | `HANDLERS.upload`, `withLocator`, `runPlan` |
+| Validate | Uploads rarely change URL or DOM, so a required `state_changed` assertion is added when nothing stronger claimed the enforced slot | `build.py::_build_assertions` |
 
-Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_skill_package_builder.py`, `test_phases.py`,
-`test_recorder_session.py`, `test_element_fingerprint.py` (assertion synthesis), `test_frame_extractor.py`
-(screenshot skip).
+Tests: `runtime/test/test_upload.js`, `conxa-cloud/tests/test_skill_package_builder.py`, `test_phases.py`, `test_recorder_session.py`, `test_element_fingerprint.py`, `test_frame_extractor.py`.
+
+### 9.5 GATE & VERIFY
+
+**GATE** (`resolution.js::gateLocator`, before every action): attached → visible → RAF-stable (bounding box unchanged across two frames) → enabled (`disabled`/`aria-disabled`). Confidence-adaptive budget, zero LLM. Hidden file inputs need only `attached`.
+
+**VERIFY** (`run.js::verifyStep` + `assertions.js`, after every action): checks the step's compiled assertions independently of whether the action itself succeeded.
+
+| Type | Meaning |
+|---|---|
+| `url_changed` / `url_pattern` | URL moved / matches |
+| `selector_present` / `selector_absent` | element appears / disappears |
+| `text_present` / `text_absent` | text appears / disappears |
+| `value_equals` | field value (normalized, with a contains fallback for masked/formatted fields) |
+| `state_changed` | some observable effect: URL, interactive count, or body-text delta beyond noise |
+
+- **One required assertion per consequential action** (submit click, destructive confirm, text entry, select, upload), chosen by `build.py::_build_assertions`. Everything else is advisory. A required failure descends into recovery and is re-verified after every remedy; unrecovered, the step and run fail. Advisory failures are only recorded.
+- **Evidence preference:** recorded `post_condition` (§6.5) beats generic `wait_for`/`success_conditions` inference. `dialog_opened` claims the required slot as `selector_present` on `dialog_signal`; `value_set` uses `value_readback` as `value_equals.expected`; `dom_diff` is the `content_change` fallback. `state_changed` is synthesized for commit/destructive clicks and uploads with no other evidence. `validation_planner.py::infer_success_conditions` demotes ephemeral elements (`selector_filters.py::is_ephemeral_anchor`: banners, toasts) to advisory `text_present`.
+- **Web-first polling:** positive checks retry every `VERIFY_POLL_INTERVAL_MS` (250 ms) until `timeout_ms`. Negative checks must still hold after `NEGATIVE_STABILIZE_MS` (500 ms). `pollPositive`/`pollNegative` race each predicate against the remaining time via `withDeadline`, so a stuck `evaluate` can't hang the run.
+- **Native dialog pending:** with `dialogQueue` non-empty, `verifyStep` returns `{pass: true, channel: "dialog_pending"}` without touching the page (the renderer is blocked, and "a dialog opened" is the real post-condition).
+- **Full audit:** every assertion is evaluated; `results: [{type, target, required, ok, elapsed_ms}]` is returned. The primary path emits one `verify_result` event per step with assertions (`{si, ok, n, advFail}`). A required failure attaches `verifyResults` and `earlyDomSnapshot` to the error.
+- **Fleet view:** `tracking._assertion_health_by_step` powers `assertion_health_by_step` on `/tracking/dashboard` (Self-healing page `/dashboard/healing`, worst first) and feeds the health score.
+- **Editor:** `StepConfigForm.tsx`'s Validation card (`components/validation/AssertionEditor.tsx`, shared with the re-target wizard) saves via `patch_step`. `patch_gate.py::validate_editor_patch` runs in `cmd_patch_step` and rejects removing a consequential step's only required assertion.
+
+**Native dialogs at replay.** The loop looks one step ahead. When the next step is `dialog_accept`/`dialog_dismiss`, it arms `page.once("dialog", …)` before dispatching the current step, so the dialog resolves the instant it opens (`docs/Backend-Schema.md` §3.4h).
+
+### 9.6 Safe Actions (PROD-3)
+
+- **Destructive classification:** `destructive_semantics.classify_consequence()` marks click steps whose intent matches the destructive vocabulary, or commit/submit actions. Serialized as the execution step's top-level `destructive` (`_copy_saved_common`) and `consequence` (`reversible`/`irreversible`/…).
+- **No re-identification on destructive steps:** `cascade.js::recoverStep` skips only the a11y re-probe (which resolves by accessible name and could land elsewhere) and emits `destructive_reidentify_skipped`. Same-selector stages still run. The EXEC-24 action guard separately blocks re-dispatch when the first attempt may have landed. `run.js` sets `destructiveHalt` from `step.destructive` whenever recovery fails (`test_cascade_destructive.js`).
+- **Entity binding** (`compiler/entity_binding.py`, `EntityBinding` on `SkillStep`): for targets inside repeating rows, a `container_selector` matching every row plus an `identifier` (preferring a run input over the recorded text). `resolution.js::entityRoots` requires exactly one matching row; zero or several → `entityNotFound`, never the unscoped page. Primary and recovery resolution both narrow through it.
+- **Halts are terminal:** `destructiveHalt` and `entityNotFound` are excluded from `parkable`, and `failure_response.js` returns a plain message, not a candidate digest.
+- **Publish gate:** an irreversible step with an unconfirmed detected entity binding can't be saved (`patch_gate.py::irreversible_step_requires_confirmed_entity_binding`) or published (`handlers/workflows.py::_require_confirmed_entity_bindings`).
+- **Dry run** (`dry_run: true`): destructive steps are resolved (fail closed if not findable) but not executed or verified. Skipped steps are returned as `dryRunSkipped` (`{index, intent}`), and `server.js` names them in the response.
+- **Stage-then-commit lint** (`compiler/commit_ordering.py::lint_commit_ordering`): advisory `compile_report["commit_ordering_warnings"]` when an irreversible step is followed by another writing step (ignoring `MARKER_ACTIONS` and read-only steps); nearest offender only.
+- **Compensation skill:** `SkillMeta.compensation_skill` (a sibling slug set in Human Edit; sidecar `compensation_skill.json` → `manifest.json`). On a failure with `actionMayHaveTakenEffect`, `server.js` names it as an available next step and never runs it automatically.
+- **Strict Mode:** §10.1.
+- Open: before/after screenshots and a per-skill safety score (`PROD-3-UI`).
+
+Tests: `test_dry_run.js`, `test_cascade_destructive.js`, `conxa-cloud/tests/test_commit_ordering_lint.py`.
+
+### 9.7 Pre-Execution Checks (advisory)
+
+Both run before step 0, never block, and push plain-language messages into a shared `warnings: string[]` that `server.js` appends to `execute_skill`'s response on success and failure (via `err.warnings`), deduped across an `execute_sequence`.
+
+**Drift gate** (`runtime/app/drift.js::detectPreExecDrift`): the pack's `structural_fingerprint` (~3 interactive landmarks, `_build_structural_fingerprint`, carried into `manifest.json`) is located on the live page (testid → aria-label → primary selector → text) and scored with the pure resolver. If ≥ 50% score below 0.5, it emits `drift_detected`. The cloud aggregates these as `pre_exec` in the `/drift` response.
+
+**Environment mismatch** (`runtime/app/env_match.js::compareEnvironment`, pure): compares the recorded `environment.json` (§6.1; carried as `SkillMeta.environment` → skill dir → `manifest.json`) with the live `pageScripts.environmentSignature`:
+- **locale:** primary language subtag differs (region-only doesn't warn);
+- **timezone:** UTC offset differs;
+- **viewport:** width differs by > 25% or crosses a 1024/768 px breakpoint.
+
+Emits `env_mismatch`. Role isn't captured (no reliable source). The exec context deliberately doesn't pin locale, timezone, or viewport (only the auth window's `STEALTH_CONTEXT_OPTIONS` does); this warns, it doesn't normalize.
+
 
 ---
 
 ## 10. Recovery Architecture
 
-### 10.1 Two-Tier Recovery Cascade + Ceiling
+### 10.1 Two-Tier Cascade & Ceiling
 
-> This table is the canonical, authoritative recovery reference — `README.md`, `AGENTS.md`, `docs/PRD.md`, `docs/App-Flow.md`, and `docs/cost_model.md` all link here rather than repeating it. Docs describing a "4-tier" or "5-tier" cascade predate the 2026-09 redesign below and are stale; the internal tier *numbers* (1–4) survive in `CONXA_MAX_RECOVERY_TIER`, `manifest.json`'s `max_recovery_tier`, and the `recovery_tier{N}` telemetry codes, but there are two behavioural tiers.
+> **Canonical recovery reference.** `README.md`, `AGENTS.md`, `docs/PRD.md`, `docs/App-Flow.md`, and `docs/cost_model.md` link here. There are **two behavioral tiers**. Internal tier numbers 1–4 survive in `CONXA_MAX_RECOVERY_TIER`, `manifest.json`'s `max_recovery_tier`, and `recovery_tier{N}` telemetry. Any doc describing a 4- or 5-tier cascade is stale.
 
-**The 2026-09 redesign — why two, and why split here.** The old cascade was ordered by *cost*: two free deterministic tiers, then two paid agent tiers. That optimises spend, not healing rate, and one rung actively worked against the goal. Two of the old T2 stages (`recoverWithFallbackSelectors`, `recoverWithFuzzyText`) **guessed a different element by text affinity and clicked `.first()` with no uniqueness gate**. A wrong click *mutates the page*, and the agent tier runs afterwards — so a missed guess did not merely fail, it handed the most capable tier a page that no longer matched the recording, and nothing downstream could undo that. Both stages were deleted; their upside is covered by the agent tier, which reasons over a ranked digest and has its pick re-verified before it acts.
->
-> The surviving split is by **problem class, not cost**: Tier A fixes *when* (timing, obstruction — the element was right, the moment was wrong, and no model can improve on that); Tier B fixes *identity* (the element genuinely moved). The invariant that makes Tier A safe: **it may change when or where it looks, never which element it settles for.**
+**The split is by problem class, not cost.** Tier A fixes *when* (timing, obstruction: the element was right, the moment was wrong). Tier B fixes *identity* (the element really moved). **Tier A may change when or where it looks, never which element it settles for.** Stages that guessed a different element by text affinity and clicked `.first()` were deleted: a wrong click mutates the page and hands Tier B a state that no longer matches the recording.
 
-**Auth failures short-circuit the cascade.** A login redirect is not a selector/DOM problem Tier A can fix — before entering the cascade, `run.js` checks `isAuthFailure(page, steps)` (URL/title heuristic) and, if true, fails the step immediately rather than spending Tier A's ~10s budget against a login page. **A login page the recording itself navigated to is exempt** (2026-09-02): a skill can legitimately drive a login form as ordinary work, and the URL heuristic cannot tell that apart from a session that died. `isAuthFailure` first compares the live URL (query/hash/trailing slash stripped) against every `navigate` step's recorded `url` in this skill and returns `false` on a match — the recording deliberately went there, so it is not a redirect. Without this, such a step lost its entire A/B cascade *and* was reported to the user as "your saved sign-in expired" for an app the failing step never touched. `server.js` passes the same `steps` to its own post-failure check. The argument is optional, so callers that do not pass it keep the pre-existing behaviour. `server.js` then routes it through the non-blocking interactive-login flow (`docs/Auth-and-Updater.md` §1.3) instead of the Tier B agent-recovery payload — no screenshot, no DOM inventory, just an instruction to sign in and resume.
+**Before the cascade:** `run.js::isAuthFailure(page, steps)` (URL/title heuristic) fails the step immediately on a login redirect (§5.3.7). A login page the recording itself navigated to is exempt: the live URL (query, hash, and trailing slash stripped) is compared against every `navigate` step's recorded `url`. `badInput` errors also skip the cascade (§9.1).
 
-When step resolution fails to find the target (and it isn't an auth failure):
-
-| Tier | Fixes | Mechanism | LLM Cost | Where |
+| Tier | Fixes | Mechanism | LLM | Where |
 |---|---|---|---|---|
-| **A — Reflex**<br>(internal T1/T2) | **Timing and obstruction.** The element was correct; the moment was wrong. | L1 exception ladder (re-resolve / scroll / dismiss-overlay / wait-stable / wait-enabled / wait-navigation) over all bundle signals, then a11y re-probe (role+name **through the matcher**, fingerprint-checked and uniqueness-gated), a transient retry, re-hover for menu reveals, and dialog-scope (the **same** selector re-searched inside an open dialog) | Zero | `cascade.js::recoverStep` (in-process) |
-| **B — Reasoning**<br>(internal T3/T4) | **Identity**, and **unrecognized obstruction**. The element genuinely moved, was renamed, now lives inside a menu, or is covered by a never-recorded overlay Tier A's known-pattern ladder didn't match. | One **armed** payload: browser-use-style ranked indexed candidate digest of the live page + step intent + expected post-condition + executed-steps trace + failure screenshot + pre-step screenshot + recording-time reference image when present + a live overlay probe when Tier A saw an unmatched `INTERCEPTED` failure. Claude nominates a `candidate_index` (target) and/or a `dismiss` pick (overlay); the runtime re-verifies both. | Yes (text + vision) | Agent-mediated handoff (`failure_response.js`) |
+| **A: Reflex** (internal T1/T2) | Timing and known obstruction | L1 exception ladder over all bundle signals (re-resolve, scroll, dismiss-overlay, wait-stable, wait-enabled, wait-navigation), then Layer 2: a11y re-probe (role+name through the matcher, fingerprint-checked, uniqueness-gated), transient retry (+250 ms), re-hover for menus, dialog scope (same selector inside an open dialog) (§10.3) | Zero | `cascade.js::recoverStep`, in-process; CI-guarded by `check_recovery_purity.js` |
+| **B: Reasoning** (internal T3/T4) | Identity, and unrecognized obstruction | One **armed** payload: ranked indexed candidate digest, step intent, expected post-condition, executed-steps trace, failure + pre-step screenshots, recording-time reference image when present, overlay probe when relevant. The agent nominates; the runtime verifies | Text + vision | Agent-mediated: `failure_response.js` responds to `execute_skill`; the client resumes by calling it again |
 
-**Tier A is in-process and zero-token** (`cascade.js::recoverStep`, CI-guarded by `check_recovery_purity.js`). **Tier B is agent-mediated**: the runtime never calls Claude Desktop — it *responds* to `execute_skill` with a recovery request, and the client resumes by calling `execute_skill` again.
+The runtime never calls the model itself for Tier B.
 
-**Every Tier B round is armed.** This replaced a split where round one was text-only and screenshots were withheld for a separate later round. That was a token-cost lever and it inverted the priority: the first round is the likeliest to succeed, so it is the one that should be best armed. Withholding saved tokens on the attempts that were going to work anyway, and cost a whole wasted round-trip — the entire 40k-char digest re-sent — on the ones that actually needed the pictures. `recovery_stage.js::nextRecoveryTier` now depends only on the ceiling. A failed step gets **two** rounds (`STAGNATION_LIMIT`), and round two is not a re-roll: it carries what round one nominated and what that pick actually matched, so the agent iterates. This is the **closing edge** of the cascade.
+#### Tier B payload
 
-**Tier B grounding — ranked indexed digest (`candidate_digest.js`).** Borrowed from browser-use's serialized-DOM presentation with two documented departures: (a) **rank-then-cap, never positional truncation** — candidates are ranked against the recorded target's identity signals (anchor-text affinity > testid/id match > role match > tag affinity), then serialized as numbered lines `[i] role=… name="…"` under browser-use's 40k-char budget, stopping whole-entry; (b) **the integer index is a transient prompt convenience only**, never durable identity — durable identity stays the compiled IdentityBundle.
+- **Every round is armed.** The first round is the likeliest to succeed, so it gets the screenshots. `recovery_stage.js::nextRecoveryTier` depends only on the ceiling. A step gets **two rounds**; round two carries round one's nomination and what it actually matched.
+- **Ranked digest** (`candidate_digest.js`): candidates are ranked against the recorded identity (anchor-text affinity > testid/id > role > tag), then serialized as `[i] role=… name="…"` up to 40k chars, whole entries only. **Rank-then-cap, never positional truncation.** The index is a transient prompt handle, never durable identity.
+- **Current-state grounding** (`server.js::_buildFailureResponse`): the inventory is captured live after Tier A ran (remedies can change the page). The pre-cascade snapshot (`run.js::captureEarlyDomSnapshot`) is included, labeled, only when it differs. Also: compiled assertions, which assertion failed on a verify-fail, an executed-steps trace, and an instruction that the live page is ground truth and the reference image may be outdated.
+- **The past:** `recorded_context` (parent, siblings, index, enclosing form from `bridge.js::captureAncestors`, emitted into `recovery.json` by `_recorded_context_for_saved_step`, rendered by `recordedContextBlock`); `visual_ref` (the recording screenshot, §10.2); `phase` (`_phase` via `handlers.js::enrichStepsWithRecovery`, rendered by `phaseHintBlock`). The reference image is described only when actually attached, since describing a missing image invites invention.
 
-**Reflection contract.** The Tier B prompts ask the agent to resume with `step_overrides: { "<idx>": { "candidate_index": <n>, "confidence": <0-1>, "why": "<one line>" } }`; an explicit `{ "selector": … }` remains supported for compatibility. A nominated index is resolved to a derived selector (`[data-testid] > #id > internal:role[name] > text`, captured when the digest was built, stored per skill in `recovery_stage.js`) and pushed through the same uniqueness gate as an explicit selector below — the LLM nominates, the runtime verifies.
+#### Closing edge: `step_overrides`
 
-**Unrecognized-overlay dismissal (EXEC-30, 2026-09).** Tier A's known-pattern ladder (`dismiss_patterns.js::KNOWN_DISMISS_SELECTORS`) resolves most consent-toolkit popups for free, but a never-recorded, non-toolkit overlay (an A/B promo modal, a permission prompt, a one-off variant) falls through it with nothing tried. Rather than growing that list forever, Tier B gets a dedicated path: when an `INTERCEPTED` classification survives the known-pattern ladder untouched, the failure is flagged `unknownOverlay`, and `failure_response.js` runs a live **overlay probe** (`page_scripts.js::overlayProbe` — hit-tests three viewport points, walks to the outermost `dialog`/`role=dialog`/`aria-modal`/`fixed`/`sticky` ancestor covering ≥5% of the viewport) independently of the ordinary 50-entry, DOM-order-truncated inventory, so a late-appended modal is never silently cut out. Its controls are merged into the ranked digest tagged `[overlay]`, and the failure text names the overlay and offers a `"dismiss"` field inside `step_overrides` — `{ candidate_index }`, `{ selector }`, or `{ escape: true }`, composable with a target override in the same entry. The nominated control is never trusted blindly: `dismiss_patterns.js::dismissAgentNominated` reads its live accessible-name-ish label and clicks it only if `isSafeDismissLabel` passes — an explicit allow-list (close/dismiss/cancel/skip/not now/no thanks/×) beats a deny-list (confirm/accept/agree/allow/submit/save/delete/remove/pay/buy/order/subscribe/decline/reject/opt-out), deny wins on conflict, and an unlabeled icon button is trusted only inside dialog/modal chrome. This is PROD-3's "no guess on irreversible actions" rule applied to dismissal: a dialog asking the agent to commit to something is not incidental and is never auto-dismissed. A successful dismissal is applied once (immediately before the resumed step's own action, never in place of it) and written to the host-scoped learned store (`learned_dismissals.js`), so a repeat occurrence on that host clears at Tier A for zero tokens next time — `tierb_overlay_dismissed` / `overlay_dismiss_rejected` in `recovery.log`. Scoped to **runtime replay only**; does not touch record-time `optional_hint`/`try_dismiss` (§3.4d, `Backend-Schema.md`).
+`execute_skill` accepts `step_overrides: {"<idx>": {"candidate_index": n, "confidence": 0-1, "why": "…"}}` (preferred) or `{"selector": "…"}`, keyed like `resume_from`, optionally with a `dismiss` field (below).
 
-**Stagnation hard cap.** browser-use detects frozen pages softly (PageFingerprint nudge); the runtime flips that to a hard stop: if the page fingerprint is unchanged across consecutive recovery rounds — `STAGNATION_LIMIT = 2` identical rounds — further paid rounds are refused (`recovery_stagnant_stop`) and the step fails deterministically. The first identical round is still allowed: round two carries the previous nomination and what it actually matched, so the agent iterates rather than re-rolling. What stops is anything beyond that.
+- A `candidate_index` resolves to a selector derived when the digest was built (`[data-testid]` > `#id` > `internal:role[name]` > text, stored per skill in `recovery_stage.js`). A stale index is reported as `agent_override_rejected {reason: "stale-candidate-index"}` and the next response carries a fresh digest.
+- The selector is injected via `_explicit_selector` (`run.js::applyStepOverrides`) and validated (`validateOverrideSelector`) against the recorded fingerprint. A unique match passes. A multi-match passes only if the `scoreCandidate` winner clears the uniqueness margin. No match or a tie is rejected (never `.first()`), and a fresh request reports what the selector matched.
+- Overrides are honored only at ceiling ≥ 3, so a stray override can't rewrite a Studio test.
 
-**Recovery ceiling (`CONXA_MAX_RECOVERY_TIER`, 1–4, default 4).** Tier A always runs; the env var caps whether the agent-mediated handoff happens at all:
-- **Claude / MCP execution → ceiling 4** (default): Tier A, then Tier B armed, up to two rounds.
-- **Ceiling 3**: identical to ceiling 4 since the 2026-09 redesign. It previously meant "semantic rounds only, never spend image tokens"; that opt-out was removed deliberately — one payload shape above the Studio ceiling means a pack can no longer be armed for one round and starved for the next. The value is still accepted so existing packs and hosts keep working.
-- **Build Studio sandbox → ceiling 2** (`conxa_runtime.py` sets `CONXA_MAX_RECOVERY_TIER=2`): no agent handoff, unchanged. A step surviving Tier A fails deterministically so the compiled pack is judged on its own merits — there is no agent in a headless Studio run to act on a recovery request.
+**Page parking** (`recovery_park.js`): recovery spans calls, so on a parkable failure (single run, ceiling ≥ 3, selector/verify failure, not auth/cancel/halt) the live page, context, and browser are parked per `${workspace_id}:${slug}` with a fingerprint (`capturePageFingerprint`: URL + interactive count + visible-text hash) and a TTL (`CONXA_RECOVERY_PARK_TTL_MS`, 180 s). On resume the fingerprint is recomputed. A diverged page discards the park and refuses the override. With no matching park, the resume is refused and the agent is told to restart the skill (never a silent fresh page mid-plan). Events: `recovery_park_created`/`_resumed`/`_discarded`/`_state_mismatch`, `recovery_resume_refused`.
 
-**What Tier B is given about the PAST (2026-09).** The ranked digest describes the page as it is now, which answers "what is here?" but not "what changed" — and drift is a change. Two blocks supply the other half of that comparison:
+**Stagnation cap:** if the page fingerprint is unchanged across `STAGNATION_LIMIT = 2` rounds, further rounds are refused (`recovery_stagnant_stop`).
 
-- **`recorded_context`** — the target's neighbourhood at recording time: parent element, surrounding siblings, index among them, enclosing form. Compiled from signals the recorder already captured (`bridge.js::captureAncestors`'s sibling `context`, surviving into the saved skill via `build.py`'s `signals["context"]`), emitted per step into `recovery.json` by `_recorded_context_for_saved_step`, and rendered by `failure_response.js::recordedContextBlock`. A few hundred bytes; rides the existing sync; works offline. This is what turns "cannot find this button" into "it used to sit in the toolbar next to Export".
-- **`visual_ref`** — the recording-time screenshot, delivered by the artifact pass below.
-- **`phase`** (BUILD-25 stage e, 2026-09-10) — which part of the workflow this step belongs to (`login`/`navigate`/`act`/`verify`/`cleanup`), when the compiler's second-opinion pass labeled it. Carried onto `recovery.json` by `_build_saved_skill_recovery`, mapped onto the live step as `_phase` by `handlers.js::enrichStepsWithRecovery`, and rendered by `failure_response.js::phaseHintBlock` — a one-sentence prior ("this step is in the login phase") absent on any step the pass never ran on or didn't label.
+**Retry budget:** `RETRY_BUDGET_MAX = 3` per (skill, step index). The map is process-wide and persists across MCP calls. `runPlan` clears the running skill's slice at the start of every call (as well as on success), so a failed run doesn't leave the next run pre-exhausted.
 
-`failure_response.js` describes the reference image **only when it is genuinely attached**. Describing it unconditionally (which it did until 2026-09, against a file that never synced) invited the model to invent what it showed, in the one tier that decides where to click.
+#### Unrecognized overlays
 
-### 10.1a Recovery artifact delivery
+When an `INTERCEPTED` failure survives Tier A's known-pattern ladder (`dismiss_patterns.js::KNOWN_DISMISS_SELECTORS`), it's flagged `unknownOverlay`. `failure_response.js` then runs `page_scripts.js::overlayProbe`: hit-test three viewport points, walk to the outermost `dialog`/`role=dialog`/`aria-modal`/fixed/sticky ancestor covering ≥ 5% of the viewport, independent of the truncated inventory. Its controls join the digest tagged `[overlay]`, and the agent may add `dismiss: {candidate_index} | {selector} | {escape: true}`.
 
-Code files are what execution needs; artifacts are what *recovery* needs, and only when a step fails. Shipping them on one path would make every start wait for bytes almost no run reads, so the sync runs two passes and only the first one gates anything.
+`dismissAgentNominated` clicks only if `isSafeDismissLabel` passes:
+- allow-list: close, dismiss, cancel, skip, not now, no thanks, ×;
+- deny-list: confirm, accept, agree, allow, submit, save, delete, remove, pay, buy, order, subscribe, decline, reject, opt-out;
+- deny wins; an unlabeled icon button is trusted only inside dialog chrome.
 
-| | Pass one — code | Pass two — artifacts |
+The dismissal is applied once, just before the resumed action, and learned per host (`learned_dismissals.js`) so the next occurrence clears at Tier A for free. Events: `tierb_overlay_dismissed`, `overlay_dismiss_rejected`. Replay only; record-time `try_dismiss` is separate (§11.1).
+
+#### Ceiling
+
+`CONXA_MAX_RECOVERY_TIER` (1–4, default 4). Tier A always runs.
+- **MCP → 4:** Tier A, then Tier B for up to two rounds.
+- **3:** same as 4 (kept for compatibility).
+- **Build Studio sandbox → 2** (`conxa_runtime.py`): no handoff, so a pack is judged on its own merits.
+
+**Strict Mode** (PROD-3): a pack's `manifest.json` may set `max_recovery_tier`. The effective ceiling is `min(host, pack ?? host)` (`server.js::_effectiveRecoveryTier`) and is used for every agent-mediated decision. Status endpoints report the host baseline. Set per build via `CONXA_STRICT_MODE_MAX_TIER` (`skill_package_builder_output.py`); no Studio toggle yet.
+
+**Observability:** `mcp_connected`, `execute_start`, and `get_runtime_status` report `max_recovery_tier`. The recovery log records `recovery_ceiling_reached`, `agent_recovery_requested` (`tier`, `round`), `agent_override_applied`/`_rejected`, `recovery_stagnant_stop`, `retry_budget_exhausted`, and the park events.
+
+### 10.2 Recovery Artifact Delivery
+
+Execution needs code files; recovery needs artifacts, and only on failure. So sync runs two passes and only the first gates anything.
+
+| | Pass 1: code | Pass 2: artifacts |
 |---|---|---|
-| Content | `execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json` (`_CODE_FILES`) | everything else in the skill dir; today `visuals/` |
-| Transport | inline base64 in the delta response | one zip per skill, `POST …/skill-packs/{slug}/artifacts` |
-| Timing | awaited, inside `syncSkillPacks`' hard timeout — **the execution gate** | started in `finally`, **never awaited** |
-| Failure | records `last_sync_errors`, skill shows as failed | logged only; never a sync error, never blocks a run |
+| Content | `_CODE_FILES`: execution, recovery, inputs, manifest, validation JSON | everything else (today `visuals/`) |
+| Transport | inline base64 in the delta | one zip per skill, `POST …/skill-packs/{slug}/artifacts` |
+| Timing | awaited inside `syncSkillPacks`' timeout: **the execution gate** | started in `finally`, never awaited |
+| Failure | `last_sync_errors`, skill shows failed | logged only |
 
-**The request is the delta.** The machine's artifact store is keyed by content hash, so "do I have this?" is answered locally. It POSTs the hashes it already holds (`artifact_store.haveHashes`) and receives exactly the difference — making first install (send nothing, get everything) and a routine update (send all but three, get three) the same code path. `artifacts: [{path, sha256}]` metadata rides the delta response, and is sent for `no_change` skills too, so a pack installed before this existed can backfill without waiting for an unrelated republish.
+- **The request is the delta.** The machine POSTs the hashes it holds (`artifact_store.haveHashes`) and receives the difference, so first install and update share one path. `artifacts: [{path, sha256}]` rides the delta response, including for `no_change` skills (so old installs backfill).
+- **Store** (`runtime/app/artifact_store.js`): `<CONXA_DIR>/artifacts/<sha256><ext>`, beside `skill-packs/` so version pruning can't delete shared artifacts. Content addressing gives a free delta, immunity to renumbering, dedupe, and free resume. `put()` re-hashes before writing.
+- **`artifacts.json`** in the active version dir maps paths to hashes (`resolveByPath`).
+- **Not rate limited** (`get_skill_artifacts` skips `_check_rate_limit`). Auth is identical. Listed in `PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST`.
+- Install-time sync passes `artifacts: false`; the first launch collects them. A pack on the legacy unversioned `sync_endpoint` gets none until republished.
 
-**The store** (`runtime/app/artifact_store.js`) lives at `<CONXA_DIR>/artifacts/<sha256><ext>` — **beside** `skill-packs/`, never inside it, so `version_manager`'s per-version pruning can't delete an artifact another retained version still points at. Content addressing buys four things: the free delta above; immunity to step renumbering (`Image_3.jpg` → `Image_4.jpg` is the same bytes, so nothing downloads); dedupe across both versions and skills; and free resume, since whatever landed is already recognised. `put()` re-hashes before writing, so a corrupted or substituted artifact never reaches the tier that decides where to click.
+### 10.3 IdentityBundle Resolution
 
-**`artifacts.json`** is written into the skill's active version directory by the artifact pass: the store is keyed by content but `visual_ref` is a path, so this index is what makes the store readable at recovery time (`artifact_store.resolveByPath`).
+`IdentityBundle` is the **single source of truth** for element identity: durability-ranked, orthogonality-deduplicated `IdentitySignal`s plus a scoring `fingerprint`, `stable_hash`, `frame_chain`, `shadow_path`, and `guid_like_attrs`. There's no legacy `compiled_selectors` primary path. Frame roots come only from `identity_bundle.frame_chain`. A pack without bundles fails fast (recompile).
 
-**Not rate limited.** The delta route allows one request per token per 5 minutes; the artifact pass runs immediately after the code lands, so it is deliberately exempt (`get_skill_artifacts` never calls `_check_rate_limit`). Authentication is identical — the exemption is pacing, not access. The route is a POST under `/api/v1/workflows/`, so it is listed in `security.py`'s `PUBLIC_VERSIONED_WORKFLOW_SUFFIXES_POST`.
+**Compile** (`identity_bundle.py`, `selector_grammar.py`, `selector_score.py`, `selector_filters.py`):
+- Signals use Playwright native grammar: `internal:testid=`, named-attribute CSS (`li[role="menuitem"][data-key="19"]`), `internal:role=…[name=…]`, `internal:text=`, relational `>> right-of=`.
+- `durability = base_durability(engine) × survival_prior × stability_adjustments`.
+- One signal per orthogonality class (test-contract, named-attr, semantic-aria, visible-text, spatial-anchor, structural).
+- Gates: uniqueness-at-compile, PII binding, xpath/shadow guard, anchor quality (`is_low_quality_anchor`, ephemeral filtering).
+- `stable_hash` (`stable_hash.py`): SHA-256 over tag path + sorted static attributes + AX name, with dynamic classes (focus/hover/active/animation/`is-*`) stripped.
+- **Fabricated-name drop:** a role/relational signal whose name matches zero nodes in the recorded a11y snapshot (`Locator.aria_snapshot()` YAML stored as `{"aria_snapshot": …}`; `_count_role` also reads the legacy tree) is discarded (`resolves_to_nothing`). Without a snapshot it passes unverified; a capture failure is recorded once in `binding_errors`.
 
-**Install-time sync opts out** (`cli_sync.js` passes `artifacts: false`): that process exists to exit, and unawaited work would either hold the installer open or be killed halfway. The server's own startup sync collects them on first launch. A pack still carrying the legacy unversioned `sync_endpoint` gets no artifacts — there is no artifact route to derive from it; republishing moves it onto the versioned form.
+**Accessible name: one rule, three consumers.** `identity_bundle.py::_accessible_name`, `resolver.js::scoreCandidate` (`fpName`), and `cascade.js::a11yRecoveryName` must move together:
+- precedence `aria_label → alt → title → inner_text → placeholder`, plus `label_text` **only** for form controls (input/select/textarea/textbox/searchbox/combobox/listbox/spinbutton/checkbox/radio);
+- `inner_text` only for name-from-content roles (`_NAME_FROM_CONTENT_ROLES`: button, link, heading, cell, gridcell, columnheader, rowheader, checkbox, radio, menuitem*, option, tab, treeitem, switch, tooltip), never for combobox/listbox/textbox/searchbox/spinbutton/`<select>`; dropped (not truncated) past 80 chars;
+- never the HTML `name` attribute;
+- trailing keyboard-accelerator tails (`Alt+C then U`, `Ctrl+S`) stripped;
+- no name → no role signal (structural identity beats a fabricated name).
 
-**"Strict Mode" — a pack-declared ceiling (PROD-3).** A skill pack's `manifest.json` may carry an optional `max_recovery_tier` (1–4). The runtime's effective ceiling for a run is `min(host CONXA_MAX_RECOVERY_TIER, pack max_recovery_tier ?? host ceiling)` — a pack can only ever be *more* restrictive than the host it runs on, never looser (`server.js::_effectiveRecoveryTier`). Every agent-mediated decision (override application, park/resume, failure-response tier and messaging) uses this per-run effective value; status/registration endpoints (`get_runtime_status`, telemetry `capabilities`) still report the host baseline, since they answer "what can this host do," not "what was this one run capped at." Today `max_recovery_tier` is set per build via `CONXA_STRICT_MODE_MAX_TIER` (`skill_package_builder_output.py`) — a Studio UI toggle for setting it per workflow is not yet built.
+`_count_role` and replay's `resolve_adapter.js::roleLocator` (`getByRole({name})` without `exact`) both match names as case-insensitive substrings; ambiguity is the margin gate's job.
 
-**Entity binding and the destructive-recovery halt (PROD-3).** Two related, previously-broken mechanisms, now wired end to end:
-- `identity_bundle.destructive` — set at compile time by `destructive_semantics.classify_consequence()` (click steps whose intent matches the destructive-token vocabulary, or that are a commit/submit action). Serialized onto the execution step's top-level `destructive` flag (`skill_package_builder_saved_skill.py::_copy_saved_common`) — the field `runtime/app/cascade.js::recoverStep` reads to refuse **re-identification** (EXEC-24 P5), rather than re-resolving its way to a Delete button. Revised 2026-09-02: the gate is now around `recoverWithA11y` alone, not around all of Layer 2. A destructive step runs the L1 ladder, the transient (+250 ms) retry, the re-hover retry and dialog scope — every one of which re-tries `primarySelector` itself and therefore cannot land on a different element — and skips only the a11y re-probe, which resolves by accessible name and can. The previous blanket halt dated from when Layer 2 also held a fallback-selector walk and a fuzzy text match (both picked a different element and clicked `.first()` with no uniqueness gate); once those were deleted, blocking the remaining same-selector stages while still permitting L1's identical same-selector retry was an accident of gate placement, not a safety property. The skip emits `destructive_reidentify_skipped` / `rec_skip`; it deliberately does not set `guard.blocked`, which would short-circuit the very stages it now permits. Double-dispatch protection is orthogonal and unchanged (the EXEC-24 action guard still blocks a re-dispatch whose first attempt may already have landed). Covered by `runtime/test/unit/test_cascade_destructive.js`.
-- **Entity binding** (`EntityBinding` on `SkillStep`) — for a step whose target sits inside a repeating list/table row, the compiler (`conxa_compile/compiler/entity_binding.py`) detects a `container_selector` matching every sibling row plus an `identifier` (preferring a declared run input over the recorded literal text) that picks out this run's specific row. At runtime, `resolution.js::entityRoots` narrows resolution to the row whose text contains the interpolated identifier — requiring an *exact single match*; zero or ambiguous (>1) matches fail closed (`entityNotFound`), never falling back to the unscoped page. Both the primary resolve path and every recovery stage's locator path go through this narrowing, so recovery can never substitute a same-looking element from a different row.
-- `destructiveHalt` is now set by `run.js` from `step.destructive` directly whenever recovery fails to heal the step, rather than being inferred from the guard's `destructive-no-guess` reason — with the same-element Layer 2 stages running for destructive steps, the cascade no longer stops at a single predictable point, but the agent-park exclusion must hold on every path.
-- Both halts (`destructiveHalt`, `entityNotFound`) are deliberate stops, not exhausted recovery: `server.js`'s `parkable` predicate excludes them (no agent-mediated resume is ever offered), and `failure_response.js` returns a plain terminal message instead of a Tier B candidate digest — offering a ranked "pick a different element" list here would invite exactly the wrong-row guess the halt exists to prevent.
-- **Publish gate.** An irreversible step whose compiler-detected entity binding was never confirmed by the vendor in the editor cannot be saved (`editor/patch_gate.py::irreversible_step_requires_confirmed_entity_binding`) or published (`handlers/workflows.py::_require_confirmed_entity_bindings`, since patch_gate only fires on an edit). A step with no detected repeating container has nothing to confirm and is unaffected.
-- Scope note: this is the *safety-core* slice of PROD-3 (danger classification, entity binding, fail-closed recovery, Strict Mode). Layers 4–5 (dry-run, stage-then-commit lint, compensation workflows) are covered next, under **PROD-3-DRYRUN**. Before/after screenshots and a published per-skill safety score remain open (`PROD-3-UI`) — see `TODO.md`.
+**Replay** (`resolve_adapter.js` + pure `resolver.js`): `signalToLocator` maps each signal to `getByTestId`/`getByRole`/`getByText`/`locator`; `gatherCandidates` pre-collects descriptors; `resolve()` walks signals in durability order. On a multi-match it scores candidates against the fingerprint and accepts the winner only if its margin over the runner-up clears `uniqueMargin` (default 0.15); otherwise it moves to the next signal. `stable_hash` breaks ties. **It never blindly takes candidate `[0]`.** A miss or ambiguity throws into the cascade. Recovery uses explicit-selector mode (`stepWithSelector`).
 
-**Dry-run, stage-then-commit lint, and compensation workflows (PROD-3-DRYRUN).** Layers 4–5 of the safe-action system, deferred from the 2026-08-29 safety-core pass:
-- **Dry-run mode.** `execute_skill`/`execute_sequence` accept `dry_run: true`. In `run.js`'s step loop, a step with `step.destructive === true` still **resolves** (`resolution.js::resolveStep` — proves the target is actually findable, the same signal a real run would need) but never reaches `executeStep`/`verifyStep`. Kept as an in-loop interception rather than threaded through every handler — the smallest diff that can never half-execute an action by accident. A resolution failure is a real failure (fail closed): a dry run that can't even find its committing step's target is not a clean preview. Every skipped step is recorded (`{index, intent}`) and returned as `dryRunSkipped`; `server.js` names each one in `execute_skill`'s response text ("Dry run: N committing step(s) skipped..."). Non-destructive steps run exactly as normal — dry-run skips only the one committing action, not the whole workflow.
-- **Stage-then-commit lint.** `conxa_compile/compiler/commit_ordering.py::lint_commit_ordering(steps)` — advisory, computed at compile time and stored under `compile_report["commit_ordering_warnings"]` (never blocks compile/save/publish). Warns when a step classified `consequence == "irreversible"` is followed by another step that writes anything (`consequence` in `{"reversible", "irreversible"}`) — skipping non-substantive trailing markers (`editor.action_registry.MARKER_ACTIONS`: tab/frame/dialog/clipboard bookkeeping) and purely read-only observation steps (a final assertion/screenshot is harmless by definition). Only the nearest offending step after each irreversible one is reported, since fixing the ordering means moving the irreversible step, not chasing every downstream write.
-- **Compensation workflows.** `SkillMeta.compensation_skill: str` — the slug of a sibling skill in the same pack, set in the Human Edit editor, carried into `manifest.json` via the same two-hop sidecar pattern as `structural_fingerprint`/`environment` (`compensation_skill.json`). On a mid-run failure where `err.actionMayHaveTakenEffect` is set (EXEC-24's "the action may have already landed" signal) and a compensation skill is linked, `server.js` appends one line naming it as an available next step. The runtime **offers** it and never runs it automatically — an unattended compensating write after an unknown failure would be a second uncontrolled action.
-- Tests: `runtime/test/unit/test_dry_run.js`; `conxa-cloud/tests/test_commit_ordering_lint.py`.
+Scoring (`scoreCandidate`) weighs `data_testid` > `aria_label`/`role`/name > `inner_text` (≤ 120 chars) > `anchor_phrases` > `position_hint`, with role aliases for form inputs. Weight a candidate can't possibly earn is skipped rather than counted against it: `inner_text` for option-content elements (recorded `innerText` vs live `textContent` never match), and anchors when the candidate exposes no neighbor text. Absence of agreement isn't contradiction. The margin gate is unaffected.
 
-**Recovery request payload — current-state grounding.** `server.js:_buildFailureResponse` always captures the interactive-element inventory *live, after* the Tier A cascade has run — this is the state the agent's corrected selector will actually act on, since in-process remedies (dismiss-overlay, scroll, re-hover) can themselves change the page. The pre-cascade inventory (`run.js:captureEarlyDomSnapshot`, taken at the exact moment of failure) is included as a clearly-labeled secondary block only when it differs from the current one — e.g. a dropdown that was open at failure time but has since closed. The payload also carries: the step's expected post-condition (compiled assertions plus, when the failure was a verify-fail rather than a resolution miss, which assertion actually failed), a compact trace of already-executed steps, and explicit grounding instructions telling the agent that the current screenshot/inventory are ground truth and the recording-time reference image may be outdated.
+### 10.4 Tier A Details
 
-**Closing edge — `step_overrides`.** `execute_skill` accepts `step_overrides: { "<0-based step index>": { "candidate_index": <n>, "confidence": <0-1>, "why": "…" } }` (preferred — a Tier B reflection-contract nomination against the ranked digest) or `{ "selector": "<Playwright selector>" }` (keyed by the same index as `resume_from`). On resume the resolved selector is injected via the step's `_explicit_selector` channel (`run.js:applyStepOverrides`) and validated (`run.js:validateOverrideSelector`) against the step's recorded fingerprint before it is allowed to act — extending the "resolver never blindly picks candidate[0]" invariant (§10.2a) to the agent-override path. A unique match is accepted outright; a multi-match is scored the same way `resolver.js` scores compiled signals (reusing `scoreCandidate`) and only accepted when the winner clears the uniqueness margin. A no-match or ambiguous (tied) selector is rejected — the runtime does **not** fall through to `.first()` — and the resume instead returns a fresh recovery request that reports what the selector actually matched, so the agent iterates instead of silently acting on the wrong element. A `candidate_index` that no longer resolves (stale digest) is reported as `agent_override_rejected { reason: "stale-candidate-index" }` and skipped — the next failure response carries a freshly ranked digest. Overrides are honoured only when the ceiling ≥ 3, so a stray override can never silently rewrite a pack under deterministic Studio test.
+**Layer 1** (`recovery.js::classifyException` → `layer1Ladder`): one deterministic remedy per error class, then one retry of the primary selector.
 
-**Cross-call page parking (the state-preservation half of the closing edge).** Agent recovery is inherently cross-call (runtime fails → Claude reasons → runtime resumes). If the failed page were torn down, the resume would begin on a blank page and `resume_from` would skip the navigation that established state — so the agent's *correct* selector would act on the wrong page and fail again. On a parkable failure (single run, ceiling ≥ 3, a selector/verify failure that is not auth/cancel), the runtime **parks the live page+context+browser** keyed by skill+company instead of closing it (`server.js:_parkedRecovery`), together with a cheap page-state token (`capturePageFingerprint`: url + interactive-element count + a hash of visible body text), with a TTL (`CONXA_RECOVERY_PARK_TTL_MS`, default 180s) that closes it if the agent never resumes. When the matching resume-with-override arrives, the runtime recomputes the fingerprint and compares it to the one captured at park time — a page that has since navigated or whose interactive-element count shifted materially (a live SPA re-render, a timer, a websocket push) is treated as **diverged**: the park is discarded and the override is refused rather than silently applied to state the agent never actually reasoned about. If no live, state-matching park exists at all (TTL expired, page crashed, or diverged), the runtime refuses the resume outright — it does not fall back to silently opening a fresh page mid-plan — and asks the agent to restart the skill from the beginning. When the park does match, the runtime adopts it and applies the override to the exact DOM the recovery request described. An unrelated/new run discards any stale park first. Headless browsers are reclaimed by `browser.js`'s per-company idle cache; a visible (`watch`) browser is closed on discard. Events: `recovery_park_created` / `recovery_park_resumed` / `recovery_park_discarded` / `recovery_park_state_mismatch` / `recovery_resume_refused`.
+| Class | Remedy |
+|---|---|
+| stale | re-resolve |
+| intercepted | dismiss-overlay: Escape → known consent-toolkit accept/close selectors (`dismiss_patterns.js`; accept only, never decline; close entries scoped to dialogs) → host-learned winners (`learned_dismissals.js`, `{CONXA_DATA_DIR}/learned_overlays.json`, 30-day TTL, per-host/global caps) |
+| out-of-bounds | scroll into view |
+| not-stable | wait-stable |
+| not-enabled | wait-enabled |
+| verify-fail | `descend-layer2` (retrying the same action can't fix a failed post-condition) |
 
-Retry budget: `RETRY_BUDGET_MAX = 3` per (skill, step_index). On exhaustion → `retry_budget_exhausted` event logged, escalate. The counters live in a module-level map for the life of the MCP server process, so `runPlan` clears the running skill's slice of it at the **start of every invocation** (in addition to the success-path clear in `server.js`). Without that, a failed run left its counts behind and the next run of the same skill in the same session began already exhausted, silently disabling self-healing until Claude Desktop restarted.
+Learned dismissals are runtime state; the signed pack is never touched. Successes log `tier1_dismiss_pattern`. Dismissal is reactive only, never a proactive sweep.
 
-Recovery observability: `mcp_connected`, `execute_start`, and `get_runtime_status` all report `max_recovery_tier`; the recovery log records `recovery_ceiling_reached`, `agent_recovery_requested` (now carrying the concrete `tier` — 3 semantic or 4 vision — and the per-step `round`), `agent_override_applied`, `agent_override_rejected` (the override validation gate refused a no-match/ambiguous selector, or a `candidate_index` nomination was stale), `recovery_stagnant_stop` (the stagnation hard cap refused further paid rounds), `recovery_park_state_mismatch`, and `recovery_resume_refused` events.
+**Layer 2:** a11y re-probe, transient retry, re-hover-then-retry (walks `handler_hints.hover_chain`), dialog scope (`[role=dialog]`, `[role=alertdialog]`, `[aria-modal=true]`, `.modal`, with the same selector). No Layer 2 stage may act on an element it hasn't verified is the recorded one.
 
-### 10.2 Selector Scoring
+**Re-verify:** every remedy that re-runs the action goes through `recoverWithSelector`, which re-runs `verifyStep` when the step has a required assertion. Success counts only if the post-condition holds again.
 
-The resolver's scoring oracle is `IdentityBundle.fingerprint` (an `ElementFingerprint`) — a stable
-identity to score DOM candidates against:
-- `data_testid` — highest stability signal
-- `aria_label`, `role`, `name` — a11y tree signals
-- `inner_text` — visible text (max 120 chars)
-- `anchor_phrases` — relational context phrases
-- `position_hint` — normalized x/y (0.0–1.0)
+**`repair_event`:** on any recovery success the runner emits step id, tier, method, score/margin, `stable_hash`, app-version fingerprint, and drift hint. Ephemeral telemetry only; the pack isn't mutated (§10.7).
 
-Each candidate gets a weighted score; the uniqueness/margin gate (below) decides the winner.
+**Native dialogs:** a pending `alert`/`confirm`/`prompt` blocks the whole renderer. `recoverStep` refuses to start while `ctx.dialogQueue` is non-empty and fails the step naming the dialog. Normally the one-step lookahead (§9.5) prevents this.
 
-### 10.2a IdentityBundle Resolution (primary runtime path)
+**No unbounded `page.evaluate()`.** Playwright gives `evaluate` no timeout, and the deadline watchdog only checks between operations. Route calls through `page_eval.js` (`evalOn`/`withDeadline`). This is wired into `gateLocator` and `failure_response.js::gatherInventory`; remaining call sites are tracked under TODO.md EXEC-29.
 
-`IdentityBundle` is the **single source of truth** for element identity: a durability-ranked,
-orthogonality-deduplicated set of `IdentitySignal`s plus the scoring `fingerprint`, `stable_hash`,
-`frame_chain`, `shadow_path`, and `guid_like_attrs`. The runtime resolves every step's primary
-target through it — there is **no legacy `compiled_selectors` / single-selector primary path**, and
-frame roots are driven solely by `identity_bundle.frame_chain`. Packs without an `identity_bundle`
-fail fast (recompile required).
+### 10.5 Virtualized Lists: Scroll Until Found
 
-- **Compile (`conxa_compile/compiler/identity_bundle.py`, `selector_score.py`,
-  `selector_filters.py`):** signals are generated in Playwright native grammar
-  (`internal:testid=`, named-attr CSS such as `[data-key="19"]` / `li[role="menuitem"][data-key="19"]`,
-  `internal:role=…[name=…]`, `internal:text=`, relational
-  `>> right-of=`), scored by `durability = base_durability(engine) × survival_prior ×
-  stability_adjustments`, deduplicated to one signal per orthogonality class (test-contract,
-  named-attr, semantic-aria, visible-text, spatial-anchor, structural), and gated by uniqueness-at-compile,
-  PII-binding, and an xpath/shadow guard. `stable_hash` (`stable_hash.py`) is
-  SHA-256 over tag-path + sorted static attrs + AX name, with dynamic
-  (focus/hover/active/animation/`is-*`) classes stripped.
-- **Accessible-name derivation (`identity_bundle.py::_accessible_name`) — one rule, three
-  consumers.** The name in an `internal:role=…[name=…]` signal is
-  `aria_label → alt → title → inner_text → placeholder`, plus `label_text` **only** for
-  form controls (tag or role in input/select/textarea/textbox/searchbox/combobox/listbox/
-  spinbutton/checkbox/radio), where a `<label>` genuinely *is* the accessible name. `inner_text`
-  is itself gated to ARIA "name from content" roles (`button`/`link`/`heading`/`cell`/
-  `gridcell`/`columnheader`/`rowheader`/`checkbox`/`radio`/`menuitem`/`menuitemcheckbox`/
-  `menuitemradio`/`option`/`tab`/`treeitem`/`switch`/`tooltip` — `identity_bundle.py`'s
-  `_NAME_FROM_CONTENT_ROLES`) and capped at 80 chars (dropped, not truncated, past that — a
-  truncated name inside an exact `[name="…"]` match is a guaranteed miss). A trailing
-  keyboard-accelerator tail (`Alt+C then U`, `Ctrl+S`, …) is stripped from the name and from
-  `text_based` before grammar conversion — Google Drive (and similar) bake those hints into
-  recorded inner text, while Playwright's accessibility snapshot names the control without
-  them; exact equality then dropped the role signal at compile and missed at replay.
-  `_count_role` matches names as Playwright does (case-insensitive substring of the snapshot
-  name), not byte-for-byte equality. Replay (`resolve_adapter.js::roleLocator`) uses the same
-  substring rule via `getByRole({ name })` without `exact: true`, so a compiled prefix still
-  matches a live name that still has the accelerator hint. Ambiguous substring hits are the
-  uniqueness/margin gate's job, not the locator's. a `combobox`/
-  `listbox`/`textbox`/`searchbox`/`spinbutton`/bare `<select>` never computes its name from its
-  own contents, so `inner_text` is never a candidate for those (2026-09-01 — react-datepicker's
-  nameless year `<select>` was being named from its own concatenated `<option>` list). `name` is
-  never a candidate — the HTML form-field attribute, not an ARIA accessible-name source; for a
-  radio/checkbox GROUP it's the shared group key every sibling carries, not any one option's
-  name. For anything else `label_text` is `bridge.js::captureAssociatedLabel`'s last-resort
-  "nearest surrounding text" walk and names a *neighbour*, not the element. An element with no
-  name gets **no role signal at all** — it falls through to structural identity, which is
-  strictly better than a fabricated name that resolves to nothing. `runtime/app/resolver.js::
-  scoreCandidate` (`fpName`) and `runtime/app/cascade.js::a11yRecoveryName` implement the
-  identical precedence, the identical form-control gate, and the identical name-from-content
-  gate; all three must move together.
-- **Fabricated-name drop.** A `role`/`relational` signal whose name matches **zero** nodes in the
-  recorded a11y snapshot is discarded rather than shipped (`selector_filters.resolves_to_nothing`).
-  Unlike `uniqueness_gate(absent_ok=True)`, which treats 0 matches as "couldn't verify", a
-  role+name signal's name comes from the element's *own* recorded attributes, so 0 proves the name
-  is wrong. Without the snapshot the count is unverifiable and the signal is allowed through
-  unchanged. This stops a bad name from occupying the two highest-durability slots with signals
-  that can only ever miss at replay. **The evidence this guard verifies against was silently dead
-  from Playwright 1.5x onward** (fixed 2026-09-01): `session.py::_capture_a11y_async` called
-  `page.accessibility.snapshot()`, an API Playwright removed; the resulting `AttributeError` was
-  swallowed by a bare `except Exception`, so no session ever wrote an `.a11y.json` blob and every
-  role+name signal — fabricated or not — passed this gate unverified. Capture now uses
-  `Locator.aria_snapshot()` (a YAML string, stored as `{"aria_snapshot": "<yaml>"}`;
-  `_count_role` reads either that shape or the legacy tree-dict from older sessions), and a
-  capture failure is recorded once per session in `binding_errors` rather than swallowed — a dead
-  evidence layer must never again be invisible.
-- **Replay (`runtime/resolver.js` + `runtime/resolve_adapter.js`):** the **primary** resolution
-  path. `resolve_adapter.js` maps each `IdentitySignal` to a Playwright locator
-  (`signalToLocator`: engine → `getByTestId`/`getByRole`/`getByText`/`locator`), pre-gathers
-  candidate descriptors per signal (`gatherCandidates`), then hands the pure `resolve()`
-  (`resolver.js`) a synchronous map view. `resolve()` walks signals in durability order with a
-  strict uniqueness gate — it never blindly takes candidate `[0]`. On multi-match it scores each
-  candidate against `fingerprint` and accepts a winner only when its margin over the runner-up
-  clears the threshold; otherwise it falls through to the next signal. `stable_hash` is the
-  tie-breaker. `run.js` `withLocator(…, PRIMARY, …)` calls `resolveStep()`; a miss/ambiguous throw
-  engages the recovery cascade. (Recovery still uses an explicit-selector mode via
-  `stepWithSelector`.)
-- **GATE (`run.js` `gateLocator`):** before every action — attached → visible → RAF-stable
-  (bounding box unchanged across two frames) → enabled (`disabled`/`aria-disabled`). Budget is
-  confidence-adaptive. Zero LLM.
-- **VERIFY (`run.js` `verifyStep`):** after every action — independent post-condition check of
-  the step's compiled assertions (`url_changed`/`url_pattern`, `selector_present/absent`,
-  `text_present/absent`, `value_equals`, `state_changed`). Every consequential action (submit
-  click, destructive confirm, text entry/select) compiles with exactly one **required**
-  (enforced) assertion — the compiler's deterministic "primary signal picker" in
-  `build.py:_build_assertions`; everything else stays advisory. `value_equals` compares the
-  field's actual value to the expected one (normalized, with a contains fallback for
-  masked/formatted fields). `state_changed` is synthesized for commit/destructive clicks with no
-  recorded URL/DOM evidence — it confirms the page shows *some* observable effect (URL,
-  interactive-element count, or body-text delta beyond a small noise tolerance), catching a
-  button that silently no-ops. A failed *required* assertion descends into recovery; advisory
-  failures are recorded only.
-  - **Web-first polling, not a single sample:** positive checks (`url_*`, `text_present`,
-    `value_equals`, `state_changed`) retry their predicate every `VERIFY_POLL_INTERVAL_MS` (250ms)
-    until it holds or the assertion's `timeout_ms` elapses — a slow render or an optimistic-UI
-    update landing after the action no longer reads as a false failure. `selector_present` rides
-    Playwright's own `waitFor`, which already polls. Negative checks (`selector_absent`,
-    `text_absent`) additionally require the absence to still hold after a `NEGATIVE_STABILIZE_MS`
-    (500ms) recheck, so a flicker (gone → back → gone) can't false-pass a check taken mid-load.
-    `pollPositive`/`pollNegative` (`assertions.js`) race each predicate call against the
-    *remaining* time to the deadline via `withDeadline` — previously they awaited the predicate
-    unconditionally and only checked the deadline afterward, so a predicate that never resolves
-    (a `page.evaluate`/`locator.count()` against a renderer blocked by an open native dialog,
-    2026-08-26 — see the `dialog_accept`/`dialog_dismiss` note below) hung the poll, `verifyStep`,
-    and the whole run forever.
-  - **Skips entirely while a native dialog is open:** `verifyStep` is passed the run's
-    `dialogQueue` and bails out immediately (`{pass: true, channel: "dialog_pending"}`, no page
-    calls) when it's non-empty. A click that opened an `alert`/`confirm`/`prompt` blocks the
-    page's renderer until the *next* step (`dialog_accept`/`dialog_dismiss`, which carries no
-    assertions of its own) resolves it — no DOM/URL/value check on the click step can answer
-    while that's true, and this step's real post-condition ("a dialog opened") already happened.
-    Without this, a required `state_changed` (the compiler's fallback for a consequential click
-    with no other evidence, `build.py`'s `_build_assertions`) deadlocked every such click even
-    with the `pollPositive` timeout fix above, since the dialog is already queued *before*
-    `verifyStep` starts, not mid-poll.
-  - **Full assertion audit:** `verifyStep` evaluates every assertion on the step — not just up to
-    the first required failure — and returns `results: [{type, target, required, ok,
-    elapsed_ms}]` alongside `{pass, channel, evidence}`. On the primary execution path (not
-    recovery re-verification), the runner emits one `verify_result` telemetry event per step that
-    carries assertions (`{si, ok, n, advFail}`), giving the fleet dashboard visibility into
-    advisory-assertion decay before it becomes a hard failure. A required verify-fail also attaches
-    the full `results` array to the thrown error as `verifyResults`, alongside the existing
-    `earlyDomSnapshot` (interactive-element inventory at the moment of failure).
-  - **Post-condition distillation (recording-next-steps.md Priority 1, 2026-07-10):** the recorder
-    (`bridge.js::finalizeStateWithAfter` → `buildPostCondition`) classifies the same before/after
-    evidence it already captures into a small structured `post_condition` on the event —
-    `classified_effect` (`navigation`/`dialog_opened`/`dialog_closed`/`expansion`/`value_set`/
-    `content_change`/`none`), a redaction-safe `value_readback` (never populated for password/
-    sensitive fields — same `isSensitiveEditable` rule bridge.js applies elsewhere), and a
-    `dialog_signal` selector for the opened container. `build.py::_build_assertions` prefers this
-    live evidence over the generic wait_for/success_conditions inference when present: a
-    `dialog_opened` classification claims the enforced slot as a `selector_present` on
-    `dialog_signal`; a `value_set` classification's `value_readback` (if non-redacted) becomes the
-    `value_equals` assertion's `expected`, catching framework normalization/combobox commits the
-    recorded intent value wouldn't show. `StateChange.dom_diff` — computed by bridge.js on every
-    action but previously dropped by the model — is now carried through as the `content_change`
-    fallback signal. `RecordedEvent.post_condition` and `StateChange.dom_diff` are both optional;
-    old recordings validate unchanged. No runtime change — `run.js`'s `evaluateAssertion` already
-    handles every assertion type this preference pass can produce.
-  - **Click-family "after" capture waits for the DOM to settle (2026-07-13):** `bridge.js`'s
-    click/dblclick/right_click listeners run in the event's **capture phase** — before the page's
-    own bubble-phase handler (e.g. a React `onClick`) has even fired. Calling `finalizeState()`
-    synchronously there (the historical behavior) always diffed the page against itself: the
-    "after" snapshot was taken before the click's own effect — a revealed dropdown, panel, or
-    dialog — had a chance to render, so `state_change.dom_diff` came back empty on effectively
-    every click. This was the root cause of validation-less/"click new button"-style vague
-    checks: `merge_dom_diff_evidence` had nothing to fold in, so intent-derived-token grounding
-    (see `decision_layer.py::intent_tokens_grounded_in_context` below) correctly rejected
-    ungrounded guesses but left the step with zero real evidence to fall back on. Fix:
-    `finalizeStateAfterSettle()` defers the "after" capture behind a short mutation-quiet window
-    (`click_settle_quiet_ms`, default 20ms) capped at a hard ceiling (`click_settle_max_ms`,
-    default 250ms), queued so two fast clicks in a row still finalize in submission order. Covered
-    by `test_recorder_bridge_js.py::test_click_that_synchronously_reveals_element_is_captured_in_dom_diff`,
-    which fails against the old synchronous capture and passes with the settle wait.
-  - **Hover capture is reveal-gated, and the reveal baseline must describe the settled page
-    (2026-08-26):** hover capture is always on and candidates are deliberately broad (any leaf
-    element — a bare `<img>` reveals a sibling via CSS `:hover` with no semantic hint at all), so
-    the *only* thing keeping recordings free of noise is the before/after signature diff in
-    `bridge.js::hasMeaningfulHoverChange`. A browser applies a CSS `:hover` rule during hit-testing,
-    before any capture-phase JS handler runs, so the immediate `before` snapshot is already
-    contaminated for exactly the case that matters — hence `lastStableHoverSnapshot`, a reference
-    taken before the mouse arrived. Two defects made that reference lie, and every lie became a
-    recorded `hover` step on a static heading or link:
-    (a) it was captured by a `setTimeout(…, 0)` in a script injected at `document_start`, i.e.
-    while the document was still parsing, so it described a **blank page** and everything the page
-    subsequently rendered read as "revealed"; (b) the signature collector used a **viewport-clipped**
-    visibility test, making the diff a function of scroll position — scrolling brought dozens of
-    actionables on screen and the next element the mouse rested on was recorded as revealing them.
-    Fix: capture at `DOMContentLoaded` (deterministic for server-rendered pages) **and** re-capture
-    on a debounced `childList` `MutationObserver` (for client-rendered apps still blank at
-    `DOMContentLoaded`), both guarded by `!pendingHover` so a reveal can never overwrite the
-    reference it is about to be compared against; and split visibility into `isRenderedElement`
-    (display/visibility/opacity/size — what a reveal actually toggles, scroll-independent) used by
-    the hover signature collectors, vs `isVisibleElement` (rendered **and** on screen) kept for
-    "is this element worth recording". `childList` only is deliberate — a class/style-driven reveal
-    is an *attribute* mutation, precisely the one whose baseline must stay put. Nothing captures a
-    baseline while parsing: a hover that beats `DOMContentLoaded` leaves it null, which
-    `hasMeaningfulHoverChange` already handles by skipping the stable comparison. A missing
-    reference is safe; a blank one is not. Covered by
-    `test_recorder_bridge_js.py::test_hover_over_static_heading_on_a_link_rich_page_records_nothing`
-    and `::test_hover_after_scrolling_records_nothing`, both of which fail against the old code.
-  - **Ephemeral filtering at compile time:** `validation_planner.py::infer_success_conditions`
-    runs `required_elements` candidates through `selector_filters.py::is_ephemeral_anchor` before
-    handing them to `build.py::_build_assertions`'s primary-signal picker — a cookie-banner/toast/
-    notification-shaped element can never land in the REQUIRED promotion slot; it's demoted to an
-    advisory `text_present` token instead of dropped.
-  - **Fleet dashboard:** `app.services.tracking._assertion_health_by_step` aggregates
-    `verify_result` events per (company, workflow, step) into a pass-rate view, exposed on
-    `GET /api/v1/tracking/dashboard` as `assertion_health_by_step` and rendered on the Cloud
-    Dashboard's Self-healing page, `/dashboard/healing` (§3.2 `docs/UI-UX-Brief.md`) —
-    worst-pass-rate steps surface first. It is also one of the five weighted inputs to the
-    platform health score.
-  - **Human Edit UI + patch gate:** `StepConfigForm.tsx` carries a self-contained Validation card
-    (shared `components/validation/AssertionEditor.tsx`, also used by the re-target wizard's
-    Validation phase) that saves independently via `patch_step`'s `validation.assertions`.
-    `conxa_compile/editor/patch_gate.py::validate_editor_patch` is now called from
-    `cmd_patch_step` before any patch is merged/persisted — a manual edit that would drop a
-    consequential step's only required assertion is rejected outright, not just flagged.
+Virtualized grids (AG Grid, react-window, TanStack Virtual, Angular CDK) render only visible rows, so a far row looks like `entity_not_found` or `resolve_miss`.
 
-### 10.2b Layer 1 / Layer 2 zero-token recovery
+- **Detect (compile, advisory):** `compiler/virtualized.py::detect_virtualized_container` walks the recorded ancestors for a library class marker or inline overflow + fixed-height style (`aria-rowcount`/`aria-setsize` corroborate only, since `outer_html` is truncated at 2000 chars). A hit sets `handler_hints.virtualized_container`.
+- **Resolve (runtime):** `resolution.js::maybeScrollForVirtualization` runs inside `resolveStep` before a miss becomes terminal. Container: the compiled hint → `entity_binding.container_selector` (heals old packs) → the dominant scrollable element, but only for `control_kind === "choice"`. Scrolling uses `page_scripts.js` (`scrollVirtualContainerStep`, `scrollDominantScrollableElement`) via `page_eval.js`.
+- **No second loop:** `withLocator`'s PRIMARY retry (~120 ms) re-enters `resolveStep`; the container stays scrolled, so the search sweeps. At the bottom, one reset to top. Re-query uses compiled identity, never DOM index.
+- **Budget:** the deadline is extended once (`CONXA_VIRTUAL_SCROLL_BUDGET_MS`, 15000) only when an evidence-grounded pass ran and nothing was acted on (`mayHaveActed` unset). `CONXA_VIRTUAL_SCROLL_MAX_PASSES` 40. `CONXA_VIRTUAL_SCROLL=0` disables it.
+- Zero-token, pre-cascade. A scroll-resolved step emits `tier_ok` with `virtualScroll: true`, so it isn't mistaken for drift.
 
-`runtime/recovery.js` adds an exception-classified ladder ahead of the existing cascade:
+### 10.6 No-Recovery Steps
 
-- **Layer 1 (`classifyException` → `layer1Ladder`):** maps the thrown error to a single
-  deterministic remedy — stale → re-resolve, intercepted → dismiss-overlay, out-of-bounds →
-  scroll-into-view, not-stable → wait-stable, not-enabled → wait-enabled — then retries the
-  primary selector once. The **dismiss-overlay** remedy (2026-08-25) is itself a small ladder:
-  Escape first, then a bounded list of ubiquitous consent-toolkit accept/close selectors
-  (`app/dismiss_patterns.js` — accept affordances only, never decline; close-style entries are
-  scoped to dialog/modal containers so page chrome can't match), then host-learned winners from
-  `app/learned_dismissals.js` (`{CONXA_DATA_DIR}/learned_overlays.json`, 30-day TTL,
-  per-host/global caps). Learned entries are **runtime state, not pack mutation** — the signed
-  skill is never touched — and each success lands in `recovery.log` as a
-  `tier1_dismiss_pattern` event. Reactive only: the ladder never sweeps proactively for
-  overlays, so UI the workflow intends to interact with is touched only after it actually
-  blocked a recorded target.
-- **Layer 2:** a11y re-probe (through the matcher — fingerprint-checked and uniqueness-gated),
-  transient retry, **re-hover-then-retry** (walks the precompiled `handler_hints.hover_chain` for
-  menu reveals), and dialog scope (the same selector re-searched inside an open dialog). The
-  fallback-selector walk and fuzzy-text match were removed in 2026-09: both clicked `.first()` on
-  a text-derived selector with no uniqueness gate, mutating the page before the agent tier could
-  read it. No Layer 2 stage may now act on an element it has not verified is the recorded one.
-- **Re-verify on recovery:** every Layer 1/2 remedy that re-runs the action funnels through
-  `recoverWithSelector`, which — when the step carries a required assertion — re-invokes
-  `verifyStep` after the re-run and only reports the remedy successful if the post-condition
-  re-holds. A recovered action that doesn't re-establish its post-condition still fails the step.
-  A verify-fail (`classifyException` → `CLASS.VERIFY_FAIL` → `remedyFor` → `"descend-layer2"`)
-  skips the Layer 1 single-remedy retry entirely — retrying the same action against the same,
-  already-checked DOM can't fix a failed post-condition — and falls straight through to Layer 2's
-  resolution-changing mechanisms.
+The compiler writes `no_recovery_block` on steps that are never retried:
+- `frame_enter`/`frame_exit`, `tab_open`/`tab_switch`/`popup`: structural markers (the switch already happened);
+- `browser_back`/`browser_forward`: history navigation;
+- `if_present`/`try_dismiss`/`wait_for_one_of`: best-effort by design (§11.1).
 
-On any recovery success the runner emits a structured **`repair_event`** (step id, tier, method,
-score/margin, `stable_hash`, app-version fingerprint, drift hint). This is **ephemeral per-run
-telemetry** — the signed local pack is never mutated; a durable fix is only ever an
-admin-reviewed, manually published re-sign (see §10.5).
+At runtime the step kind decides; the runtime doesn't read `no_recovery_block` or `recovery.max_attempts` (the Copilot's capability manifest says so, §7.4).
 
-### 10.2c Scroll-Until-Found for Virtualized Lists (BUILD-30)
+### 10.7 Drift Flywheel (admin-gated)
 
-A virtualized grid (AG Grid, react-window, TanStack Virtual, Angular CDK) renders only the rows
-currently in the scrolled viewport — a target row recorded further down the list is not in the
-DOM at all until scrolled into range. Before this, that produced `entity_not_found` (when the
-step has an entity binding — which **skips the recovery cascade entirely**, see §9.1) or a plain
-`resolve_miss`, indistinguishable from genuine page breakage.
+`repair_event`s ingest with telemetry and aggregate into `GET /api/v1/tracking/{workspace_id}/drift` (`_drift_review_queue`), keyed by (workflow, version, step), marked `needs_review`. Pre-execution `drift_detected` events aggregate as `pre_exec` (`_pre_exec_drift_queue`). **Detection is automatic; publishing a fix is always an explicit admin action.** Nothing is re-signed or pushed automatically.
 
-**Detection (compile-time, advisory).** `compiler/virtualized.py::detect_virtualized_container`
-walks the recorded ancestor chain (the same `{tag, id, classes, outer_html}` shape and event key
-`entity_binding.py` already reads) looking for a known virtualization-library class marker, an
-inline `overflow` + fixed-height scroll-viewport style, or (corroborating only, never sufficient
-alone — `captureAncestors` truncates `outer_html` at 2000 chars, which undercounts rendered rows
-on a real grid) an `aria-rowcount`/`aria-setsize` materially exceeding what's actually rendered.
-A hit populates `SkillStep.handler_hints.virtualized_container` with the container's selector;
-the common case (no match) leaves it `""`. Deterministic, no LLM — same primary-compile-path
-invariant as every other selector-adjacent decision.
 
-**Resolution (runtime).** `runtime/app/resolution.js::maybeScrollForVirtualization` runs
-*before* either miss becomes terminal, inside `resolveStep` — one bounded scroll pass, then the
-caller re-runs its own lookup (`entityRoots` or `gatherCandidates`+`resolveSignals`) and only
-fails for real if that also comes up empty. Container resolution order: (1) the compiled
-`virtualized_container` hint; (2) `entity_binding.container_selector` (rescues a skill compiled
-before this shipped — no recompile required); (3) the page's dominant scrollable element, but
-**only** for a compiled choice/dropdown-kind control (`handler_hints.control_kind === "choice"`)
-— an ordinary step with no virtualization evidence at all never scrolls, so unrelated broken
-selectors are untouched. Scrolling itself is two self-contained page-realm functions in
-`page_scripts.js` (`scrollVirtualContainerStep`, `scrollDominantScrollableElement`) invoked via
-the `page_eval.js` deadline seam, never a bare `.evaluate()`.
+---
 
-There is deliberately **no second retry loop**: `locators.js::withLocator`'s existing PRIMARY
-retry loop (which already re-resolves every ~120ms within one action budget) owns the iteration
-— each retry re-enters `resolveStep`, the container stays scrolled from the previous pass (live
-page state, not JS module state), and the search sweeps the list. On reaching the bottom, one
-reset-to-top keeps a row above the starting scroll position reachable. Re-query after every
-scroll is by the compiled identity signals / `entity_binding.identifier` — stable identity,
-never DOM index — because it falls out of re-entering the unchanged resolution code, not a
-separate mechanism.
+## 11. Control-Flow Steps
 
-`withLocator`'s deadline is extended once (`CONXA_VIRTUAL_SCROLL_BUDGET_MS`, default 15000ms)
-but **only** when a scroll pass grounded in real compiled evidence (hint or entity binding, not
-the dominant-scrollable guess) actually ran, and only for a miss where `mayHaveActed` is unset —
-i.e. no locator was ever produced, so nothing was acted on and a longer wait cannot turn a clean
-failure into a repeated action. `CONXA_VIRTUAL_SCROLL_MAX_PASSES` (default 40) is a belt-and-
-braces cap independent of the deadline. `CONXA_VIRTUAL_SCROLL=0` disables the feature entirely,
-restoring pre-BUILD-30 behavior exactly.
+Control-flow steps are flattened into top-level execution-step fields by `skill_package_builder_saved_skill.py::_saved_step_to_execution_step`, recursively for nested bodies. A step whose required content is missing returns `None` and **silently vanishes** from `execution.json`, so every gate below must reject bad shapes before packaging.
 
-This is Tier A / zero-token: the scroll-and-re-gather happens *before* the recovery cascade is
-ever reached, using only the pure resolver and deterministic page scripts — no LLM, matching the
-Key Invariant that Tier A costs zero tokens. A step that only resolved after scrolling emits
-`tier_ok` with `virtualScroll: true` (`run.js`) rather than a generic drift signal, so §10.5's
-fleet dashboard doesn't classify a scroll position as a page redesign.
+**Version gate.** An older runtime silently no-ops an unknown `type`, which skips an entire branch body or loop. `SkillMeta.required_runtime` (checked with `semver.satisfies` at execute time) is the guard. `skill_package_builder_output.py` still defaults `CONXA_REQUIRED_RUNTIME` to `>=1.0.3` pack-wide; set it explicitly for packs using these step types (see `NOTE(branch-steps)`). The handlers now ship in tagged app layers, so the default can be raised (§17).
 
-### 10.5 Drift Flywheel (admin-gated)
+### 11.1 Branches: `if_present`, `try_dismiss`, `wait_for_one_of`
 
-`repair_event`s ingest via `POST /tracking/{company}/events` and aggregate into an admin review
-queue at **`GET /api/v1/tracking/{company}/drift`** (`_drift_review_queue`), keyed by
-(workflow, version, step). **Detection is automatic and fleet-wide; publishing is always
-admin-approved, never automatic** — the endpoint surfaces evidence only and marks entries
-`needs_review`. No re-sign or fleet push happens without an explicit admin action.
-
-### 10.6 Pre-Execution Drift Gate (advisory)
-
-Each pack carries a compiled `structural_fingerprint` (the first ~3 interactive "landmarks" — see
-compiler `_build_structural_fingerprint`), plumbed through `skill_package_builder.py` into the runtime
-`manifest.json`. Before executing step 0, `runPlan` calls `runtime/drift.js` `detectPreExecDrift`,
-which locates each landmark on the live page (testid → aria-label → primary selector → text) and
-scores it with the **pure resolver** (`scoreCandidate`, zero LLM). If a majority of landmarks are
-missing (default: ≥50% below a 0.5 agreement threshold) it emits a **`drift_detected`** event.
-This is **warn-not-block** — execution always proceeds and per-step recovery still applies (consistent
-with the zero-token Tier A rule). The cloud aggregates these per (workflow, version) via
-`_pre_exec_drift_queue` and returns them under `pre_exec` in the `/drift` response.
-
-**Warnings channel (BUILD-28a).** Before EXEC-36, `drift_detected` reached the fleet dashboard and
-stopped there — the runtime never told the user running the skill. `run.js` now accumulates every
-advisory warning (drift + environment mismatch, below) into a `warnings: string[]` it returns
-alongside `recoveredSteps`. `server.js` appends them to `execute_skill`'s response text on both the
-success path and the failure path (a run that fails *because of* the mismatch says so, via
-`stepFailure`'s `err.warnings`, instead of reading like an ordinary selector/timing failure) —
-deduped across every skill in an `execute_sequence` chain.
-
-### 10.6a Pre-Execution Environment-Mismatch Warning (EXEC-36)
-
-A skill recorded by an admin in `en-US` at 1920×1080 replayed by a viewer in `de-DE` at 1366×768
-can hit a button now hidden behind a hamburger menu, a date field expecting `TT.MM.JJJJ`, or a
-control that doesn't exist for that role — none of which is a broken selector, but all of which
-fail exactly like one, burning the same recovery ladder and Tier B tokens as genuine drift. The
-drift gate above checks structural landmarks; this checks the **environment** they were recorded
-in.
-
-**Capture (record time).** `recorder/session.py::_write_environment_sync` evaluates once, right
-after the start page loads (best-effort, swallowed on failure — same discipline as
-`_write_diagnostics_sync`), and writes `session_dir/environment.json`: `locale`
-(`navigator.language`), `timezone` + `utc_offset_minutes` (`Intl.DateTimeFormat().resolvedOptions()`
-+ `Date.getTimezoneOffset()`), `viewport` (`{w, h}`), `device_pixel_ratio`, `date_format_sample`
-(a fixed date formatted by the browser's default locale), `platform`. **Role is deliberately not
-captured** — there is no generic, reliable way to read the recording user's permissions from a
-page, and guessing would produce false warnings; left to PROD-1's first-run calibration instead.
-
-**Compile.** `SkillMeta.environment: dict[str, Any]` (`skill_spec.py`, `[executor]`-tagged, empty
-dict = unknown). `build.py::_read_environment_sidecar` reads the sidecar into `SkillMeta`, same
-read-from-disk pattern as `_build_structural_fingerprint`. Carry-through mirrors
-`structural_fingerprint` exactly: `skill_package_builder_saved_skill.py` writes
-`environment.json` into the skill dir; `skill_package_builder_output.py` reads it back into
-`manifest.json`'s `environment` key.
-
-**Compare (replay).** `runtime/app/env_match.js::compareEnvironment(recorded, live)` is pure (no
-Playwright) and deliberately narrow — a noisy warning is worse than none:
-- **locale**: primary language subtag differs (`en` vs `de`). Region-only (`en-US` vs `en-GB`)
-  does not warn.
-- **timezone**: UTC *offset* differs, not the zone name.
-- **viewport**: width differs by more than 25%, or the two widths sit on opposite sides of a
-  common responsive breakpoint (1024px, 768px).
-
-`run.js` reads the live environment via `evalOn(startPage, pageScripts.environmentSignature)`
-(the replay-side counterpart to the recorder's capture script — same field shape) at the same
-point as the drift gate above, under the same swallow-everything try/catch. Advisory, never
-blocking. Emits `env_mismatch` telemetry (§12.1) and pushes each mismatch's plain-language
-`message` into the shared `warnings` channel described above.
-
-**Deliberately not changed:** `browser.js::_buildExecContext` (the actual execution context) sets
-no `locale`/`timezoneId`/`viewport` — replay inherits the machine's own environment. The only
-place these are pinned (`STEALTH_CONTEXT_OPTIONS`, `en-US`/`America/New_York`) is the *auth*
-window, never the exec context. Forcing the exec context to the recorded environment would change
-behavior for every existing skill; this item only warns, it does not normalize.
-
-### 10.3 Dialog-Scoped Recovery
-
-If the element is expected inside a dialog, Tier A first restricts the search to `[role="dialog"]`, `[role="alertdialog"]`, `[aria-modal="true"]`, `.modal` — the **same** selector, not a fuzzy guess. This is in-page HTML dialogs/modals only — a **native** browser dialog (window.alert/confirm/prompt) is a different mechanism entirely; see below.
-
-**Native dialogs and recovery (EXEC-29, 2026-09-04).** A native dialog blocks the page's whole
-renderer, not just the action that opened it — every Tier A/B stage eventually touches the
-page (an a11y `.evaluate()` probe, a fresh `resolveStep`, a plain `waitForTimeout`), and none of
-that can run while Chromium is waiting on an unanswered `alert`/`confirm`/`prompt`. `recoverStep`
-(`cascade.js`) therefore refuses to start any stage while `ctx.dialogQueue` is non-empty — the
-same short-circuit `verifyStep` already had (`assertions.js`, channel `dialog_pending`) — and
-fails the step immediately, naming the pending dialog's type and message, rather than grinding
-through stages that cannot possibly do anything. In the common case this never fires at all:
-`run.js`'s per-step loop looks one step ahead and, when the next compiled step is
-`dialog_accept`/`dialog_dismiss`, arms that answer via a one-shot `page.once("dialog", ...)`
-*before* dispatching the current step — so the dialog resolves the instant it opens and the
-triggering click never times out in the first place (see Backend-Schema.md §3.4h for the full
-record/compile/replay history).
-
-**No unbounded `page.evaluate()`.** Playwright gives `.evaluate()` no timeout of its own, and a
-renderer stuck behind a dialog (or any other reason the page's JS thread stops responding —
-`beforeunload`, a throttled background tab) leaves such a call hanging forever; the runtime's own
-`EXECUTION_DEADLINE_MS` watchdog (`server.js`) is poll-based, checked only *between* operations,
-so it cannot interrupt one that is itself stuck. `runtime/app/page_eval.js` provides the shared
-seam (`evalOn`/`withDeadline`) every `.evaluate()` call should route through; it is wired into
-the primary-resolution hot path (`resolution.js::gateLocator`'s RAF-stability/enabled checks,
-which run on every gated action) and the failure-response inventory/overlay probes
-(`failure_response.js::gatherInventory`, which run right after a primary action has already
-timed out — the moment a blocked renderer is most likely). Not yet every `.evaluate()` call in
-`runtime/app/` goes through this seam — see TODO.md EXEC-29's follow-up note for the remaining
-sites.
-
-### 10.4 No-Recovery Steps
-
-`frame_enter` and `frame_exit` actions carry `no_recovery_block`. These are structural markers, not interactive steps, and are never retried. `tab_open`, `tab_switch`, and `popup` carry `no_recovery_block` for the same reason — the tab switch they mark already happened via `resolveStepPage()` (§9.1a) before the step's own handler runs, so there is nothing on the marker step itself to retry. `if_present`, `try_dismiss`, and `wait_for_one_of` (§10.7) carry `no_recovery_block` for the same reason — they are best-effort by design, not because they lack a target.
-
-### 10.7 Conditional / Branch Steps (EXEC-1)
-
-Optional interstitials — cookie/consent banners, session-expired screens, optional MFA, A/B-tested
-variants — used to be indistinguishable from a genuine selector failure: every such case escalated
-through the full recovery cascade, including paid Tier B LLM recovery billed to the customer's
-own Claude usage. Three step types give the compiled skill a way to express "this element sometimes
-appears" directly, so the runtime handles it without ever touching recovery:
+Optional interstitials (consent banners, optional MFA, A/B variants) would otherwise look like selector failures and spend Tier B tokens.
 
 | Type | Shape | Behavior |
 |---|---|---|
-| `if_present` | `{ type, selector\|identity_bundle, timeout_ms, steps: [...] }` | Probes for the target up to `timeout_ms`; if present, runs the nested `steps` body. |
-| `try_dismiss` | `{ type, candidates: [...], timeout_ms, fallback_escape? }` | Probes each candidate selector in order; clicks the first present one (best-effort). Falls back to `Escape` unless `fallback_escape: false`. |
-| `wait_for_one_of` | `{ type, options: [{selector\|identity_bundle, steps?}], timeout_ms, required? }` | Polls all options up to `timeout_ms`; the first to appear wins and its `steps` (if any) run. On timeout: no-op unless `required: true`, in which case the step fails normally (and *can* enter recovery, since a `required` miss is a real failure). |
+| `if_present` | `{selector\|identity_bundle, timeout_ms, steps}` | If the target appears within `timeout_ms`, run `steps` |
+| `try_dismiss` | `{candidates, timeout_ms, fallback_escape?}` | Click the first present candidate; else Escape unless `fallback_escape: false` |
+| `wait_for_one_of` | `{options: [{selector\|identity_bundle, steps?}], timeout_ms, required?}` | First option to appear wins and runs its steps. Timeout is a no-op unless `required: true`, which fails normally (and may recover) |
 
-**Runtime** (`runtime/run.js`): `probePresent(page, spec, inputs, timeoutMs)` is a non-throwing
-presence probe (selector-count or `identity_bundle.signals` resolution, polled via the existing
-`pollPositive`). `runBranchBody` executes each nested step through the same `executeStep`/`HANDLERS`
-dispatch as top-level steps, wrapping each in try/catch so a failed nested action (e.g. the accept
-button moved) is swallowed rather than propagated — the branch body never escalates to Tier A/B
-recovery, since `recoverStep` only fires on a throw escaping `runPlan`'s per-step try. Nested steps
-that carry only a plain `selector` (no `identity_bundle`) are normalized via `resolvableBranchStep`
-into string mode (`_explicit_selector`, the same mechanism recovery uses) — interactive handlers
-like `click` otherwise resolve exclusively through `identity_bundle.signals` and throw immediately
-if none exist.
+**Runtime** (`handlers.js`, `run.js`): `probePresent` is a non-throwing probe (selector count or `identity_bundle.signals`, polled via `pollPositive`). `runBranchBody` dispatches nested steps through `executeStep`/`HANDLERS`, swallowing errors. It is best-effort: no tab resolution, GATE/VERIFY, recovery, cancellation, or dry-run skip. Nested steps with only a `selector` are normalized by `resolvableBranchStep` into `_explicit_selector` mode.
 
-**Version gate**: an older runtime silently no-ops an unrecognized step `type` (see `executeStep`),
-which for a branch step means skipping its entire nested body — for `wait_for_one_of` gating an
-MFA step, that's a correctness bug, not a graceful degrade. `SkillMeta.required_runtime` (enforced
-at execute time via `semver.satisfies`) is the existing guard; `skill_package_builder_output.py`'s
-`CONXA_REQUIRED_RUNTIME` floor (default `>=1.0.3`, applied pack-wide — see the `NOTE(branch-steps)`
-comment there) must be bumped to the app-layer version that first ships these handlers once that
-version is tagged (same manual-coordination pattern as `MIN_HOST` in `build-runtime-app.yml`).
-**Confirmed 2026-07-10 still not tagged**: `git merge-base --is-ancestor 45896e7 app-v1.3.4` fails
-(the branch-executor commit is on `main` but not in any tagged app-layer release) — do not bump
-the floor until it lands in one, or every pack (branch steps or not) would refuse to run.
+**Schema:** `SkillStep.branch` holds `steps`, `candidates`, `options`, `timeout_ms`, `required`. Nested entries are saved-`SkillStep`-shaped dicts. The kinds are in `NO_RECOVERY_ACTION_TYPES`, `SELECTOR_ACTIONS`, and `INSERTABLE_ACTIONS`, not `MARKER_ACTIONS` (they have real probe targets). `runtime/test/gate-skill/` has a worked `if_present` example.
 
-**Compiler / schema** (`packages/conxa-core/conxa_core/models/skill_spec.py`): `SkillStep.branch`
-(`dict`) holds `steps` (`if_present`), `candidates` (`try_dismiss`), `options` (`wait_for_one_of`),
-`timeout_ms`, `required`. Nested step entries are raw dicts in the same shape as a saved `SkillStep`
-(`action`/`target`/`identity_bundle`/`branch`/...) — `skill_package_builder_saved_skill.py`'s
-`_saved_step_to_execution_step` recursively serializes each one (and each `wait_for_one_of` option's
-`steps`) into the flat runtime step shape above. `action_policy.NO_RECOVERY_ACTION_TYPES` and
-`action_registry.SELECTOR_ACTIONS` register the three kinds; they are **not** in `MARKER_ACTIONS`
-(they carry a real probe target, unlike `frame_enter`/`tab_open`) and, as of 2026-07-10, **are**
-in `INSERTABLE_ACTIONS` (see Editor authoring below).
+**From recording.** The recorder never emits branches; it observes. `bridge.js::detectOptionalContainer` walks up to 10 levels from the target for `[role=dialog]`/`[aria-modal=true]` (always stamped) or a consent-token id/class (`cookie`, `consent`, `gdpr`, `onetrust`, `truste`, `banner`), checked against recent `dom_diff.added` signatures (`_containerAppearedRecently`; unconfirmable still stamps). A match sets `optionality = "stochastic"` and `branch_hint = {kind: "try_dismiss", container_signal}`, carried verbatim to `SkillStep.optional_hint`. Two consumers convert it, both via `second_opinion.py::build_try_dismiss_from_hint` (see the CLAUDE.md invariant):
+1. compile time: `suggest_optional` (§7.3);
+2. review time: Human Edit's "treat as optional?" badge (`WorkflowStepItem.tsx`) → `cmd_confirm_optional_interstitial` → `confirm_optional_interstitial`. This is a structural mutation that bypasses `patch_gate`.
 
-**Foundation scope**: schema, runtime executor, and build-serializer passthrough — shipped
-2026-07-09. A conditional branch could initially only be authored directly as
-`execution.json`/saved-skill JSON (see `runtime/test/gate-skill/` for a worked example — an
-`if_present` step dismisses a fixture cookie banner before the gate click). A curated
-dismiss-pattern library is tracked separately in `TODO.md` (EXEC-5).
+Either way the hint is consumed once, and there's no un-confirm.
 
-**Recorder observation + human-gated confirmation (recording-next-steps.md Priority 2,
-2026-07-10)**: the recorder itself still never emits `if_present`/`try_dismiss`/`wait_for_one_of`
-directly from a live recording — it only *observes* and flags. `bridge.js::detectOptionalContainer`
-walks up from each action's target (bounded, 10 levels) looking for `[role=dialog]`/
-`[aria-modal="true"]`, or an id/class token match against a small consent/banner heuristic list
-(`cookie`, `consent`, `gdpr`, `onetrust`, `truste`, `banner`). A `role=dialog`/`aria-modal` match is
-stamped unconditionally; a banner-token match is checked against a small ring buffer of recent
-`dom_diff.added` signatures (`_containerAppearedRecently`, fed by Priority 1's `dom_diff` — a
-second consumer of the same signal) to distinguish "this banner just appeared" from "this banner
-was always on the page," but an unconfirmable check (empty buffer, e.g. first action of the
-session) still stamps — false positives are harmless. A match sets
-`RecordedEvent.optionality = "stochastic"` and `branch_hint = {kind: "try_dismiss",
-container_signal}`. `build.py` carries this onto `SkillStep.optional_hint` **verbatim**; the
-per-step compile loop never reads it. Two consumers convert it into a real `try_dismiss` branch,
-and both go through the same builder (`compiler/second_opinion.py::build_try_dismiss_from_hint`)
-so the two paths cannot produce different branch shapes:
+**Editor.** All three are insertable. `if_present` bodies are editable via `insert_branch_step`/`delete_branch_step`/`reorder_branch_steps` and `cmd_patch_step(path="branch.steps[N]")` through `_apply_step_patch` (selector gates + bundle rebuild). `validate_editor_patch(in_branch_body=True)` rejects `recovery`/`validation` keys (dead config in a best-effort body). `candidates`/`options` accept quality-gated `branch` patches but have no dedicated UI (`BranchBodyEditor.tsx` covers `if_present` only; TODO.md BUILD-6). `StepEditorDTO.branch_summary`/`branch_steps` project them read-only.
 
-1. **At compile time** — the second opinion's `suggest_optional` kind (BUILD-25, see §7.2).
-   Observed state is still required: the pass can only judge hints the recorder already produced,
-   never invent one. What changed on 2026-09-09 is *when* the human confirms — after the fact, in
-   Human Review, rather than before.
-2. **At review time** — for any hint the pass left alone. `StepEditorDTO.optional_hint` surfaces it
-   read-only; Human Edit (`WorkflowStepItem.tsx`'s `StepBadges`) renders a "treat as optional?"
-   affordance that calls `cmd_confirm_optional_interstitial` →
-   `workflow_mutations.confirm_optional_interstitial`, which rewrites the step's `action` to
-   `try_dismiss`, applies the shared builder's `intent`/`branch`/`recovery`, then clears
-   `optional_hint`. This is a structural mutation (same shape as
-   `insert_branch_step`/`delete_branch_step`) — it bypasses `patch_gate.py` entirely rather than
-   going through `cmd_patch_step`.
-
-Either way the hint is consumed exactly once, and there is no un-confirm command: reversing a
-conversion means editing the step back by hand.
-
-**Editor authoring (2026-07-10, closes the remaining EXEC-1 gap)**: `if_present`/`try_dismiss`/
-`wait_for_one_of` are now insertable from Human Edit's Add-action menu. `if_present`'s nested
-`steps` body is fully editable: `insert_branch_step`/`delete_branch_step`/`reorder_branch_steps`
-(`conxa_compile/editor/workflow_mutations.py`) handle structural add/remove/reorder via matching
-`cmd_*` RPCs (`handlers/workflow_editor.py`); per-field edits on a nested step reuse
-`cmd_patch_step` with a new optional `path` parameter (`"branch.steps[N]"`) that resolves the
-nested dict inside `steps[step_index]["branch"]["steps"]` instead of a top-level step, then
-routes through the same `_apply_step_patch` helper (selector-quality gates + `identity_bundle`
-rebuild) the top-level flow uses. `patch_gate.py::validate_editor_patch` gained an
-`in_branch_body` flag: when true, `recovery`/`validation` patch keys are rejected outright, since
-branch bodies are best-effort and never enter Tier A/B recovery (this section, above) — a nested
-step's recovery/validation blocks would be dead configuration if editable. `try_dismiss`'s
-`candidates` and `wait_for_one_of`'s `options` accept a normal `branch` key patch (each selector
-quality-gated the same way as `target.primary_selector`) but have no dedicated authoring UI yet —
-`BranchBodyEditor.tsx` only covers `if_present`; see `TODO.md` BUILD-6. Human Edit's DTO
-(`StepEditorDTO.branch_summary`/`.branch_steps`) surfaces the same data read-only for review — see
-`research-analysis/Human-Edit-vs-Skill-Package.md` and `docs/Implementation-Plan.md` §1.11.
-
-### 10.8 Iteration: `for_each` (EXEC-38)
-
-The step format could branch but not loop: "process each pending order" required recording N
-near-identical steps or hoping. `for_each` closes that — "for each row matching X, do steps A-C" —
-built directly on the entity-binding machinery §10.2a already shipped, not new resolution logic.
-
-**Shape** (runtime execution-step form, top-level fields — same flattening `if_present` etc. use).
-Exactly one row source, `rows` or `items`, never both, never neither:
+### 11.2 Iteration: `for_each`
 
 ```jsonc
 { "type": "for_each",
-  "rows": { "container_selector": "table#invoices tr" },   // a live DOM scan …
-  // "items": "files",                                     // … OR a named runtime input
-  "as": "row",                    // body reads {{row_id}}, {{row_index}}
-  "max_iterations": 50,           // REQUIRED — the runtime refuses an uncapped loop
-  "on_row_error": "stop",         // "stop" (default) | "continue"
+  "rows": { "container_selector": "table#invoices tr" },  // live DOM scan …
+  // "items": "files",                                    // … OR a named runtime input
+  "as": "row",                  // body reads {{row_id}}, {{row_index}}
+  "max_iterations": 50,         // required
+  "on_row_error": "stop",       // "stop" (default) | "continue"
   "steps": [ … ] }
 ```
 
-**Row source #2: `items` (a named runtime input), not a DOM scan.** The original shape only
-ever enumerated a live page — "for each row matching this selector." A workflow whose loop
-variable is the caller's own input (e.g. "download each of these files," where the file list is
-a runtime `text` input the MCP client fills in) has no DOM to scan at all. `items: "<input_name>"`
-names that input directly; `resolution.js::splitListInput(raw, cap)` — `enumerateRows`'s sibling —
-splits the input's current value on commas (or takes an array, for a caller that already has
-one), trimming, dropping empties, de-duplicating and capping exactly the way `enumerateRows`
-does, so both sources behave identically to the loop executor and its telemetry. `run.js`'s only
-change is the one branch that picks the source:
-```js
-const rowIds = step.items
-  ? splitListInput(state.inputs[step.items], cap)
-  : await enumerateRows(page, spec, cap);
+Exactly one of `rows`/`items`. Enforced in `_saved_for_each_step` (compile) and `patch_gate.py::_validate_for_each_source` (against the step's effective, merged `for_each`).
+
+- **Real execution per row.** `for_each` is intercepted in `executeOneStep` and calls `executeOneStep` for every body step per row, so the body gets tab resolution, GATE/VERIFY, settle retry, full recovery, cancellation, and dry-run's destructive skip. This is unlike `runBranchBody`.
+- **Row sources:** `resolution.js::enumerateRows(page, spec, cap)` lists every matching row with its full trimmed text as the identifier, **once, before the loop** (re-enumerating a mutating list skips or double-processes rows). `splitListInput(raw, cap)` splits an input on commas (or takes an array), trimming, deduping, and capping identically.
+- **Per-row scoping is entity binding:** body steps carry `entity_binding.identifier: "{{row_id}}"`. `inputs.<as>_id`/`<as>_index` are set per iteration and restored (or deleted) after the loop. `entityRoots` requires exactly one matching row, so duplicate row text fails closed. An `items` body usually has no binding, and `entityRoots` no-ops.
+- **Caps:** `max_iterations` is required at compile time and clamped at runtime by `CONXA_MAX_LOOP_ITERATIONS` (default 100, `run_config.js`).
+- **Errors:** `on_row_error: "stop"` halts on the first failed row (a silently skipped row is an unnoticed partial write); `"continue"` is opt-in. Cancellation and an `ai_review` pause always propagate. The loop pushes to `state.warnings` when it finds zero rows/items or finishes with failures under `continue`.
+- **Entity binding for every step:** `build.py` detects bindings on all steps, not only irreversible ones. The publish gate stays irreversible-only but recurses into `for_each.steps`.
+- **Loop variables are never inputs:** `upload_binding.py::for_each_loop_variable_names` excludes `{{<as>_id}}`/`{{<as>_index}}` from auto-declared inputs in both `reconcile_inputs_with_step_values` and `_merge_saved_inputs_with_execution_placeholders`, alongside the `downloaded_file*` family.
+- **Editor:** insertable (category `iteration`), scaffolded by `_new_manual_step`, validated by `_validate_for_each_patch` (`steps` rejected on the parent patch). `StepEditorDTO.for_each_summary`/`for_each_steps` project the body read-only (`"{skill_id}:{i}.for_each.steps[j]"`). No dedicated nested-body UI yet (PROD-3-UI).
+
+**`download_observed` fails loudly.** The marker throws `badInput` when no download arrives, when the race resolves nothing, or when the entry has no `.path` (`saveAs()` failed). So a download loop stops on the first missing file instead of "succeeding" with partial or no downloads.
+
+**Second opinion guards relevant to loops:**
+- `parameterize_literal` refuses any `value` already containing a `{{placeholder}}` (`PLACEHOLDER_RE`), so auto-bound download placeholders survive.
+- `flag_noise` never archives a step that triggers a download or file chooser. `_review_inputs` computes `causes` (`file_download`/`file_chooser`) by looking past markers to the next real step; the prompt and `_validate_findings` refuse such findings, and `archive_flagged_steps` independently recomputes the lookahead and refuses (the structural guarantee).
+
+#### "Generalize to a loop" suggestion
+
+`compiler/loop_suggestion.py::detect_download_upload_loop_candidates` is fully deterministic. It fires when an upload is bound to exactly `{{downloaded_file}}` and that download's filename appears in an earlier `navigate` URL. Matching uses `url_contains_literal`/`replace_url_literal`, which decode the URL (`unquote`) rather than encode the filename (`C%2B%2B.gitignore`). v1 is URL-based only.
+
+- If the step before the `navigate` is a click on the same tab whose fingerprint text (`inner_text`/`aria_label`/`label_text`/`title`, never a selector) contains the filename, it's recorded as `redundant_click_key` and the range extends to cover it.
+- Findings go to `compile_report["for_each_suggestions"]`, computed after the second opinion settles.
+
+**Accept** (`workflow_mutations.py::apply_for_each_loop_suggestion`, `cmd_accept_for_each_suggestion`) is one atomic write, because `patch_gate` rejects `steps` on a `for_each` patch and an empty loop vanishes at packaging. The write:
+- re-resolves every `step_key` and re-checks the URL match;
+- wraps the range;
+- templates the filename to `{{<as>_id}}` in the body's `url` and in `entity_binding.identifier` (case-insensitive substring, via the same rule as `upgrade_entity_binding_identifiers`; other text is never rewritten);
+- rebinds the upload to `{{downloaded_files_dir}}`;
+- declares the `files` input through `_validate_skill_inputs`;
+- removes the redundant click, archiving it as `superseded_by_loop_navigate` in the document-level, append-only `doc["editor_archived_steps"]` (compile never touches it; the evidence bundle concatenates it with `compile_report["archived_steps"]`).
+
+Any apply clears **all** pending suggestions, since moving a `download_observed` shifts sibling occurrence ordinals.
+
+**Reject** (`cmd_reject_for_each_suggestion`) logs to `edits.jsonl` with `source="for_each_suggestion"`. `workflow_dto.py::_compile_health` filters rejected suggestions on every read (`loop_suggestion.filter_rejected`), so a reload doesn't resurface them. UI: `ForEachSuggestionBanner.tsx` beside `CompileHealthBanner`.
+
+Tests: `runtime/test/unit/test_for_each.js`, `test_download_race.js`; `conxa-cloud/tests/test_for_each_compile.py`, `test_for_each_patch_gate.py`, `test_for_each_dto.py`, `test_for_each_mutations.py`, `test_publish_entity_binding_gate.py`, `test_second_opinion.py`, `test_editor_derived_sync.py`, `test_loop_suggestion.py`, `test_apply_for_each_loop_suggestion.py`, `test_workflow_dto.py`.
+
+### 11.3 AI Review Step
+
+`ai_review` is an author-placed reasoning checkpoint: not a page action, and **outside the recovery cascade**. It never touches `recovery_stage.js`, `retry_budget.js`, or the recovery ceiling. It isn't the "silent LLM fallback" the invariants forbid: it's explicit, editor-visible, and exists to invoke reasoning (CLAUDE.md Key Invariants).
+
+**Shape.** Authored in Human Edit (`ai_review_prompt`, `ai_review_output_schema`, `ai_review_on_failure`, `ai_review_default_value`) and flattened to `{type: "ai_review", prompt, on_failure, output_schema?, default_value?, reference_screenshot_ref?, output_name?}`. A blank prompt drops the step at build with a warning.
+
+**Two-call contract** (reuses the park primitive, not recovery):
+1. `run.js` intercepts the step after tab resolution and throws `reviewPause`. `server.js` parks the page (same `_parks`, `PARK_TTL_MS`, `capturePageFingerprint`/`PARK_DIVERGENCE_TOLERANCE`) and returns a review request (`review_pause.js::buildReviewRequest`): the exact `resume_from`/`review_results` call to make, an optional reference image, a live DOM inventory (`domInventory()`), and a JPEG q80 screenshot. It also returns `_meta: {"conxa/ai_review": {step_index, prompt, output_schema}}` so programmatic callers needn't parse prose.
+2. The caller resumes with `review_results: {"<step_index>": answer}`, bound into `inputs` (never through `applyStepOverrides`). `_resumeReviewStep` is **not** gated on agent recovery being enabled: any MCP caller can answer.
+
+**On resume** the answer is checked against `output_schema` (hand-rolled: required fields, type, enum; no dependency) and the park's divergence check. Divergence or an invalid answer triggers a bounded re-ask (`REVIEW_RETRY_MAX = 2`), not a refusal. Then `on_failure` applies:
+- `abort` (default): end the run;
+- `use_default`: bind `ai_review_default_value` and continue on the same parked page;
+- `continue`: bind `null`.
+
+An unanswered pause is closed by the park TTL sweep.
+
+**Build Studio sandbox** (tier 2, no agent): `cmd_test_workflow` detects the pause (via `_meta`, falling back to the prose `resume_from:` line) and answers it itself through `_answer_ai_review`. That's the `ai_review` LLM task, `usage_class="human_edit"`, text route first with one `route_vision` fallback on `CloudUnreachable`; quota/entitlement errors propagate. Capped at 5 pauses per test. `ai_review` is not in `VISION_TASKS`.
+
+**Safety:** `patch_gate` refuses a destructive step directly after an `ai_review` (`destructive_step_cannot_directly_follow_ai_review`). A model's answer may gate whether a later step runs, never supply what a destructive step acts on.
+
+**Not built** (TODO.md): writing a reference screenshot for an inserted `ai_review` (the field, gate, and loader exist; `_write_saved_visual_assets` only walks recorded steps), and branching on an answer (branches probe the DOM, not `inputs`).
+
+### 11.4 Hand-Over Step
+
+`handover` yields the live page to a **person** (2FA, CAPTCHA, e-signature, one-off login), then takes it back. Outside the recovery cascade, like `ai_review`. Only the hand-over shape of EXEC-21 is built; approve/reject and supply-a-judgement are open.
+
+**Resume signals** (`runtime/app/handover.js::arm()` → `{signal, disarm}`; the first to fire wins; `disarm()` is idempotent):
+1. an in-page "Done — resume workflow" banner: `context.exposeBinding` + `addInitScript`, plus an immediate `evalOn` on every live page, so it survives navigation and new tabs;
+2. a file drop at `~/.conxa/resume/<run_id>.cmd` (`fs.watch` + 5 s poll), written by `conxa-runtime.exe resume <run_id>` (host subcommand in `bootstrap.js`);
+3. a loopback HTTP listener (`127.0.0.1`, random port, per-pause token). This is the runtime's only inbound network surface and exists only while a hand-over is pending.
+
+**Two speeds.** `run.js` races the signal against `CONXA_HANDOVER_INCALL_MS` (120 s). If the person is there, the run continues inside the same call. Otherwise it throws `handoverPause` and `server.js` parks the page, with three differences from an `ai_review` park:
+- **The host lock is released** during the pause (`HANDOVER_PARK_TTL_MS`, 30 min, is too long to block sibling runs) and re-acquired on resume.
+- **Extra tabs stay open** (the person may be mid-OAuth).
+- **No divergence refusal:** page change is the point. `handover.js::revalidate()` re-resolves the recorded tab via `resolveStepPage` (never "whatever is current"), checks it's open, and, if `resume_when` was declared, requires that probe to be true. Otherwise the step fails cleanly.
+
+**Self-driven resume:** when parking, `server.js` attaches `armed.signal.then(...)`; when a signal fires, the same process calls its own `_handleTool("execute_skill", {resume_from, watch: true})`, the same path an agent would use. In the Studio sandbox, `call_runtime_tool` drops idle processes after 300 s (`_IDLE_TIMEOUT_S`), so a hand-over pending longer than that dies in tests only.
+
+**Authoring:** `action_registry.py` lists `handover` (validation category). Its value field is the **message shown to the person** (`VALUE_LABELS`). `handover_*` fields: `on_failure` ∈ `{abort, continue}`, optional `resume_when` + timeout. Flattened to `{type: "handover", message, on_failure, resume_when?, resume_when_timeout_ms?}`; no message → dropped.
+
+**Unknown step types fail loudly.** `handlers.js::executeStep` throws on any type that isn't a known handler or one of the `run.js`-intercepted types (`ai_review`, `handover`, `for_each`), so a guard step never silently vanishes on a newer runtime. Older runtimes still no-op, hence the version gate above.
+
+**Limitations:** a person can't operate a native `alert`/`confirm`/`prompt` (the run's dialog listener intercepts it at CDP). A hand-over inside a `for_each` body isn't resumable (the pause propagates out like cancellation; no compile-time guard yet, TODO.md). Not durable across a runtime restart (EXEC-22).
+
+
+---
+
+## 12. Telemetry
+
+### 12.1 Flow
+
+```mermaid
+sequenceDiagram
+    participant RT as Runtime (tracker.js)
+    participant Cloud as Conxa Cloud
+
+    RT->>RT: createTracker(pack.tracking)
+    RT->>Cloud: POST {tracking_url} (X-Tracking-Token)
+    Note over RT,Cloud: wf_start flushed and awaited (≤ 2 s) before any browser opens
+    Cloud->>Cloud: verify token; verify chain link on raw events; _cap_events
+    Cloud->>Cloud: db_append("tracking/{ws}", run_id, batch)
+    Cloud-->>RT: 202 Accepted
+    Note over RT: failed POST → logs/telemetry-spill.jsonl, drained at next startup
 ```
-Everything past that line — the cap, `{{<as>_id}}`/`{{<as>_index}}` injection and save/restore,
-`on_row_error`, dry-run, the full recovery cascade, telemetry — is unchanged and source-agnostic.
-An `items` loop's body ordinarily carries no `entity_binding` at all (there is no live row to
-re-locate); `entityRoots` already no-ops when a body step declares none, so no new guard was
-needed. Enforced everywhere a `for_each` is written: `_saved_for_each_step` (compiler, drops a
-step with both or neither source), `patch_gate.py::_validate_for_each_source` (editor, checked
-against the step's EFFECTIVE `for_each` — existing merged with the patch — not the raw patch
-alone, so a patch touching only `items` still catches a leftover `rows.container_selector`).
 
-**The one real refactor this required.** `run.js`'s step loop used to be a flat `for` with the
-per-step body inlined — every branch primitive before this one runs its nested body through
-`handlers.js::runBranchBody`, a best-effort dispatcher that swallows every error and bypasses tab
-resolution, GATE/VERIFY, the recovery cascade, cancellation, and dry-run's destructive-skip
-(§10.7 above). A loop body doing real work — the kind `for_each` exists for — needs the real
-thing, not that. The per-step body was extracted into `executeOneStep(ctx, state, steps, i)`: `ctx`
-carries everything constant for the whole run (tabs, watch, dryRun, slug, the tracker/cancelCheck/
-onStep/onPhase callbacks), `state` carries everything mutated across steps (recoveredSteps,
-hasExecutedStep/prevStepType/prevPage for tab-inheritance and settle continuity, warnings,
-dryRunSkipped, and the flat `inputs` namespace). The top-level loop is now
-`for (i) await executeOneStep(ctx, state, steps, i)`; `for_each` is intercepted inside
-`executeOneStep` itself (same shape as the existing `ai_review`/dry-run interceptions) and calls
-`executeOneStep(ctx, state, bodySteps, j)` per body step per row — so a loop body gets tab
-resolution, GATE/VERIFY, settle-retry, the full recovery cascade, and PROD-3-DRYRUN's
-destructive-skip **for free**: dry-run mode already resolves-but-never-dispatches a
-`destructive === true` step wherever `executeOneStep` runs it, loop body included, with no
-loop-specific dry-run code needed at all.
+The tracking token is baked into `pack.json` at publish (§5.4); end users never authenticate.
 
-**Enumeration** (`resolution.js::enumerateRows(page, spec, cap)`) — the inverse of `entityRoots`:
-lists every row matching `rows.container_selector` and uses each row's own full trimmed text as
-its identifier. Self-consistent by construction — `entityRoots` later re-locates that exact row
-with `.filter({ hasText: identifier })`, so a row's own text always matches itself; if two rows
-happen to share identical text, `entityRoots`'s existing "exactly one match or fail closed" gate
-refuses that iteration rather than guessing, which is correct, not a bug to design around.
-**Snapshot semantics**: called exactly ONCE, before the loop starts — re-enumerating mid-loop over
-a list that mutates as you act on it (a processed row disappearing from a queue view) is how a
-batch silently skips or double-processes rows.
+### 12.2 Events
 
-**Per-row scoping is entity binding, unchanged.** Body steps carry `entity_binding.identifier:
-"{{row_id}}"` (author-set); `run.js` sets `inputs.row_id`/`inputs.row_index` before each
-iteration's body runs (restored — or deleted, if they didn't exist before — once the whole loop
-finishes, not per-iteration) and the existing `entityRoots` narrowing does all the work, including
-its PROD-3 guarantee that recovery can never substitute a different row.
+Emitted by `runtime/app/tracker.js`. Illustrative, not exhaustive: `tracker.js` call sites are the source of truth.
 
-**Safety, shipped together with the primitive, not after** — this is why **PROD-3-DRYRUN** (dry-run
-mode, the stage-then-commit lint, compensation workflows — §10.6a's sibling, documented just above
-this section) landed first in the same pass:
-- `max_iterations` is required at compile time (`_saved_for_each_step` drops a step that lacks
-  one — same "return None ⇒ vanishes from execution.json" contract every action uses for an
-  unfillable step) and clamped again at runtime by `CONXA_MAX_LOOP_ITERATIONS` (default 100,
-  `run_config.js`) — belt-and-braces against a hand-edited pack.
-- Entity binding is detected for **every** step now, not only irreversible ones (`build.py`) — a
-  loop body's ordinary steps need row scoping too, not just its destructive one. The **publish-gate
-  confirmation requirement** stays irreversible-only (`patch_gate.py`), but
-  `handlers/workflows.py::_require_confirmed_entity_bindings` now recurses into `for_each.steps`,
-  so a destructive step buried inside a loop body cannot reach a customer install with an
-  unconfirmed binding — the exact case this gate exists to catch, since the row it targets changes
-  every iteration.
-- `on_row_error` defaults to `"stop"` — deliberately unlike `runBranchBody`'s swallow-everything,
-  because a silently skipped row in a batch is a partial write nobody notices. `"continue"` is
-  opt-in. Cancellation and an `ai_review` pause inside a loop body always propagate immediately
-  regardless of `on_row_error` — neither is a row-level failure.
-
-**Editor.** `for_each` is insertable (`action_registry.py`, category `"iteration"`) with a scaffold
-(`workflow_mutations.py::_new_manual_step`) and full `patch_gate.py` validation
-(`_validate_for_each_patch`: rows/items/as/max_iterations/on_row_error, `steps` rejected on the
-parent patch — nested body edits are path-addressed, same reasoning as `if_present`;
-`_validate_for_each_source` separately enforces the exactly-one-row-source rule above).
-`StepEditorDTO` gained `for_each_summary`/`for_each_steps` — the same read-only, path-addressed
-(`"{skill_id}:{i}.for_each.steps[j]"`) projection `branch_summary`/`branch_steps` uses (the summary
-carries `items` alongside `container_selector`, whichever is set). **Not yet built**: a dedicated
-nested-body authoring UI (a `BranchBodyEditor.tsx` variant) — today a loop body is only editable
-via the generic patch mechanism, the same "backend done, editor control pending" gap `PROD-3-UI`
-already tracks for Strict Mode and entity-binding confirmation; see `TODO.md`.
-
-**Two compile-time defects fixed alongside the `items` source (2026-09-13), both found while
-generalizing a recorded download→upload workflow into a `for_each` loop:**
-- **The BUILD-25 second-opinion pass could clobber an auto-bound download placeholder.**
-  `upload_binding.py::bind_upload_step_value` deliberately writes `{{downloaded_file}}` (or
-  `{{downloaded_files_dir}}` for a bulk upload) into a step's `value` while setting
-  `input_binding` to `None` — a download-populated placeholder must never become a user-facing
-  input (§ above, "A downloaded file can bind to a later upload"). `second_opinion.py::_apply_one`'s
-  `parameterize_literal` branch guarded only on `step.input_binding` being falsy, which is exactly
-  what an auto-bound download placeholder looks like — the pass would "parameterize" it into a
-  brand-new hand-typed input (e.g. `{{uploaded_file_path}}`), silently destroying the binding. Fixed
-  by refusing whenever `step.value` already contains *any* `{{placeholder}}` (via the shared
-  `PLACEHOLDER_RE`), not just when `input_binding` is set — a value that already holds a
-  placeholder was never a "recorded literal" to freeze in the first place, which is what the
-  docstring always claimed the guard did.
-- **A `for_each` loop's own `{{<as>_id}}`/`{{<as>_index}}` could leak into declared inputs.**
-  `workflow_mutations.py::reconcile_inputs_with_step_values` and
-  `skill_package_builder_saved_skill.py::_merge_saved_inputs_with_execution_placeholders` both
-  auto-declare every `{{var}}` a step references — recursing into `for_each.steps` bodies same as
-  everything else — with no exclusion for a loop's own injected variables, so e.g. `{{file_id}}`
-  would surface as a "please supply a value" input an agent would then be asked to fill in.
-  `upload_binding.py::for_each_loop_variable_names(payload)` walks either step shape (editor
-  document or flat execution/export) and returns every `{{<as>_id}}`/`{{<as>_index}}` name in it;
-  both auto-declare sites exclude it, the same way `_RUNTIME_ONLY_PLACEHOLDER_RE` already excludes
-  `downloaded_file*`. The reconciler now excludes both families directly (previously only the
-  compile handler's separate downstream `filter_runtime_only_inputs()` call stripped the
-  `downloaded_file*` family after the fact) — closing the same gap for two editor RPCs
-  (`handlers/workflow_editor.py`'s patch-value and replace-literal paths) that call the reconciler
-  directly with no such follow-up.
-
-**One-click "generalize this to a loop" suggestion (EXEC-39, 2026-09-13).** A recording that
-downloads exactly one named file and uploads it elsewhere always compiled to a single-file
-skill. `compiler/loop_suggestion.py::detect_download_upload_loop_candidates` proposes
-generalizing it — fully deterministically, **no LLM call anywhere in this decision**, a narrower
-guarantee than BUILD-26's own rule ("never invent a selector for something never observed")
-below, since this feature never touches a selector at all. It fires only when both hold: (1) an
-upload step is bound to the exact `{{downloaded_file}}` placeholder (`upload_binding.py`'s
-single-download binding — the `_N`/bulk variants are excluded, that already means "more than one
-download," a different shape); (2) the matching `download_observed`'s recorded filename appears
-verbatim inside an earlier `navigate` step's URL. **v1 is deliberately URL-based only** — it does
-not fire when a file is picked by a plain click with no URL change (a future `items`-source
-variant using the click's own `entity_binding.identifier` is the natural next step, not yet
-built). It does **not** depend on `entity_binding` at all — verified directly against the real
-`Github to Drive Files Handoff` recording (2026-09-13): once the second-opinion clobber fix below
-is applied, the upload step correctly stays bound to `{{downloaded_file}}` and this detector
-fires on that exact recording, no re-recording needed. Findings are computed in `build.py` after
-the second-opinion pass settles (so
-`step_key`s are final) and stored under `compile_report["for_each_suggestions"]` — the same
-advisory-findings slot `second_opinion`/`archived_steps` use.
-
-Applying one — `editor/workflow_mutations.py::apply_for_each_loop_suggestion` — is one atomic
-document write, not insert-then-patch: `patch_gate.py` already refuses a `steps` key in a
-`for_each` patch, there is no `for_each.steps[N]` path-addressed route, and an empty-bodied
-`for_each` silently vanishes from `execution.json` at package time — so the wrap (splicing the
-matched step range into the new step's nested body), the literal→`{{<as>_id}}` templating inside
-the wrapped body's URL, the upload's rebind to `{{downloaded_files_dir}}`, and the new declared
-input all land in one write. Every `step_key` is re-resolved at apply time, never trusted from a
-stale index — the same staleness discipline `copilot_proposals.py::resolve_step_index`
-established. New RPCs `cmd_accept_for_each_suggestion`/`cmd_reject_for_each_suggestion`
-(`handlers/copilot.py`, co-located with the Copilot proposals for shared governance and log
-format even though no model is involved) — accept is one call, one undo entry, cleaner than
-`_accept_overlay_branch_proposal`'s multi-RPC composition since nothing here needs pre-existing
-insert/patch RPCs; reject logs into the same `edits.jsonl` every other proposal decision uses,
-`source="for_each_suggestion"` — distinct from `"copilot"` since no model produced this finding.
-
-**EXEC-44 (2026-09-18): the literal→`{{<as>_id}}` templating covered `url` only.** A wrapped body
-step's `entity_binding.identifier` — the field `runtime/app/resolution.js::entityRoots` actually
-narrows the live page to on every loop iteration — was left as the one recorded row's literal
-text. Iteration 1 (matching the original recording) passed; every other iteration failed closed
-(`entityRoots` requires exactly one `hasText` match and never falls back). Fixed by applying the
-identical literal→`{{<as>_id}}` rewrite (same case-insensitive substring match, either direction,
-`compiler/entity_binding.py::upgrade_entity_binding_identifiers` already uses elsewhere) to a
-wrapped step's `entity_binding.identifier` when it mentions the recorded filename. Deliberately not
-generalized beyond that field — a wrapped step's `value` or an assertion's text is left untouched
-even when it happens to contain the filename, since substring-replacing arbitrary text risks
-corrupting content that merely coincides with it. The declared `files` input is now also run
-through `_validate_skill_inputs` (the same validator `merge_skill_inputs` already runs for every
-other input-declaring path) before being written — previously appended with no shape or
-uniqueness check at all.
-
-**A real subtlety, found and fixed during implementation:** `download_observed`'s fallback
-`step_key` hashes on action+url alone — identical across every `download_observed` step in a
-workflow, disambiguated only by occurrence ordinal. Moving one occurrence out of the top-level
-step list (into a wrap's nested body) shifts the ordinal of every sibling `download_observed`
-still at top level, silently invalidating any OTHER pending suggestion's `step_key`. Fixed by
-clearing the whole `for_each_suggestions` list on any apply, not just the applied entry —
-matching `_invalidate_compile_report`'s own philosophy of wiping derived data that can no longer
-be trusted rather than risking a misattributed step; a recompile regenerates whatever is still
-genuinely there.
-
-**Dismiss needed read-time filtering, not just compile-time.** A "Dismiss" click only logs a
-decision (`edit_log.py::append_decision`) — it never edits the persisted `compile_report` — so a
-plain Human Edit page reload with no recompile in between would otherwise show the same
-dismissed suggestion again. `editor/workflow_dto.py::_compile_health` filters
-`for_each_suggestions` against `edit_log.read_edits(skill_id)` on every read (a fresh compile, a
-page reload, or a post-accept refresh alike) via `loop_suggestion.py::filter_rejected` — one
-enforcement point rather than a compile-time-only one that would miss the reload case.
-
-**Human Edit surface:** a new always-visible `ForEachSuggestionBanner.tsx`, mounted beside
-`CompileHealthBanner` — visible the moment the page loads, no need to open the Copilot chat panel
-first. Deliberately does not reuse `ProposalCard.tsx`'s single-slot `pendingProposal` store,
-since that is chat-turn-triggered and this is not.
-
-**BUILD-33 (2026-09-13, same day): the second opinion could delete the click that starts the
-download itself.** Using EXEC-39 end to end on the real recording surfaced a second, more serious
-bug than the clobber fixed above: `flag_noise` had archived the click that triggers the file's
-download (`[data-testid="download-raw-button"]`), because that click's `post_condition_effect` is
-`"none"` — starting a download doesn't visibly change the page, which is exactly the shape
-`flag_noise` reads as "did nothing." The accepted loop's body was left as `navigate →
-download_observed` with nothing to trigger the download the marker waits for; every iteration
-timed out, and the final bulk upload failed with an unrelated-looking "no files in it" error. The
-same rule had already deleted the click that opens Drive's file-upload picker in the earlier
-hand-generalized recording — different victim, identical blindness, not a one-off bad call.
-
-Fixed at two layers. `_review_inputs` (`compiler/build.py`) now computes a `causes` field per step
-(`"file_download"` / `"file_chooser"`) by looking past pure navigation markers to the next real
-step — structural, no LLM, no new signal — and both the `workflow_review` prompt
-(`packages/conxa-core/conxa_core/llm/client.py`) and the finding validator
-(`llm/workflow_semantics.py::_validate_findings`) refuse a `flag_noise` finding on a step with
-`causes` set. The real fix is structural rather than advisory, though:
-`compiler/second_opinion.py::archive_flagged_steps` independently recomputes the same lookahead
-from the actual step list and refuses to archive a step that triggers an observed download or
-file-chooser upload — this is the pass's one destructive kind, so the guarantee belongs where a
-stale context field or a model ignoring the prompt can't bypass it. Verified directly against the
-real broken document: reconstructed the pre-archive step list from the shipped skill's own
-`compile_report["archived_steps"]` entry and re-ran the fixed `archive_flagged_steps` — the
-download-trigger click survives.
-
-A second defect in the same recompile: a hardcoded click on the one recorded filename survived
-*outside* the new loop, left behind because the detector's wrap range starts at the `navigate`.
-Redundant once the loop navigates straight to each file's URL, and pinned to a single file with a
-fragile selector. `loop_suggestion.py` now looks one step further back: if that preceding step is
-a click/dblclick on the same tab whose own recorded fingerprint text (`inner_text`/`aria_label`/
-`label_text`/`title`) contains the filename verbatim — never a selector — it's folded into the
-suggestion as `redundant_click_key` and the wrap range is extended to include it.
-`apply_for_each_loop_suggestion` removes that step on Accept rather than wrapping it (wrapping
-would click one hardcoded filename every iteration only to have the following `navigate`
-override it), archiving it under category `superseded_by_loop_navigate`, matching `flag_noise`'s
-own archive philosophy. Verified the same way: reconstructed the pre-accept step list and
-confirmed the fixed detector folds the redundant `Android.gitignore` click into the suggestion.
-
-**EXEC-44 correction (2026-09-18): this archive did NOT actually stay reversible as originally
-written here** — it landed in `compile_report["archived_steps"]`, which
-`compiler/build.py::_apply_second_opinion` rebuilds from scratch on every recompile from that
-compile's own `flag_noise` findings alone, discarding whatever was there before. An editor-time
-accept flow's archive was gone the moment the workflow was next compiled. Fixed by giving it a
-separate home the compile pipeline never touches: `apply_for_each_loop_suggestion` now writes into
-`doc["editor_archived_steps"]` (a document-level field, append-only), and
-`editor/evidence.py::build_evidence_bundle`'s `archived_steps` field is the concatenation of that
-and `compile_report["archived_steps"]` — same entry shape, two provenances, one bundle field.
-
-**BUILD-34 (2026-09-13, same day): the detector's URL match never decoded percent-encoding.** A
-second real recording (`C++.gitignore`) surfaced this immediately after BUILD-33 shipped: no
-download click was lost this time, but the Accept banner never appeared at all.
-`detect_download_upload_loop_candidates` compared the recorded (decoded) filename against the
-navigate step's URL with a raw substring check, but a browser percent-encodes URL-reserved
-characters in a path segment — the actual recorded URL was `.../C%2B%2B.gitignore`, and
-`"C++.gitignore"` is never a substring of that string. `Android.gitignore` and
-`Actionscript.gitignore` happened to contain no character requiring encoding, so this was
-invisible until a filename with a `+` was actually recorded.
-
-Fixed with two shared helpers in `loop_suggestion.py` — `url_contains_literal(url, literal)` and
-`replace_url_literal(url, literal, replacement)` — both decoding the URL (`urllib.parse.unquote`)
-before matching, rather than re-encoding the filename: encoding is ambiguous (a space can become
-`%20` or `+` depending on the site), decoding is not. Three call sites needed this, and fixing only
-the detector would have left a second, latent bug: the detector's own navigate-URL match; the
-defensive re-check in `apply_for_each_loop_suggestion` (an intervening manual edit may have changed
-the URL — must not falsely refuse a still-valid suggestion); and the actual templating step that
-writes `.../{{file_id}}` into the loop body — a raw `url.replace(literal, ...)` there would have
-silently no-op'd, correctly detecting the suggestion but then shipping a loop still hardcoded to
-one file. `replace_url_literal` returns the DECODED URL with the placeholder substituted;
-`page.goto()` (`runtime/app/handlers.js`) accepts unencoded reserved characters and the browser
-re-encodes them on navigation, so nothing is lost at replay. Verified directly against the real
-`C++.gitignore` document: the fixed detector now fires (`template_literal: "C++.gitignore"`), and
-applying it end to end produces a correctly-templated loop body, a rebound bulk upload, and the
-redundant click archived — all against the actual compiled steps, not a synthetic fixture.
-
-**Version gate.** Same manual-coordination caveat as the branch primitives above: an older
-runtime silently no-ops an unrecognized `type`, which for a loop means skipping the entire batch
-— the `CONXA_REQUIRED_RUNTIME` floor must be bumped only once the app-layer version carrying the
-`for_each` handler is actually tagged, not as part of this change.
-
-**EXEC-40 (2026-09-13, same day): a download-loop could report success having downloaded nothing.**
-A third real-world use of EXEC-39 (recompile → Accept → run with real filenames) produced a run
-with zero files downloaded and no error naming why. `download_observed`
-(`runtime/app/handlers.js`) — a passive marker that only waits for a Playwright download event some
-earlier click must have triggered — had three paths that returned successfully having downloaded
-nothing: the wait timing out with the queue still empty, the entry-vs-timeout race resolving
-nothing, and an entry resolving with no `.path` (server.js's download listener resolves `null` when
-`saveAs()` itself fails). None of these threw, and nothing downstream ever checked "did every
-requested item actually produce a file" — a `for_each` loop over this step could complete every
-iteration "successfully" while downloading some, one, or zero of the files asked for; the final
-bulk upload only failed if the shared downloads folder ended up *completely* empty, so a partial
-miss uploaded happily. An existing unit test (`test_download_race.js`) had asserted this silent
-behavior as correct.
-
-Fixed by making `download_observed` throw on all three paths, with `{ badInput: true }` — the same
-short-circuit `for_each`'s own `max_iterations` check already uses in the same file: no amount of
-re-finding a selector can produce a download that never fired (there is no selector to re-find here
-— `download_observed` compiles with `recovery.max_attempts = 0`, same as every marker action in
-`action_policy.py`'s `NO_RECOVERY_ACTION_TYPES`), so this routes straight to `stepFailure`, skipping
-the Tier 1-4 cascade entirely. With zero new loop-specific code, this makes `runForEachStep`'s
-existing `on_row_error: "stop"` (the default this feature's loops use) halt the whole run
-immediately on the first missing download, naming the failing step — instead of completing and
-shipping a partial or empty result. Separately, `on_row_error: "continue"` already tracked
-`processed`/`failed` but only as tracker-only telemetry (`for_each_done`) that never reached the
-run's own result; `runForEachStep` now also pushes into `state.warnings` when the loop finishes
-with zero items to process or `failed > 0` under `continue` — verified this reaches the runtime's
-own final result text (`server.js`'s `_allWarnings` → the `"Warning:\n..."` block every result
-already appends).
-
-Tests: `runtime/test/unit/test_for_each.js` (enumeration snapshot-once, cap enforcement, missing
-cap fails at load, `on_row_error` both ways, `{{row_id}}` reaching `entityRoots`, `inputs`
-restored, dry-run visiting every row without dispatching, plus the `items` source mirrored
-one-for-one: comma-split, single value, whitespace trim, empty/absent input, de-dup, cap, missing
-`max_iterations`, no `{{file_id}}`/`{{file_index}}` leak; EXEC-40's own additions — a warning on
-zero rows/items for both sources, a warning naming how many rows failed under `on_row_error:
-continue`), `test_download_race.js` (rewritten: `download_observed` now throws — on nothing ever
-queued, on the entry-vs-timeout race resolving nothing, on a null entry, on a missing queue
-entirely — alongside the unchanged happy-path wait-then-bind case); `conxa-cloud/tests/test_for_each_compile.py`
-(now also `items`-source serialization and the exactly-one-source drop rule),
-`test_for_each_patch_gate.py` (now also `_validate_for_each_source`'s both/neither/switch cases),
-`test_for_each_dto.py` (now also `items` in the projected summary), `test_for_each_mutations.py`,
-`test_publish_entity_binding_gate.py` (nested confirmation-gate recursion),
-`test_second_opinion.py` (the download-placeholder clobber regression; BUILD-33's
-`archive_flagged_steps` refusals — a click before `download_observed`, before an upload, an
-isolated click still archived normally, a real action between click and marker still archives the
-click, tab/frame markers skipped in the lookahead — plus `_validate_findings`'s `causes` gate),
-`test_editor_derived_sync.py` (loop-variable and `downloaded_file*` exclusion from
-`reconcile_inputs_with_step_values`); EXEC-39's own `test_loop_suggestion.py` (detection
-conditions, both directions of the rejection filter, BUILD-33's `redundant_click_key` absorption —
-fingerprint match, tab mismatch, non-click predecessor — and BUILD-34's `url_contains_literal`/
-`replace_url_literal` — percent-encoding seen through on both sides, a plain URL still matches, a
-real regression fixture with an actual `+` in the filename), `test_apply_for_each_loop_suggestion.py`
-(the splice, the templating, the upload rebind, the new input, staleness refusals, BUILD-33's
-redundant-click drop-and-archive, BUILD-34's percent-encoded-filename templating, and a full export
-round-trip through `_build_workflow_from_saved_skill`), and two new cases in `test_workflow_dto.py`
-(a fresh suggestion surfaces; a previously-rejected one is filtered at read time, not just at
-compile time).
-
-### 10.9 AI Review Step (EXEC-13)
-
-`ai_review` is an author-placed reasoning checkpoint, not a page action and not a recovery
-candidate — it deliberately sits *outside* the Tier 1-4 recovery cascade documented in §10.1.
-Authored during Human Edit (`ai_review_prompt`, `ai_review_output_schema`, `ai_review_on_failure`,
-`ai_review_default_value`), it compiles to a flat execution step (`skill_package_builder_saved_skill.py`'s
-`ai_review` branch): `{type: "ai_review", prompt, on_failure, output_schema?, default_value?,
-reference_screenshot_ref?, output_name?}`. A step with a blank prompt is dropped at build time with
-an actionable warning (the same drop-and-warn shape `drag_drop` already used), rather than shipping
-an unaskable question.
-
-**Why it isn't recovery, and why that matters:** `CLAUDE.md`'s Key Invariants forbid a *silent* LLM
-fallback in a compiled-selector or a11y resolution path, and require Tier A recovery to cost zero
-tokens. `ai_review` is neither silent nor a fallback — it's an explicit, editor-visible step whose
-entire purpose is to invoke reasoning, and it never touches `recovery_stage.js`'s escalation state,
-`retry_budget.js`'s retry-budget map, or `CONXA_MAX_RECOVERY_TIER`'s Strict Mode ceiling. Concretely:
-the resume-adoption branch in `server.js` (`_resumeReviewStep`) is **not** gated on
-`agentRecoveryEnabled` (tier ≥ 3) the way Tier B recovery escalation is — an `ai_review` pause must
-be answerable by any MCP caller, agent or not.
-
-**The two-call contract (reuses recovery's park primitive, not recovery itself):** `run.js`
-intercepts `step.type === "ai_review"` before it ever reaches `executeStep`/`recoverStep`
-(`runtime/app/run.js`, right after tab resolution). On first arrival it throws a distinct
-`reviewPause` signal; `server.js` parks the live page (same `_parks` map, same `PARK_TTL_MS`,
-same `capturePageFingerprint`/`PARK_DIVERGENCE_TOLERANCE` divergence check as §10.1a's recovery
-park — a sibling use of the primitive, not recovery state) and returns a review request instead of
-a failure response. `execute_skill` gained a `review_results: { "<step_index>": <answer> }`
-parameter, parallel to `step_overrides` but never run through `applyStepOverrides` — an `ai_review`
-step carries no selector for that to inject, only a structured answer bound into `inputs`.
-
-The review request (`runtime/app/review_pause.js::buildReviewRequest`) mirrors Tier B's
-text+image shape: a header naming the exact `resume_from`/`review_results` call to make, an
-optional reference image (`reference_screenshot_ref`, when the compiler wrote one — dormant today,
-see "Not built" below), a live DOM inventory block (the same `domInventory()` script §10.1a's
-`gatherInventory` uses), and the current-page screenshot (JPEG q80). It also returns
-`_meta: {"conxa/ai_review": {step_index, prompt, output_schema}}` alongside `content` — an MCP
-`Result`'s `_meta` field is a passthrough object per the SDK's `ResultSchema`
-(`z.looseObject({_meta: RequestMetaSchema.optional()})`), so a programmatic (non-agent) caller can
-answer without parsing prose. Claude Desktop ignores unknown `_meta` keys.
-
-On resume, `server.js` validates the answer against `output_schema` (`review_pause.js`'s hand-rolled
-structural check — required fields, type, enum; not full JSON Schema, deliberately, to avoid a new
-dependency in every customer's runtime bundle) and against the park's divergence check. Unlike an
-agent-override resume, **divergence or an invalid answer does not refuse outright** — a review
-answer is a judgment about page state, so the right move is a bounded re-ask (`REVIEW_RETRY_MAX =
-2`, its own small counter, separate from recovery's retry budget) against the current page. Once
-re-asks are exhausted, the step's `on_failure` policy applies: `abort` (default, ends the run),
-`use_default` (binds `ai_review_default_value` and continues from the same parked page — restarting
-on a fresh page would break every later step's assumption about where in the app the workflow
-already got to), or `continue` (binds `null`). A review step that is never answered closes its
-parked browser via the same `PARK_TTL_MS` TTL sweep every recovery park uses — it leaks nothing.
-
-**Studio sandbox path (no agent present):** `conxa_runtime.py`'s sandbox runs with
-`CONXA_MAX_RECOVERY_TIER=2` and no MCP agent in the loop, so nothing would ever answer a parked
-review request. `handlers/workflows.py::cmd_test_workflow` closes this: after each `execute_skill`
-call it checks the result for an `ai_review` pause (via `_meta`, falling back to parsing the prose
-`resume_from:` line), and if found, answers it itself through the metered cloud LLM proxy
-(`_answer_ai_review`) and resumes — a bounded loop, capped at 5 pauses per test run, so a
-misconfigured workflow can't hold the sandbox's host-lock and parked browser open indefinitely.
-The answerer calls a new `ai_review` LLM task (`packages/conxa-core/conxa_core/llm/client.py`)
-with `usage_class="human_edit"` — the same `ensure_human_edit_available`/`record_llm_usage` metering
-path every other Human Edit vision call already uses (§13.3), no new entitlement surface. `ai_review`
-is deliberately **not** added to `VISION_TASKS`: the text-model route is tried first (multimodal
-providers accept the image on either route, only the *model selected* differs), falling back once to
-`route_vision` directly on a `CloudUnreachable` failure (a provider rejecting the image, or the pool
-exhausted); a `QuotaExceeded`/`EntitlementBlocked` propagates immediately rather than burning a
-second, equally-blocked call.
-
-**Safety interaction (PROD-3):** the patch gate refuses to save a destructive step that directly
-follows an `ai_review` step (`ai_review_step_cannot_patch_recovery`'s sibling check,
-`destructive_step_cannot_directly_follow_ai_review`) — a model-supplied answer has no entity binding
-to prove it's acting on the right record, so a review output may gate *whether* a later step runs
-(via a conditional), never supply *what* a destructive step acts on directly.
-
-**Not built (deliberate, tracked in `TODO.md`):** a build-time reference screenshot for an
-*inserted* `ai_review` step — the field, the patch-gate validation, and the runtime loader all
-already work, but nothing writes the asset (`_write_saved_visual_assets` only ever walks a
-*recorded* step's `signals.visual`); and branching on a review's answer — the conditional primitives
-in §10.7 all branch on a live DOM probe, not on an `inputs` value, so a review's output can be read
-by a later step's placeholder but can't itself gate whether a step runs.
-
-### 10.10 Hand-Over Step (EXEC-21, hand-over shape)
-
-`handover` is `ai_review`'s human sibling: a planned pause, not a page action, sitting outside the
-Tier 1-4 recovery cascade for the same reasons §10.9 gives — no selector/`identity_bundle`, never
-touches `recovery_stage.js` or `retry_budget.js`. Where `ai_review` asks Claude a structured
-question, `handover` yields the live page to a **person** for the part only they can do — 2FA, a
-CAPTCHA, an e-signature, a one-off login — then reclaims it. Only this one shape of EXEC-21 (the
-backlog's "hand-over" case) is built; the other two (approve/reject, supply-a-judgement) remain
-open, tracked separately in `TODO.md`.
-
-**No new browser, no new network capability the runtime didn't already half-have.** Playwright's
-connection to a page is bidirectional: `context.exposeBinding` installs a function inside the
-page's JS world that calls straight back into this Node process, which is what lets a person's
-click on an in-page banner resume execution with no polling and no MCP round-trip. The one
-genuinely new thing is `runtime/app/handover.js`'s loopback HTTP listener (`127.0.0.1`, random
-port, per-pause token) — the runtime's first-ever inbound network surface, deliberately scoped to
-exist only while a hand-over is pending, closed on disarm.
-
-**Three independent resume signals, one race:** a banner injected via `context.addInitScript` +
-an immediate `evalOn` on every live page (so it survives navigation and appears on a tab the
-person opens); a file drop at `~/.conxa/resume/<run_id>.cmd`, watched with `fs.watch` plus a 5s
-poll fallback — the exact pattern `scheduler_daemon.js`'s command drain already uses — paired with
-a `conxa-runtime.exe resume <run_id>` CLI subcommand (dispatched in `bootstrap.js` alongside
-`register-mcp`, before any app-layer resolution, since it's a pure filesystem write); and the
-loopback HTTP listener above. Whichever fires first wins; `handover.js::arm()` returns `{signal,
-disarm}`, and `disarm()` — idempotent — tears down all three.
-
-**Two speeds:** `run.js` races the armed signal against `CONXA_HANDOVER_INCALL_MS` (default 120s,
-comfortably under `EXECUTION_DEADLINE_MS`). If the person is already there (the common case — a
-2FA code, a CAPTCHA), the run continues inside the *same* `execute_skill` call, no park, nothing
-for the agent to do. If not, `run.js` throws a distinct `handoverPause` signal (mirroring
-`reviewPause`) carrying the still-armed `armed` object; `server.js` parks the page — same `_parks`
-map, same `capturePageFingerprint` divergence machinery as `ai_review`'s park — and returns a
-pause response. Three deliberate differences from `ai_review`'s park:
-
-- **The host lock is released, not held**, for the length of the pause (`_hostRelease()` called
-  before parking, `hostRelease: null` stored) — `ai_review`'s pause is model-scale (~180s,
-  `PARK_TTL_MS`), so holding §10.1's platform lock the whole time is cheap; a hand-over is
-  person-scale (`HANDOVER_PARK_TTL_MS`, default 30 minutes), and holding it that long would starve
-  every sibling run touching the same platform until each died on its own `EXECUTION_DEADLINE_MS`.
-  Re-acquired on resume, gated on `hostRelease == null`, in the same `if (_park) {…}` branch that
-  adopts the parked browser/context/page.
-- **Extra tabs are not closed** on park — the person may be mid-flow in a popup (an OAuth window,
-  a document viewer) that the run itself opened.
-- **No divergence-triggered refusal.** `ai_review`'s resume distrusts a page that moved underneath
-  it (§10.9's re-ask loop). A hand-over's whole point is letting a person change the page — drift
-  is success, not a signal to distrust. What actually gates a resume is `handover.js::revalidate()`:
-  it re-resolves the recorded tab through `tabs.js::resolveStepPage` (the same tab-chain Key
-  Invariant every other step honors — never fall back to "whatever page is current"), confirms it
-  isn't closed, and — if the step declared `resume_when` — requires that probe true before handing
-  control back. Any of those failing is a clean step failure, never a blind continue.
-
-**The resume is self-driven, not agent-polled.** The pause-creation branch in `server.js` attaches
-`armed.signal.then(...)` before returning the pause response; whenever any signal fires — seconds
-or hours later, long after that MCP call returned — this same long-lived runtime process calls its
-own `_handleTool("execute_skill", { resume_from, watch: true })`, the identical path an agent's own
-explicit resume call would take. There is no separate "internal resume" code path to drift out of
-sync with the external one. (Consequence for the Build Studio sandbox specifically: `call_runtime_tool`
-caches the spawned runtime process for `_IDLE_TIMEOUT_S = 300` seconds of inactivity — long enough
-for a quick 2FA/CAPTCHA test, but a hand-over left pending past 5 minutes in a Studio test run gets
-its cached process torn down, killing the parked browser. This limitation is specific to sandbox
-testing; a real Claude Desktop MCP session is one long-lived process for the whole chat and has no
-such ceiling.)
-
-**Compiles from Human Edit like `ai_review`:** `action_registry.py` adds `"handover"` alongside
-`"ai_review"` (validation category, value-bearing) — but where `ai_review`'s generic value field
-carries the output binding name, `handover`'s carries the **message shown to the person** (see
-`VALUE_LABELS`), so no new renderer field is needed for the one thing every hand-over must have.
-Everything else (`on_failure` ∈ `{abort, continue}` — no `use_default`, since a hand-over produces
-no answer value to fall back to; an optional `resume_when` probe + timeout) rides top-level
-`handover_*` fields, validated by `patch_gate.py` and flattened by
-`skill_package_builder_saved_skill.py` into `{type: "handover", message, on_failure, resume_when?,
-resume_when_timeout_ms?}` — the same `ai_review_*` convention, same drop-with-no-message-set
-behavior as a blank `ai_review_prompt`.
-
-**A step type an older runtime doesn't recognize now fails loud, not silently.** Before EXEC-21,
-`handlers.js::executeStep` looked up `HANDLERS[step.type]` and simply did nothing on a miss —
-harmless for a genuinely decorative marker, but a replayed pack whose `handover` gate predates the
-runtime's support for it would vanish the same way, letting whatever the gate exists to guard
-(often the destructive step right after it) run unguarded. `executeStep` now throws on any
-`step.type` that is neither a known handler nor one of the three types `run.js` intercepts before
-dispatch (`ai_review`, `handover`, `for_each`).
-
-**Known limitations, stated rather than engineered around:** a native `alert`/`confirm`/`prompt`
-cannot be operated by a person during a hand-over — Playwright intercepts dialogs at the CDP level
-the instant a `dialog` listener is attached (every run has one, for `dialog_accept`/`dismiss`
-steps), and no configuration lets a real user click one on a Playwright-driven page; a hand-over
-inside a `for_each` loop body is not resumable (unwinding the loop on the pause throws away the
-iteration cursor) — `run.js` propagates a `handoverPause` out of the loop body exactly like a
-`cancelled`/`reviewPause` signal rather than treating it as a row failure, but there is no
-compile-time guard yet rejecting a `handover` authored inside a loop body (tracked in `TODO.md`);
-and a hand-over is not durable across a runtime restart — that is EXEC-22.
-
----
-
-## 11. Skill Sync & Update Architecture
-
-### 11.1 Skill Pack Delta Sync
-
-**Endpoint:** `GET /api/v1/skill-packs/{company}/delta?since={json-map}`
-
-**Current state:** `since` is a JSON-encoded map of `{skill_slug: last_known_version}` (see §5.9 for the full contract and §5.6 for the sequence). `pack.json`'s `skills` list and `component_versions` — what this endpoint actually reads — only ever reflect a skill's most recently **Released**, not most recently published, version (see §5.5a); a "ready" version sitting in Cloud awaiting release is invisible here entirely. Each skill is compared against its own version independently — `_build_delta()` in `skillpack_update_routes.py` returns `{"name": slug, "action": "no_change", "group": group_id}` for unchanged skills and `{"name": slug, "version", "action": "update", "group": group_id, "files": [...]}` for changed ones, where `group_id` comes from `pack.json`'s `skill_groups` map (falling back to `"_default"`). Republishing one skill never triggers a re-download of the others. Within a changed skill, all of that skill's files (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) are still sent — there is no per-file checksum comparison *within* a single skill, which remains a real but low-impact gap (a handful of small JSON files, not a whole company pack). Rate-limiting is KV-backed (`rate_limits` namespace in `conxa_core.db`), persisted across restarts and shared across instances — not the in-memory dict this section used to describe, and Redis was deliberately not introduced (see `docs/Security.md` SG-04).
-
-`group` in the response is what lets `runtime/sync.js` write each skill's files into its nested `skill-packs/{company}/{group_id}/{skill_slug}/` directory (§5.2a) instead of the pre-Groups flat layout — the client's own version-comparison lookup only ever checks the nested path, so upgrading to this changes nothing observable except that every skill gets freshly redownloaded into its nested location exactly once, the next time each runtime syncs.
-
-### 11.2 Atomic File Updates
-
-`sync.js` uses transactional file writes:
-1. Backup existing skill dir (`skill_dir.bak`).
-2. Write each file to `.tmp` suffix.
-3. SHA-256 verify content matches delta entry.
-4. Atomic rename `.tmp` → target.
-5. On any failure → restore from backup.
-6. On full success → delete backups.
-
-### 11.3 Runtime Self-Update
-
-One signed manifest, two components decided independently from two different call sites; see §5.8 for the full sequence diagram.
-
-**App layer** — checked pre-load, in `bootstrap.js`, via `GET /api/v1/manifest.json` (no local TTL — every launch fetches, Ed25519-verified). A zip is downloaded, extracted to `conxa-app/<version>/`, and `version_manager.activate()` flips the `current` junction — all before `server.js` is `require()`'d, so it's effective on the *same* cold start that downloaded it. A `min_host` floor on the manifest entry refuses the update outright (rather than activate-then-rollback on every launch) if the host exe is too old to run it.
-
-**Host layer** — checked post-load, in `server.js`'s `startupSync`, reusing the manifest `bootstrap.js` already fetched this launch rather than fetching again. Downloads `conxa-runtime.exe` + `keytar.node` into their own `conxa-runtime/<version>/` directory:
-
-| File | Staged into | Activated by |
+| Code | When | Fields |
 |---|---|---|
-| `conxa-runtime.exe` | `conxa-runtime/<version>/conxa-runtime.exe` | `--selfcheck` must exit 0, then `version_manager.activate()` flips `conxa-runtime/current` |
-| `keytar.node` | `conxa-runtime/<version>/keytar.node` | same activation, no separate step |
-| Chromium | N/A (downloaded by Playwright) | `--install-playwright` run through `conxa-runtime/current/conxa-runtime.exe` |
+| `wf_start` | run begins | `ts`, `tot` |
+| `step_ok` | step succeeds | `ts`, `si`, `tier` |
+| `step_fail` | step fails | `ts`, `si`, `code` |
+| `recovery_tier{N}` | recovery attempted | `ts`, `si`, `tier` |
+| `tier_ok` | recovered/settled/scrolled success | `tier` (e.g. `tier1_compiled_settled`), `virtualScroll?` |
+| `settle_retry` | settle fallback attempt (§9.3) | |
+| `verify_result` | step with assertions verified | `si`, `ok`, `n`, `advFail` |
+| `repair_event` | recovery success (§10.4) | step, tier, method, score/margin, `stable_hash`, drift hint |
+| `drift_detected` / `env_mismatch` | pre-execution checks (§9.7) | |
+| `for_each_done` | loop finished | `processed`, `failed` |
+| `policy_block` | policy verdict fired (§12.5) | `code` (`outside_window`\|`denied_host`\|`host_unresolved`\|`policy_tz_unsupported`\|`policy_expired`), `pv`, `enf` |
+| `wf_ok` | run succeeds | `ts`, `dur`, `tot`, `rec` |
+| `wf_fail` | run fails | `ts`, `dur`, `fsi`, `fc` (includes policy codes) |
 
-Because the new version lands in its own directory rather than overwriting the currently-running exe's file, activation can happen immediately rather than being deferred to "the next safe restart" — there is nothing to defer. If `--selfcheck` fails, activation is aborted regardless of a matching SHA-256 (a checksum only proves the download wasn't corrupted, not that it boots), and `current` is left pointing at the previous, still-good version.
-
----
-
-## 12. Telemetry Architecture
-
-### 12.1 Event Schema (compact)
-
-Emitted by `runtime/tracker.js`:
-
-| Event code | When | Fields |
-|---|---|---|
-| `wf_start` | Workflow begins | `ts`, `tot` (total steps) |
-| `step_ok` | Step succeeds | `ts`, `si` (step index), `tier` (recovery tier used) |
-| `step_fail` | Step fails | `ts`, `si`, `code` (error code) |
-| `recovery_tier{N}` | Recovery attempted | `ts`, `si`, `tier` |
-| `wf_ok` | Workflow succeeds | `ts`, `dur`, `tot`, `rec` (recovered steps) |
-| `wf_fail` | Workflow fails | `ts`, `dur`, `fsi` (failed step index), `fc` (failure code — includes the PROD-18 policy-refusal codes below) |
-| `policy_block` | PROD-18: a policy verdict fired (denial, or a would-have-blocked audit-only hit) | `ts`, `code` (`outside_window`\|`denied_host`\|`host_unresolved`\|`policy_tz_unsupported`\|`policy_expired`), `pv` (policy_version), `enf` (whether `enforce` was true) |
-
-This table is illustrative, not exhaustive — the full, current event-code list (including
-recovery-cascade and park/review events) lives as a table in the exploration behind
-`TODO.md` PROD-18 and is not fully re-documented here; treat `runtime/app/tracker.js`'s
-call sites as the source of truth for anything not listed.
-
-### 12.2 Batch Payload
+### 12.3 Batch Payload & Storage
 
 ```json
-{
-  "rid": "run_id",
-  "wfid": "workflow_id",
-  "wfv": "workflow_version",
-  "rv": "runtime_version",
-  "uid": "user_id_hash",
-  "wid": "workspace_id",
-  "sv": 1,
-  "seq": 0,
-  "prev": "",
-  "h": "hmac_sha256_hex",
-  "evts": [{"e": "wf_start", "ts": 1717000000, "tot": 5}, ...]
-}
+{ "rid": "run_id", "wfid": "workflow_id", "wfv": "workflow_version", "rv": "runtime_version",
+  "uid": "user_id_hash", "wid": "workspace_id", "sv": 1,
+  "seq": 0, "prev": "", "h": "hmac_sha256_hex",
+  "evts": [{"e": "wf_start", "ts": 1717000000, "tot": 5}] }
 ```
 
-Header: `X-Tracking-Token: <token from pack.json>`
-
-`seq`/`prev`/`h` are PROD-18's evidence chain (§12.4) — additive fields a pre-PROD-18
-runtime never sends; the server treats their absence as chain state `"none"`, not as a
-tamper signal. See `docs/Backend-Schema.md` §4.2 for the full stored-batch shape.
-
-### 12.3 Storage & Query
-
-- Stored in `kv_store` table under namespace `tracking/{company}`, key = `run_id`.
-- `db_append()` appends batches to a JSON array.
-- Queried by `tracking_routes.py` — Clerk-authenticated dashboard endpoints.
-- Workspace scoping: `_batches_for_principal()` filters by `workspace_id` in batch.
+- Stored in `kv_store` namespace `tracking/{ws}`, key `run_id`, appended via `db_append()`.
+- Queried by Clerk-authenticated `tracking_routes.py`; `_batches_for_principal()` scopes by `workspace_id`.
+- Full stored shape: `docs/Backend-Schema.md` §4.2.
 
 ### 12.4 Evidence Chain & Reconciliation (PROD-18)
 
-**Problem this closes:** `wf_start` used to be enqueued into `tracker.js`'s in-memory
-ring (drop-oldest at 50 events, flushed on a 2s timer) with no guaranteed delivery before
-a run acted — a killed process could leave the server with no record the run ever started,
-and a failed POST lost its batch permanently. Server-side, a run with a `wf_start` and no
-terminal event stayed `status: "running"` forever and was silently excluded from every
-success-rate calculation, with no way to ask "how many runs never reported back?"
+- **Start record:** `server.js` flushes `wf_start` and awaits it (bounded 2 s) at the one seam every path crosses before opening a browser, so even a killed process leaves a start record.
+- **Spill:** a failed POST appends to `{CONXA_DATA_DIR}/logs/telemetry-spill.jsonl` (`_spillAppend`; drop-**newest** past 200 lines, since the earliest evidence matters most) and drains at startup (`drainSpill` in `startupSync`). The in-memory ring (50 events, 2 s flush) drops oldest.
+- **Chain:** `seq`/`prev`/`h`, where `h` is an HMAC-SHA256 keyed on the tracking token over the batch's canonical JSON, chained to the previous hash. The server verifies on **raw** events before `_cap_events` truncation (`tracking._verify_chain_link`). `_chain_state` per run: `verified`, `gap` (missing `seq`), `broken` (bad signature or link), `none` (runtime predates the chain; not treated as tampering).
+- **Reconcile:** `GET /api/v1/tracking/{workspace_id}/reconcile` reports runs started, completed, abandoned, and in flight, plus chain gaps and breaks, reusing `_visible_run_records` (`docs/Backend-Schema.md` §5.7c).
 
-**Fix:**
-- `server.js` fires the `wf_start` flush immediately and awaits it (bounded 2s) at the one
-  seam every surviving code path crosses before opening a browser — a killed process still
-  leaves a start record.
-- A batch that fails to POST spills to `{CONXA_DATA_DIR}/logs/telemetry-spill.jsonl`
-  (`tracker.js::_spillAppend`, drop-**newest** past a 200-line cap — the inverse of the
-  in-memory ring, since once evidence is on disk the earliest matters most) and drains at
-  the next process startup (`drainSpill`, wired into `server.js`'s `startupSync`).
-- Every batch carries `seq`/`prev`/`h` — `h` is an HMAC-SHA256 (keyed on the workspace's
-  own tracking token) over the batch's canonical JSON, chained to the previous batch's
-  hash. The server verifies `h` on the **raw** events, before `_cap_events` truncates any
-  field (`app.services.tracking._verify_chain_link`) — verifying post-truncation data can
-  never match what the client actually signed. `_run_summary` folds every batch's link
-  into one per-run verdict (`_chain_state`): `verified` / `gap` (a `seq` is missing) /
-  `broken` (a signature or link mismatch) / `none` (pre-chain runtime).
-- `GET /api/v1/tracking/{workspace_id}/reconcile` (`docs/Backend-Schema.md` §5.7c) reports
-  runs started vs. completed vs. abandoned vs. in-flight, plus chain gaps/breaks, reusing
-  the dashboard's existing `_visible_run_records` scan rather than adding a second one.
-
-Full detail, including what this does and does not prove: `docs/Audit-and-Control.md` §1.
+What this proves and doesn't: `docs/Audit-and-Control.md` §1.
 
 ### 12.5 Governance Policy Gate (PROD-18)
 
-A workspace admin can set an Ed25519-signed policy (`docs/Backend-Schema.md` §4.2a) —
-execution-time windows per skill and a platform host deny-list — via
-`PUT /api/v1/tracking/{workspace_id}/policy`. Signed with the **same keypair** that signs
-the runtime update manifest (`app.api.manifest_signer`; see `docs/Security.md` SG-19 for
-the rotation tradeoff this reuse accepts) and verified on the runtime with the same
-`manifest_manager.js::verifyManifestSignature` — no new crypto, no new trust anchor.
+An admin sets an Ed25519-signed policy (`PUT /api/v1/tracking/{workspace_id}/policy`, `docs/Backend-Schema.md` §4.2a) with per-skill execution windows and a host deny-list. It's signed with the manifest keypair (`app.api.manifest_signer`; rotation trade-off in `docs/Security.md` SG-19) and verified with `manifest_manager.js::verifyManifestSignature`. No new crypto or trust anchor.
 
-`runtime/app/policy_gate.js` splits pure decision logic (`evaluate()`, unit-testable
-without I/O — the same split `resolver.js`/`resolve_adapter.js` use) from fetch/cache/
-verify (`loadPolicy()`). `server.js` calls the gate in the non-park execution path, after
-resolving target hosts (`target_hosts.js`) and before acquiring the host lock or opening
-any browser — a refusal never touches the target application. Ships `enforce: false`
-(audit-only, recording what *would* have blocked via a `policy_block` telemetry event)
-by default; an admin flips `enforce: true` once satisfied with the audit trail.
+`runtime/app/policy_gate.js` splits pure `evaluate()` from `loadPolicy()` (fetch/cache/verify). `server.js` calls it after resolving target hosts and before the host lock or any browser, so a refusal never touches the target app. Ships `enforce: false` (audit-only `policy_block` events); an admin flips `enforce: true`.
 
-**The one genuinely locally-enforceable control** is a policy's own `expires_at`: since
-it's inside the signed document, a customer cannot extend it without the private key, so a
-deleted/stale cache does not silently keep a governed workspace running past its policy's
-lifetime — every skill in that workspace refuses (`fc: "policy_expired"`) until the policy
-re-verifies. Everything else about local enforcement (a deleted cache with the network
-also blocked) is honestly not locally preventable — see `docs/Audit-and-Control.md` §3 for
-the full "enforce locally, prove centrally" posture and what reconciliation is for.
+The one locally-enforceable control is `expires_at`: it's inside the signed document, so an expired policy refuses every skill in the workspace (`fc: "policy_expired"`) until it re-verifies. Other local bypasses (deleted cache plus blocked network) aren't preventable locally: "enforce locally, prove centrally" (`docs/Audit-and-Control.md` §3).
 
-**Not built:** require-approval-before-step (needs EXEC-21's human answerer, unshipped —
-see `TODO.md` PROD-18); a policy-authoring UI (API + docs only); `require_receipt`
-enforcement (the field exists on the signed document, unused by the runtime today).
+**Not built:** require-approval-before-step, a policy-authoring UI, and `require_receipt` enforcement.
+
 
 ---
 
-## 13. LLM Router Architecture
+## 13. LLM Router & Entitlements
 
-**Location:** `conxa-cloud/backend/app/llm/router.py`
+**Location:** `conxa-cloud/backend/app/llm/router.py`, `app/api/llm_proxy_routes.py`, `app/services/entitlements.py`. Provider setup: `conxa-cloud/backend/ROUTER_SETUP.md`. Cost model: `docs/cost_model.md`.
 
 ### 13.1 Provider Pool
 
-The cloud maintains a flat pool of `(provider, endpoint, api_key, text_model, vision_model, pool, auth_style)`
-tuples. Multiple keys per provider expand to multiple entries. `PoolEntry.pool` (`"free"` | `"starter"` | `"pro"`)
-and `auth_style` (`"bearer"` | `"api_key_header"`) were added 2026-08-08 for the tiered compile pool
-and BYOK (§13.1a, §13.5) — every pooled provider keeps `auth_style="bearer"`, only BYOK entries use
-`"api_key_header"`.
+A flat pool of `PoolEntry(provider, endpoint, api_key, text_model, vision_model, multimodal_model, fallback_*_model, pool, auth_style)`. Multiple keys per provider expand to multiple entries. `pool` ∈ `free|starter|pro`. `auth_style` is `bearer` for everything except BYOK (`api_key_header`).
 
-Enabled providers (current defaults):
-- **Groq** — `llama-3.3-70b-versatile` (text), `llama-4-scout-17b` (vision)
-- **Google AI Studio** — `gemini-2.5-flash` (both)
-- **NVIDIA NIM** — `llama-4-maverick-17b` (text), `llama-3.2-90b-vision` (vision)
+Free-pool defaults:
+- **Groq:** `llama-3.3-70b-versatile` (text), `llama-4-scout-17b` (vision);
+- **Google AI Studio:** `gemini-2.5-flash` (both);
+- **NVIDIA NIM:** `llama-4-maverick-17b` (text), `llama-3.2-90b-vision` (vision).
 
-Disabled by default (toggle via env): Cerebras, Together, OpenRouter, Mistral.
+Disabled by default: Cerebras, Together, OpenRouter, Mistral.
 
-**Which tasks need a vision-capable model (BUILD-29).** `conxa_core.llm.client.VISION_TASKS` is
-the single set governing this — the router imports it directly as `_VISION_TASK_NAMES` rather
-than keeping its own copy (it used to; the second copy, and a third in Build Studio's own
-`conxa_compile/llm/client.py`, silently dropped `workflow_review` and every compile went
-rules-only with no error until it was found). The two consumers matter for different paths:
-`conxa_compile/llm/client.py::call_llm` calls `_is_vision_task` to decide which Build Studio
-proxy endpoint to hit (`/api/v1/llm/proxy/vision` vs `/text`) — decisive for every pooled
-request, since the cloud endpoint that receives the call fixes `for_vision` from *which URL was
-hit* and never re-derives it from the task name. The router's own `_VISION_TASK_NAMES` is
-consulted only when `for_vision is None`, i.e. only on the BYOK path (`call_entry_directly`),
-where it picks the model within an already-selected provider entry. A task present in the set
-but reachable only via BYOK would route correctly but be served the wrong model; a task missing
-from the set entirely mis-routes the pooled path outright — both failure modes now point at one
-constant instead of three independently-maintained literals.
+**Vision tasks: one constant.** `conxa_core.llm.client.VISION_TASKS` is the single set; the router imports it as `_VISION_TASK_NAMES`. Studio's `call_llm` uses `_is_vision_task` to pick `/proxy/vision` vs `/proxy/text`, and the cloud fixes `for_vision` from the URL hit. The router consults the set only when `for_vision is None` (the BYOK path). Copilot tasks route by payload instead (`_copilot_modality`, §7.4); `execute_chat` always takes the vision path onto the multimodal slot (§3.6).
 
-### 13.1a Tiered Compile Pool
+### 13.2 Tiered Compile Pools
 
-Starter and Pro each get a fully independent, single-deployment provider block — not a name pointing at
-one of the Free-pool providers in §13.1, but their own `LLM_{TIER}_PROVIDER` (label), `_ENDPOINT`,
-`_API_KEYS`, `_TEXT_MODEL`, `_VISION_MODEL`, `_FALLBACK_TEXT_MODEL`, and `_FALLBACK_VISION_MODEL`.
-`Settings._tier_provider_configs()` builds one `ProviderConfig` per key (comma-separated, like every
-other provider) tagged `pool="starter"`/`pool="pro"`; `enabled_llm_providers()` appends them after the
-Free-pool list, which stays `pool="free"` unconditionally. No `_ENDPOINT`/`_API_KEYS` configured for a
-tier means it contributes zero entries. `llm_proxy_routes._meter_and_call` reads the calling workspace's
-`compile_pool` capability (`entitlements.compile_pool_for`) and passes it to `route_text`/`route_vision`
-as the `pool` kwarg; `LLMRouter._next_available_entry` filters on it.
+Starter and Pro each have an independent single-deployment block: `LLM_{TIER}_PROVIDER`, `_ENDPOINT`, `_API_KEYS`, `_TEXT_MODEL`, `_VISION_MODEL`, `_MULTIMODAL_MODEL`, `_FALLBACK_TEXT_MODEL`, `_FALLBACK_VISION_MODEL`. `Settings._tier_provider_configs()` builds entries tagged with the tier, appended after the Free list. An unset tier contributes nothing.
 
-**Fallback model:** `PoolEntry.fallback_text_model`/`fallback_vision_model` (copied from the tier's
-`_FALLBACK_TEXT_MODEL`/`_FALLBACK_VISION_MODEL`) name a second model to retry on the *same* key when the
-primary model's call fails. `_call_provider` picks the fallback once `attempt > 0` for that call. This
-is attempt-indexed, not per-entry state, so it's exact for the common one-key-per-tier shape (every
-retry in `_route`'s loop lands back on the tier's only entry); a tier configured with multiple keys can
-have a later attempt rotate to a fresh key and reach straight for its fallback model without trying that
-key's primary first — a documented `ponytail:` cut in the code, not tracked as separate per-entry state.
-Free-pool entries never set a fallback model, so this never activates outside Starter/Pro.
+- `_meter_and_call` passes the workspace's `compile_pool` (`entitlements.compile_pool_for`) as `pool`; `_next_available_entry` filters on it.
+- **Fallback model:** from `attempt > 0`, `_call_provider` uses the entry's fallback model on the same key. It's attempt-indexed (a `ponytail:` cut: multi-key tiers may reach a fresh key's fallback first). Free entries have none.
+- **Missing pool:** falls back to any pool (logged via `_debug_log`) rather than failing a paying compile over misconfiguration. Enterprise/Development carry `compile_pool="premium"`, which only BYOK's synthetic entry matches, so they fall back to any pool without BYOK.
 
-If the requested pool has no available entry (e.g. a tier's `_ENDPOINT`/`_API_KEYS` unset), the router
-falls back to any pool rather than failing a paying customer's compile over an ops misconfiguration —
-logged via `_debug_log`, not surfaced as an error. Enterprise/Development still carry
-`compile_pool="premium"` (unchanged) and, since no provider is tagged `"premium"` anymore except BYOK's
-synthetic entry (§13.5), fall back to any pool unless BYOK is configured.
+### 13.3 Router Behavior
 
-### 13.2 Router Behavior
+- **Per-modality cooldown:** `cooled_until_text` / `cooled_until_vision` / the multimodal slot are separate, so a text-timeout storm doesn't bench vision.
+- **Failure classes** (`_call_provider`):
 
-**Rewritten 2026-08-23** after a mega-workflow compile produced a storm of `/llm/proxy/text`
-502s ending in one fatal `/vision` 502 (root cause: `llm_text_timeout_ms` defaulted to 2000ms —
-calibrated for a direct call, not the Studio→cloud→provider double hop — so 3 timeouts inside
-one request drained the whole 3-key pool; every failure class shared one flat 60s cooldown; and
-`PoolEntry` had a single `cooled_until` shared by both modalities, so a text-timeout storm also
-benched the vision-capable keys). See `TODO.md` CLOUD-11 (resolved) for the full investigation.
+| Failure | Handling |
+|---|---|
+| `429` | `Retry-After`, else 30 s |
+| timeout / connection | per-entry exponential backoff (`consecutive_transient_failures`): 5 → 15 → 45 s, cap 60; resets on success |
+| provider `5xx` / malformed JSON | 10 s |
+| deterministic `400`/`413`/`422` | `_DeterministicRejection`: fail immediately, no cooldown, no cross-provider retry |
+| reasoning-only empty stream | `_DeterministicRejection` → `llm_reasoning_only_no_content` (§7.4) |
+| `401`/`403` | quarantined 300 s (`quarantined_until`), never removed from the pool |
 
-- **Per-modality cooldown**: `PoolEntry.cooled_until_text` / `cooled_until_vision` are tracked
-  separately. A burst of `intent_generation` timeouts no longer benches the same key's
-  `vision_model` — the two failure surfaces are independent.
-- **Failure classification** (`_call_provider`), not one flat cooldown for everything:
-  - `429` — `Retry-After` if present, else 30s.
-  - timeout / connection error — exponential backoff per entry (`PoolEntry.consecutive_transient_failures`):
-    5s → 15s → 45s, capped at 60s. Resets to 0 on that entry's next success.
-  - provider `5xx` / malformed JSON — flat 10s.
-  - **deterministic 4xx** (`400`/`413`/`422` — context-length, unsupported `response_format`,
-    malformed body) — **no cooldown, no cross-provider retry**. `_route` catches the internal
-    `_DeterministicRejection` and fails the request immediately: every provider would reject
-    the identical payload, so cooling a healthy key and burning the other two entries on a
-    request that can't succeed anywhere is pure waste.
-  - `401`/`403` — **quarantined** 300s (`PoolEntry.quarantined_until`), not removed from the
-    pool. Removal had no re-admission path: a transient auth glitch (WAF trip, regional
-    throttle) permanently shrank the pool toward empty until the process restarted.
-- **Whole-request wall-clock budget** (`llm_router_total_budget_secs`, default 75s): `_route`
-  computes one deadline up front and clamps every attempt's timeout to what's left, stopping
-  once it's exhausted. Deliberately under Render's free-tier proxy timeout (~100s) — worst case
-  before this was `max_retries × timeout_ms + wait_ceiling_secs`, up to 425s, which Render's edge
-  would cut off before the app ever answered.
-- Bounded wait for a cooled pool: if every entry matching the request (respecting the
-  `for_vision`/`pool` filters) is cooled — not merely absent — `route_text`/`route_vision`
-  sleeps once, capped at `LLMRouter.wait_ceiling_secs` (20s default, down from 8s), for the
-  soonest entry to clear (also respecting `pool`, fixed from an earlier version that ignored
-  it), then retries selection. If the wait would exceed the ceiling or the remaining total
-  budget, or no entry matches the request at all (a config gap, e.g. no provider has a
-  `vision_model`), it fails fast as before.
-- Failover: on error, moves to next entry. Pool selection and the LRU cursor are guarded by
-  `LLMRouter._lru_lock` — under FastAPI's ~40-thread pool, an unguarded read-increment-read on
-  the shared cursor let concurrent requests pick the same "next" entry and hammer it,
-  self-inflicting the 429 storms the cooldown machinery then had to absorb.
-- Max retries: `llm_router_max_retries`, raised at construction to `max(config value, len(pool))`
-  so a larger pool actually gets a fair sweep within one call instead of giving up early.
-- `LLMRouter.call_entry_directly` bypasses pool selection and cross-provider failover for a
-  caller-supplied `PoolEntry` — used only for BYOK (§13.5), where there's exactly one deployment to
-  call and the shared pool's rotate/cool-down/quarantine machinery (built for many interchangeable
-  keys) doesn't apply.
-- `error_detail` (an optional `list[str]` every call site can pass) collects a human-readable
-  line per failed attempt — e.g. `HTTPError 429 rate_limited (cooled 2s): <provider body>`.
-  `llm_proxy_routes.py` returns this list (capped at 8 entries) in a 502's
-  `{"message": "llm_all_providers_failed", "error_detail": [...]}` body when every provider
-  fails, and `services/llm_proxy_client.py` (Build Studio's proxy client) unpacks that dict
-  shape into its own `error_detail` list instead of collapsing it to a bare `"proxy HTTP 502"`
-  — so a `VisionAnchorGenerationError`'s `hint` (and the resulting `vision_anchor_fallback`
-  compile warning) names the actual provider failure, not just the HTTP status.
-- **Per-workspace admission control** (`llm_proxy_routes.py`): a module-level counter,
-  `llm_proxy_max_concurrent_per_workspace` (default 4), caps concurrent in-flight `/llm/proxy/*`
-  calls per workspace. One tenant's compile burst can no longer drain the shared pool (every
-  entry cooled/quarantined) into 502s for every other tenant sharing it — over the cap gets a
-  `429 {"detail": "workspace_concurrency_limit"}` with `Retry-After`, which the Studio proxy
-  client retries with backoff rather than treating as a real quota error.
-- Studio proxy client retry (`services/llm_proxy_client.py`): a `502`/`503`/`504` (or the
-  `workspace_concurrency_limit` 429 above) retries twice with backoff (1s, 4s + jitter,
-  honouring `Retry-After`) before raising `ProxyUnavailable` (a `CloudUnreachable` subclass) —
-  distinct from a plain `None` return, which now means only a genuinely empty LLM answer. Every
-  call site either lets this propagate (aborting the compile, matching existing `CloudUnreachable`
-  handling) or catches it and degrades gracefully, depending on whether that call is on the
-  primary compile path — see `conxa_compile/llm/workflow_intent.py`, `anchor_vision_llm.py`.
-- Vision anchor batching (`prefetch_vision_anchors_batch` in `anchor_vision_llm.py`, wired from
-  `compiler/build.py::_prefetch_vision_anchors` before the per-step loop): groups up to
-  `llm_anchor_vision_batch_size` (4) steps' screenshots into one `anchor_vision_batch` call
-  instead of one request per step, populating the anchor cache so the later per-step call in
-  `_build_step` becomes a cache hit. Best-effort and never fatal — anything not prefetched (a
-  cache hit already, a batch call failure, a response the model didn't return in order) falls
-  through to the unchanged single-image call. The vision proxy route's body limit was raised from
-  1MB to `llm_vision_proxy_max_bytes` (8MB) to fit a batch of base64 JPEGs.
-  **Intent resolution is now free (2026-09-09):** `_prefetch_vision_anchors` used to resolve each
-  candidate step's intent via a per-step LLM call (`generate_intent_with_llm`) to build its vision
-  prompt — a degraded provider pool made that call slow/failing per step, which is what motivated
-  the circuit-breaker design below. That per-step fallback is gone: intent now comes only from the
-  workflow-intent graph's token, or a blank string, both resolved with no network call. The
-  remaining safety net is an explicit 60s wall-clock deadline (`_PREFETCH_VISION_ANCHORS_DEADLINE_SECS`)
-  around the batch vision-anchor call itself. A `_compile_log("vision_anchor_prefetch_start", ...)`
-  line marks the start of prefetching so even a healthy-pool run (which can legitimately take tens
-  of seconds) isn't silent.
-- Compile-credit refund (`POST /api/v1/usage/compile/refund`, `entitlements.refund_compile_credit`):
-  a compile aborts with the credit already committed (`handlers/compile.py` commits before any
-  LLM call). An infra-class abort — `CloudUnreachable`/`ProxyUnavailable`, or a
-  `VisionAnchorGenerationError` whose `reason` is specifically `vision_llm_request_failed` — now
-  refunds that credit; a content/quality failure (a bad answer, an invalid primary phrase) does
-  not, since refunding those would make repeated bad input free.
+- **Whole-request budget:** `llm_router_total_budget_secs` (75 s, under Render's ~100 s edge timeout). One deadline; every attempt's timeout is clamped to what's left.
+- **Cooled pool:** if every matching entry is cooled (not merely absent), sleep once up to `wait_ceiling_secs` (20 s) for the soonest one, respecting `pool` and `for_vision`. No matching entry at all → fail fast.
+- **Selection:** LRU cursor guarded by `_lru_lock` (unguarded access under FastAPI's thread pool made concurrent requests hammer the same entry). `max_retries = max(config, len(pool))`.
+- **`call_entry_directly`:** BYOK only; no pool rotation, cooldown, or quarantine. No streaming (returns one chunk).
+- **Errors:** `error_detail` collects one line per failed attempt (e.g. `HTTPError 429 rate_limited (cooled 2s): …`). A 502 returns `{"message": "llm_all_providers_failed", "error_detail": [≤ 8]}`, which Studio's client unpacks so compile warnings name the real failure.
 
-### 13.3 Build Studio → Cloud Proxy
+### 13.4 Build Studio → Cloud Proxy
 
-Build Studio's LLM calls go through `services/llm_proxy_client.py`:
-- Target: `POST /api/v1/llm/proxy/text` or `/api/v1/llm/proxy/vision`
-- Header: `Authorization: Bearer <Clerk access_token>`
-- Header: `X-Conxa-Client: build-studio`
-- Header: `X-Conxa-Machine: <sha256 of Windows MachineGuid>` — omitted if unreadable; see §13.4a
-- Body includes `usage_class`: `compile` or `human_edit`. Missing values default to `compile` for rollout compatibility.
-- Compile LLM calls record compile input/output tokens; Human Edit LLM calls draw from the workspace's monthly Human Edit pool.
-- `CloudUnreachable`, `QuotaExceeded`, and stable entitlement errors propagate up to the compiler, which surfaces them as `compile_error` events to the renderer.
+`services/llm_proxy_client.py` → `POST /api/v1/llm/proxy/{text,vision}[/stream]`:
+- headers: `Authorization: Bearer <Clerk token>`, `X-Conxa-Client: build-studio`, `X-Conxa-Machine` (§13.6, omitted if unreadable);
+- body `usage_class`: `compile` (default) or `human_edit`;
+- `CloudUnreachable`, `QuotaExceeded`, and entitlement errors propagate to the compiler as `compile_error` events.
 
-### 13.4 Entitlements And Visible Meters
+**Reliability:**
+- **Admission:** `llm_proxy_max_concurrent_per_workspace` (4) caps in-flight proxy calls per workspace; excess gets `429 workspace_concurrency_limit` with `Retry-After`, so one tenant's burst can't drain the shared pool.
+- **Client retry:** 502/503/504 or that 429 retry twice (1 s, 4 s + jitter, honoring `Retry-After`), then raise `ProxyUnavailable` (a `CloudUnreachable`). `None` means only a genuinely empty answer. Primary-path callers let it abort; optional callers degrade.
+- **Vision anchor batching:** `compiler/build.py::_prefetch_vision_anchors` → `prefetch_vision_anchors_batch` sends up to `llm_anchor_vision_batch_size` (4) screenshots per `anchor_vision_batch` call to warm the cache. Best-effort, with a 60 s deadline (`_PREFETCH_VISION_ANCHORS_DEADLINE_SECS`) and a `vision_anchor_prefetch_start` log line. Intent comes from the intent graph or blank (no per-step LLM). Vision body limit is `llm_vision_proxy_max_bytes` (8 MB).
+- **Compile-credit refund:** `POST /api/v1/usage/compile/refund` (`refund_compile_credit`) refunds a committed credit on infra-class aborts only (`CloudUnreachable`/`ProxyUnavailable`, or `VisionAnchorGenerationError` with `vision_llm_request_failed`). Content failures aren't refunded.
+- **Vision fallback on exhaustion:** the `vision_fallback_on_exhaustion` entitlement (below) decides whether a step degrades to keyword anchors instead of stopping the compile when the vision pool is exhausted. Fetched per compile and applied locally (`backend.py::_apply_vision_fallback_entitlement`); `SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION` is the offline fallback.
 
-**Rewritten 2026-08-08** for the capability ladder (docs/PRD.md §11): the per-slug `skill_pack_slots`
-meter was removed entirely — a workspace may publish under unlimited product slugs on every tier —
-and reach is now gated by *capability* keys (distribution, white-label, ops tier, BYOK) rather than a
-count. `machines` replaced it as the numeric meter, enforcing the trial-abuse/seat-integrity control.
+### 13.5 Entitlements & Meters
 
-The cloud exposes five customer-visible numeric meters, all defined in `PLAN_LIMITS`
-(`conxa-cloud/backend/app/services/entitlements.py`):
-- `seats`
-- `machines` — distinct build-side devices a workspace has registered (§13.4a)
-- `execute_seats` — people a workspace has granted Conxa Execute access to, independent of Build
-  Studio org membership (§13.4c, added 2026-09-16)
-- `compile_credits`
-- `human_edit_tokens` — labeled "AI Usage Credits" everywhere customer-visible (renamed 2026-09-16;
-  the wire field dual-emits `ai_usage_credits` alongside the legacy `human_edit_tokens` key so
-  already-installed Build Studio builds don't break before their next auto-update — the internal
-  `usage_class="human_edit"` string, storage keys, and `human_edit_pool_exceeded` error code are
-  unchanged, this is a display-only rename)
+Defined in `PLAN_LIMITS` (`entitlements.py`), exposed at `GET /api/v1/entitlements/current`.
 
-...and six capability keys that shape what a plan can *do*, not just how much:
-- `distribution` — `"internal"` (Free only) or `"external"` (Starter, Pro, Enterprise). Starter's
-  distribution volume isn't machine-capped — it's naturally bounded by its 200 compile-credit ceiling,
-  since every meaningful update requires a fresh compile before it can be republished. Free is the only
-  tier with a hard machine restriction — see the machine lock and delta-sync gate under §13.4a.
-- `white_label` — bool; Enterprise only
-- `ops_tier` — `"none"` (Free), `"basic"` (Starter), `"full"` (Pro, Enterprise)
-- `compile_pool` — `"free"`, `"starter"`, or `"pro"` (Enterprise/Development still carry `"premium"`);
-  which router pool compiles route to (§13.1a)
-- `byok` — bool; Enterprise only (§13.5)
-- `vision_fallback_on_exhaustion` — bool; `False` on every plan by default. Unlike the capabilities
-  above, this is deliberately **not** plan-gated — it's an ops reliability lever, not a paid feature,
-  so Conxa can enable it for any workspace on any plan (Free included) purely via
-  `entitlement_overrides` (added 2026-08-23). Whether `compile_skill_package` degrades a step to
-  keyword anchors instead of hard-stopping the whole compile when the vision-anchor provider pool
-  is exhausted. Fetched once per
-  compile via this same `GET /api/v1/entitlements/current` call and applied locally to
-  `settings.vision_anchor_fallback_on_exhaustion` (`backend.py::_apply_vision_fallback_entitlement`,
-  called from `handlers/compile.py::cmd_compile` right alongside `_install_proxy_router`) — the compiler
-  itself is local-only per this doc's Key Invariants, this is only the cloud-controlled policy *value*
-  for it. Previously a Build-Studio-local-only env var (`SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION`)
-  with no cloud-side control at all and a comment that wrongly called it a Render env var — setting it
-  on the cloud backend did nothing, since this compiler never runs there. The env var still works as a
-  fallback when the entitlement fetch itself fails, or for local dev with no cloud reachable.
+**Numeric meters:** `seats`, `machines` (§13.6), `execute_seats` (§13.7), `compile_credits`, and `human_edit_tokens`, shown as **"AI Usage Credits"** and dual-emitted as `ai_usage_credits` (§3.3). Internal names (`usage_class="human_edit"`, `human_edit_pool_exceeded`) are unchanged. `execute_chat` meters separately but draws from the same pool (`_combined_pool_used`).
 
-Plan defaults:
-- `free`: 1 seat, 1 machine, 1 Execute seat, 25 compile credits/mo, 500K AI Usage Credits/mo, 30-day
-  `trial_days`, internal distribution, no white-label, `ops_tier="none"`, free compile pool, no BYOK.
-- `starter`: 3 seats, 3 machines (Build Studio dev-side seats only — its distributed installer output
-  reaches unlimited customer machines), 25 Execute seats, 200 compile credits/mo, 2.5M AI Usage
-  Credits/mo, external distribution, no white-label, `ops_tier="basic"`, `"starter"` compile pool (its
-  own single designated provider, §13.1a), no BYOK.
-- `pro`: 10 seats, 10 machines, 100 Execute seats, 500 compile credits/mo, 10M AI Usage Credits/mo,
-  external distribution, Conxa-branded (no white-label), `ops_tier="full"`, `"pro"` compile pool (its
-  own single designated provider, §13.1a), no BYOK.
-- `enterprise`: explicit workspace overrides for the numeric limits; capability floor is external
-  distribution, white-label, `ops_tier="full"`, `"premium"` pool (unchanged; falls back to any pool
-  unless BYOK provides a matching entry), BYOK.
-- `development`: unlimited numerics, full capabilities.
+**Capabilities:**
 
-Legacy `basic` billing records normalize to `starter`. Paid (Cashfree-subscribed) workspaces use `billing:<current_period_end_unix>` as the usage period and reset at the next monthly payment timestamp stored on the billing record. Workspaces without a subscription timestamp fall back to the UTC calendar month (`YYYY-MM`) and reset at the first day of the next UTC month.
+| Key | Values |
+|---|---|
+| `distribution` | `internal` (Free) / `external` (Starter+) |
+| `white_label` | Enterprise only |
+| `ops_tier` | `none` (Free), `basic` (Starter), `full` (Pro, Enterprise) |
+| `compile_pool` | `free` / `starter` / `pro`; `premium` for Enterprise/Development |
+| `byok` | Enterprise only (§13.9) |
+| `vision_fallback_on_exhaustion` | default `False`; **not plan-gated**, an ops lever set via `entitlement_overrides` |
 
-Compile flow (first compile and recompile alike):
-1. Build Studio calls `POST /api/v1/usage/compile/reserve`, sending `X-Conxa-Machine` (§13.4a) alongside the existing `X-Conxa-Client` header — whether the workflow already has a `skill_id` (a recompile) or not (a first compile) makes no difference here.
-2. If reservation fails — quota, machine limit, or trial expired — local compile is blocked before pipeline work starts.
-3. Build Studio commits the reservation before the first LLM-bearing compiler stage.
-4. If failure occurs before commit, Build Studio calls release. If failure occurs after commit, the credit remains consumed.
-5. Proxied LLM calls during the compile run use `usage_class="compile"`.
+**Plans:**
 
-LLM-assisted Human Edit:
-- The Human Edit token pool is spent only by editor-triggered LLM paths, never by `cmd_compile`: the visual editor (`handlers/visual.py`), the workflow editor (`handlers/workflow_editor.py`), the 1-click fix selector-regeneration API (`compiler/patch.py::_regenerate_compiled_selectors`), and the Human Edit "draw a new region" retarget wizard (`region_selector_vision.py`).
-- Those calls use `usage_class="human_edit"`. Deterministic editor actions stay available when the Human Edit pool is exhausted.
-- The LLM proxy also enforces trial expiry and machine registration on every call (`app/api/llm_proxy_routes.py::_meter_and_call`), and routes to the workspace's `compile_pool` (or a BYOK entry — §13.5 — when configured).
+| Plan | Seats | Machines | Execute seats | Compile credits/mo | AI Usage Credits/mo | Other |
+|---|---|---|---|---|---|---|
+| `free` | 1 | 1 | 1 | 25 | 500K | 30-day trial, internal, `ops_tier` none |
+| `starter` | 3 | 3 | 25 | 200 | 2.5M | external, basic ops, own pool |
+| `pro` | 10 | 10 | 100 | 500 | 10M | external, full ops, own pool, Conxa-branded |
+| `enterprise` | overrides | overrides | overrides | overrides | overrides | white-label, full ops, `premium` pool, BYOK |
+| `development` | unlimited | | | | | all capabilities |
 
-Persistent workflow-slot ledger (added 2026-08-09) — closes the one gap the reservation flow above doesn't cover: `compile_credits` resets every billing period, so it never reclaims access to workflows a workspace already published while on a higher tier. `record_published_workflow` (`entitlements.py`) writes one never-resetting entry per distinct `(workspace_id, workflow_id)` to the `entitlement_workflows` KV namespace on first publish (`publish_routes.py::_publish_skill_pack_impl`). `_reconcile_workflow_locks`, re-run on every read of `GET /api/v1/entitlements/current` (exposed as the `workflow_lock` field) and on every publish, reuses the plan's current `compile_credits` number as a standing cap on how many published workflows may stay **active**, keeping the most-recently-published `limit` unlocked and locking the rest oldest-first — self-healing, no separate downgrade migration step. `ensure_workflow_publishable` enforces the same cap at publish time: republishing an already-active workflow (new version) is always allowed, republishing a **locked** one 402s `workflow_locked`, and publishing a brand-new workflow once already at the cap 402s `workflow_limit_exceeded`. Scope is company-side only by design — it never touches `skillpack_update_routes.py`'s delta-sync, so an end customer who already has a workflow installed keeps syncing and running it regardless of the SaaS company's current plan.
+Legacy `basic` normalizes to `starter`. **Usage period:** `billing:<current_period_end_unix>` for subscribed workspaces (resets at the payment date), else the UTC calendar month.
 
-Distribution (replaces installer slots, removed 2026-08-08):
-- No limit on how many product slugs a workspace publishes under, or on skill-pack publish.
-- Installer upload (`publish_routes.py::_upload_installer_impl`) accepts `distribution` (`internal`
-  default | `external`) and `white_label` query params from Build Studio, and stores them in the
-  installer version's KV metadata (`installer_versions__{workspace_dir_slug}`) alongside the existing
-  filename/version/release-notes fields. This is server-side gating on what the Studio *tells* the
-  cloud it's uploading, not an inspection of the binary's own `pack.json` — `installer_builder.py`
-  itself was not changed; it does not yet stamp `distribution` into the built artifact.
-- `ensure_distribution_allowed` rejects an `external` upload from a workspace whose plan carries
-  `distribution="internal"` (402 `distribution_not_permitted`). `ensure_white_label_allowed` rejects
-  custom branding without the `white_label` capability (402 `white_label_not_permitted`).
-- **Free's 1-install cap from docs/PRD.md §11 is not enforced.** The obvious enforcement point,
-  `skillpack_update_routes.py::post_telemetry_runtime_start`, is deliberately public and
-  unauthenticated (its own docstring: "spoofing inflates counts but leaks nothing") — hard-blocking
-  installs there on a spoofable `install_id` would be a false security control. Free's real boundary is
-  the machine-binding limit on the *build* side (§13.4a); the running-side cap needs an authenticated
-  install-provisioning step that doesn't exist yet — tracked in `TODO.md`.
-- Starter is *not* count-capped on installs — the sheet promises unlimited installs. Starter's actual
-  boundary is the `internal` distribution stamp and Conxa branding on the uploaded installer, visible
-  in the dashboard and telemetry — a contract violation the workspace can be *seen* committing, not one
-  blocked mid-run.
+**Compile flow** (first compile and recompile alike): `reserve` (with `X-Conxa-Machine`; blocks on quota, machine limit, or trial) → `commit` before the first LLM-bearing stage → `release` if failing before commit (after commit the credit is spent, except refunds above). Compile LLM calls use `usage_class="compile"`.
 
-Ops tier gating (`ensure_ops_tier`, `app/api/tracking_routes.py`, `app/api/product_routes.py`):
-- Free (`ops_tier="none"`): the ops dashboard, activity feed, workflow detail, ROI assumptions, run
-  lists, run timelines, and the audit log all 403 with `ops_tier_required`.
-- Starter (`"basic"`): all of the above are visible; drift detection (`GET /tracking/drift`) still 403s.
-- Pro/Enterprise (`"full"`): everything, including drift detection.
-- `GET /tracking/companies` and `GET /tracking/diagnostics` are **not** gated — lightweight
-  workspace-scoped lookups used by navigation, not analytics content.
+**Human Edit pool** is spent only by editor-triggered LLM paths: `handlers/visual.py`, `handlers/workflow_editor.py`, the 1-click fix (`patch.py::_regenerate_compiled_selectors`), the region re-target (`region_selector_vision.py`), the Copilot, and sandbox `ai_review`. Deterministic editor actions work when it's exhausted. The proxy enforces trial and machine registration on every call.
 
-Analytics retention:
-- `analytics_retention_days` per plan (Free 0, Starter 90, Pro 365, Enterprise custom) filters
-  `_visible_run_records` and `_visible_runtime_registrations` on read
-  (`app/services/tracking.py`, via `entitlements.analytics_retention_cutoff_ms`).
-- Read-side filtering only — there is no write-side prune yet; tracked in `TODO.md`.
+**Workflow-slot ledger:** `record_published_workflow` writes one never-resetting entry per `(workspace_id, workflow_id)` to `entitlement_workflows` on first publish. `_reconcile_workflow_locks` (on every `/entitlements/current` read and every publish; exposed as `workflow_lock`) keeps the most recent `compile_credits`-many workflows active and locks the rest oldest-first. `ensure_workflow_publishable`: republishing an active workflow is fine, a locked one gets 402 `workflow_locked`, a new one at the cap gets 402 `workflow_limit_exceeded`. Company-side only; delta sync is never gated.
 
-Seat usage:
-- Clerk organization membership is the intended source of truth when an organization is present and `CLERK_SECRET_KEY` is configured for the cloud backend.
-- Local/dev falls back to SaaS membership state.
-- **Enforced 2026-08-22** (`app/api/deps.py::current_principal`, `entitlements.ensure_seats_available`): a
-  (user, workspace) pair not yet in local membership state is checked against the plan's `seats` limit —
-  using the live Clerk count, `count > limit` — before `ensure_principal` would otherwise create the
-  membership row; over-cap raises `seat_limit_exceeded` (402) on every request that new member makes.
-  The invite itself still succeeds in Clerk (there is still no Conxa-owned invite API or Clerk webhook
-  to intercept it before it happens — that remains the only way to stop the invite outright), but the
-  seat is unusable, not merely uncounted. Existing members are unaffected by a later downgrade
-  (soft-lock, matching the machine/workflow gates). See `docs/Security.md` SG-18.
+**Distribution:** unlimited slugs and publishes. Installer upload accepts `distribution` and `white_label` query params, stored in installer KV metadata. `ensure_distribution_allowed` → 402 `distribution_not_permitted`; `ensure_white_label_allowed` → 402 `white_label_not_permitted`. This is server-side gating on what Studio declares (`installer_builder.py` doesn't stamp it into the artifact). Free's 1-install cap isn't enforced (§13.6). Starter installs are uncapped; its boundary is the visible internal stamp and branding.
 
-Trial expiry (Free only):
-- `trial_started_at` is stamped once, on first sight of a workspace (`saas.ensure_principal`), with a
-  backstop in `billing_for` for pre-existing records that predate the field.
-- `entitlements.trial_expired(billing)` is true only for `plan == "free"` past `trial_days` (30).
-- Enforced at every building chokepoint — LLM proxy, compile reserve, skill-pack publish, installer
-  upload — via `ensure_trial_active`, 402 `trial_expired`. Never enforced on skill sync or telemetry
-  ingest: execution is local and the cloud isn't in that path, so an already-installed machine keeps
-  working after the trial that built it expires.
+**Ops tier** (`ensure_ops_tier`): Free gets 403 `ops_tier_required` on the dashboard, activity, workflow detail, ROI, runs, timelines, and audit log. Basic sees all but drift. Full sees everything. `/tracking/companies` and `/tracking/diagnostics` are ungated.
 
-Credit add-on (rewritten 2026-08-22 — one-time purchase, wallet-based):
-- Add-on packs are bought once via a Cashfree Payment Link (`POST /subscriptions/addon/order`);
-  the confirmed payment credits `credit_wallet` (`{"compile_credits", "human_edit_tokens"}`) on the
-  billing record — a balance that never expires and is never reset by billing-period rollover.
-- The monthly plan allowance is consumed first; only when it is exhausted does enforcement draw from
-  the wallet (`reserve_compile_credit` marks wallet-funded reservations, `commit_compile_credit`
-  spends them; `record_llm_usage`/`ensure_human_edit_available` do the same for Human Edit tokens).
-- Catalog lives in `entitlements.ADDON_TIERS` (+20/+50/+100/+250 packs); served read-only at
-  `GET /api/v1/subscriptions/addons`. No Cashfree *plan IDs* are involved for add-ons.
+**Analytics retention:** `analytics_retention_days` (Free 0, Starter 90, Pro 365, Enterprise custom) filters `_visible_run_records` / `_visible_runtime_registrations` on read (`analytics_retention_cutoff_ms`). No write-side prune yet.
 
-Stable entitlement error codes:
-- `compile_credit_limit_exceeded`
-- `human_edit_pool_exceeded`
-- `seat_limit_exceeded`
-- `machine_limit_exceeded`
-- `trial_expired`
-- `distribution_not_permitted`
-- `white_label_not_permitted`
-- `ops_tier_required`
-- `entitlements_unavailable`
-- `invalid_usage_class`
+**Seats:** Clerk org membership is the source of truth when available (`CLERK_SECRET_KEY`); local state otherwise. `deps.py::current_principal` → `ensure_seats_available` checks a new (user, workspace) pair against the live count before creating the membership, and raises 402 `seat_limit_exceeded` on every request by an over-cap member. The Clerk invite itself can't be intercepted. Existing members are soft-locked on downgrade (`docs/Security.md` SG-18).
 
-### 13.4a Machine Binding
+**Trial** (Free): `trial_started_at` is stamped on first sight (`saas.ensure_principal`, backstop in `billing_for`). `ensure_trial_active` returns 402 `trial_expired` at the LLM proxy, compile reserve, publish, and installer upload. Never on sync or telemetry, so installed machines keep working.
 
-The control that stops a single-machine free trial from quietly becoming a free Pro seat, and the
-general seat-integrity mechanism across all paid tiers.
+**Add-ons:** one-time Payment Links (§3.5) credit `credit_wallet` (`{compile_credits, human_edit_tokens}`), which never expires. The monthly allowance is used first (`reserve_compile_credit` marks wallet-funded reservations; `record_llm_usage`/`ensure_human_edit_available` do the same). Catalog `ADDON_TIERS` (+20/+50/+100/+250), served at `GET /api/v1/subscriptions/addons`.
 
-- Build Studio derives a stable machine id from Windows' `MachineGuid`
-  (`HKLM\SOFTWARE\Microsoft\Cryptography`), SHA-256 hashes it (`conxa-builder/python/services/machine_id.py`),
-  and sends it as `X-Conxa-Machine` on every call through `backend.py::_cloud_json` (compile reserve,
-  entitlements checks) and `services/llm_proxy_client.py` (the LLM proxy). Only the hash ever leaves the
-  machine.
-- `app/api/machine_binding.py::register_request_machine` reads the header and calls
-  `entitlements.ensure_machine_slot`, enforced at both `llm_proxy_routes._meter_and_call` and
-  `entitlement_routes.post_compile_reserve` — a Studio that can neither proxy an LLM call nor reserve a
-  compile credit cannot compile.
-- A known hash is touched (last_seen/last_ip updated) and never counted twice. A new hash within the
-  `machines` limit is registered and allowed. A new hash at the limit is rejected
-  (402 `machine_limit_exceeded`).
-- A revoked machine (`POST /entitlements/machines/revoke`, Settings device list) is treated as brand
-  new on its next registration attempt — it re-enters through the limit check rather than being
-  silently un-revoked.
-- One `machines` limit governs both device slots and distinct active IPs (the pricing sheet pairs them
-  1:1, 3:3, 10:10 on every tier) — a deliberate simplification (`ponytail:` in code); split only if a
-  tier ever needs different counts.
-- Older Studio builds that predate this header send no `X-Conxa-Machine` — enforcement is a no-op for
-  them, not a hard failure; `settings.entitlements_enforce_machines` is the real on/off switch.
-- **Caveat on install-side enforcement**: `skillpack_update_routes.py::post_telemetry_runtime_start`
-  (the endpoint that would need to hard-cap Free's 1-install limit on the *running* side, not the
-  build side) is deliberately public and unauthenticated — installed runtimes have no Clerk session,
-  and its own docstring notes "spoofing inflates counts but leaks nothing." Hard-blocking installs
-  there on a spoofable `install_id` would be a false security control, not a real one. A 2026-08-09
-  attempt at real install-side enforcement (a machine-hash lock stamped into `pack.json`, checked by
-  the runtime and by the delta-sync endpoint) was reverted the same day — it blocked legitimate
-  Free-tier reinstalls and machine swaps. No install-side enforcement exists today; see `TODO.md`
-  CLOUD-3 (reopened).
+**Stable error codes:** `compile_credit_limit_exceeded`, `human_edit_pool_exceeded`, `seat_limit_exceeded`, `machine_limit_exceeded`, `trial_expired`, `distribution_not_permitted`, `white_label_not_permitted`, `ops_tier_required`, `workflow_locked`, `workflow_limit_exceeded`, `entitlements_unavailable`, `invalid_usage_class`.
 
-**Plan-aware installer naming and icon, added 2026-08-09:** `publish_routes._upload_installer_impl`
-picks the served installer's filename by plan when the caller doesn't pass an explicit `?filename=`:
-Free gets a random 10-letter name (`_random_installer_name()`, no branding signal); paid plans
-(Starter/Pro/Enterprise) use the workspace's stored, *unverified* "installer domain"
-(`entitlements.get_installer_domain`/`set_installer_domain`, `GET`/`POST /entitlements/installer-domain`,
-admin-only) if one is set, falling back to the previous `{slug}-Setup.exe` otherwise. There is no
-proof the workspace actually owns that domain yet — see `TODO.md` PROD-6, which this field is meant to
-be gated on once domain-ownership verification ships. Separately, the installer's `.exe` icon (embedded
-locally by `conxa_compile.installer_builder._stage_logo_icon` at build time, before anything is
-uploaded) is plan-gated in Build Studio itself: `handlers/workflows.py::cmd_build_installer` calls
-`GET /entitlements/current` and drops any supplied `logo_path` when the plan is Free (or the call
-fails — fail-safe defaults to no icon). This is distinct from `ensure_white_label_allowed`
-(`white_label`), which stays Enterprise-only for whatever else custom branding covers — see
-`docs/PRD.md` §11.
+### 13.6 Machine Binding (Build Side)
 
-### 13.4b Company Agent Fleet (Machine Registry, unlimited — added 2026-08-22)
+Stops a single-machine trial from becoming a free multi-seat install; the general build-seat integrity control.
 
-Deliberately the opposite control from §13.4a: **no limit, ever.** Company Agent (the customer-facing
-runtime, `runtime/`) registers every install with the cloud purely for fleet visibility, security, and
-support triage — never for billing or a slot count. This distinction is load-bearing: registration code
-for this path must never call `ensure_machine_slot`/read `PLAN_LIMITS["machines"]` — that meter is
-CBS-only (§13.4a).
+- Studio hashes Windows `MachineGuid` (`HKLM\SOFTWARE\Microsoft\Cryptography`) with SHA-256 (`services/machine_id.py`) and sends it as `X-Conxa-Machine` via `backend.py::_cloud_json` and the LLM proxy client. Only the hash leaves the machine.
+- `app/api/machine_binding.py::register_request_machine` → `ensure_machine_slot`, enforced at `_meter_and_call` and `post_compile_reserve`. A known hash is touched (last_seen/last_ip); a new hash within `machines` is registered; at the limit it gets 402 `machine_limit_exceeded`. A revoked machine re-enters through the limit check.
+- One `machines` limit covers both device slots and distinct active IPs (`ponytail:` simplification).
+- Builds without the header aren't enforced; `settings.entitlements_enforce_machines` is the switch. Execute calls skip machine registration.
+- **No install-side enforcement.** `POST /telemetry/runtime-start` is public and spoofable, so capping installs there would be a false control; a `pack.json` machine lock was tried and reverted because it broke legitimate reinstalls (TODO.md CLOUD-3).
 
-- `runtime/server.js::_phonehome()` already posted `install_id`, `platform`, `runtime_version`, and the
-  workspace_id(s) served by this install to `POST /api/v1/telemetry/runtime-start` on every startup
-  (§5.1a's Deployment view predates this). It now also sends `hostname`, `username` (the local OS
-  account — there's no Clerk/end-user identity on an installed runtime, so this is the only "who"
-  signal available), `os_release`, `os_arch` (all via Node's stdlib `os` module, no new dependency), and
-  a small `capabilities` object (`max_recovery_tier` from the same `CONXA_MAX_RECOVERY_TIER` ceiling
-  `recovery.js`/`server.js` already read — Studio=2, MCP=4, see `docs/App-Flow.md`'s recovery cascade —
-  and `update_channel` from the same `CONXA_UPDATE_CHANNEL` the self-updater already reads). All five
-  are optional and sticky (an omission never wipes a previously-reported value), matching the existing
-  `skill_versions` pattern.
-- `GET /api/v1/telemetry/runtimes` (authenticated, workspace-scoped) gained `limit`/`offset` pagination
-  (clamped 1–500 / ≥0) so a 1,000+-machine enterprise fleet doesn't come back as one unbounded response;
-  `stale_count`/`version_distribution` are still computed over the full filtered set, not just the
-  returned page — an in-process slice, not a DB-level query, good to roughly 10k rows per workspace.
-- `POST /api/v1/telemetry/runtimes/revoke` (owner/admin, new) sets `revoked: true` on a `runtime_registrations`
-  row by `install_id`. This is a dashboard label only — it never touches `_delta_impl` (skill sync),
-  `post_telemetry_runtime_start` (phone-home), or execution, matching this section's own rule that the
-  cloud never enforces on the running side. There is no un-revoke; a reinstall generates a fresh
-  `install_id` and registers clean.
-- Dashboard: `conxa-cloud/frontend/src/FleetPage.tsx` (route `/fleet`) — search/filter table with a
-  computed `status` (`active`/`stale`/`revoked`) per row, styled after the existing per-skill
-  `DeploymentPanel.tsx`. See `docs/Backend-Schema.md` §5.9a for the full API contract.
+**Installer naming and icon:** without an explicit `?filename=`, Free gets a random 10-letter name (`_random_installer_name()`). Paid plans use the workspace's unverified installer domain (`GET`/`POST /entitlements/installer-domain`, admin; pending verification, PROD-6), else `{slug}-Setup.exe`. The `.exe` icon (`installer_builder._stage_logo_icon`) is dropped on Free by `cmd_build_installer` (fail-safe: no icon if the entitlement call fails). This is separate from Enterprise-only `white_label`.
 
-### 13.4c Execute Seat Grants (shared AI Usage Credits pool, added 2026-09-16, in-process since the 2026-09-17 Execute merge)
+### 13.7 Execute Seat Grants
 
-A workspace's plan also caps how many people it can grant Conxa Execute (`conxa-execute/`, §3.6)
-access to — the `execute_seats` meter above. Unlike `seats`/`machines`, a grant is **standalone**:
-the granted person never needs to be a Build Studio Clerk org member — a support/contractor seat
-must not inflate the `seats` meter. Since the 2026-09-17 merge, Execute and Build Studio share one
-Clerk application, so binding a grant no longer needs the invitee to paste a code: it auto-claims by
-verified email the moment that person is next seen signed in (see below). A full workspace member
-doesn't need a grant at all — Execute is bundled into the team plan for every member automatically.
+`execute_seats` caps how many non-members a workspace can grant Conxa Execute. Grants are standalone and never touch `seats`; members get Execute automatically.
 
-Data model — two KV namespaces in `entitlements.py`, no Postgres table (grant lookups are either
-"all grants for a workspace" or "one grant by its own key", both things `kv_store` already answers
-well):
-- `execute_grants` — keyed by `grant_id` (a `secrets.token_urlsafe(32)` value; no longer exposed as
-  an invite-link token now that claiming is automatic). Record: `{grant_id, workspace_id, email,
-  status: pending|claimed|revoked, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at,
-  revoked_by}`.
-- `execute_grant_by_user` — keyed by the claimed Clerk `user_id`, written only on claim, cleared on
-  revoke. The O(1) "what's this person's primary bound pool" lookup (`execute_pool_binding_for_user`)
-  used by the hot chat-metering path when no explicit `target_workspace_id` is given.
+**Data** (KV, `entitlements.py`):
+- `execute_grants[grant_id]`: `{grant_id, workspace_id, email, status: pending|claimed|revoked, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}`;
+- `execute_grant_by_user[user_id]`: the claimed primary pool (`execute_pool_binding_for_user`, O(1) for the metering hot path when no `target_workspace_id` is given).
 
-Cloud-side functions (`entitlements.py`): `create_execute_grant`, `revoke_execute_grant`,
-`list_execute_grants`, `execute_grant_count` mirror the existing machine-registry functions
-(`ensure_machine_slot`/`list_machines`/`revoke_machine`, §13.4a) exactly, same `_locked_store`
-locking discipline. `claim_execute_grant(*, grant_id, user_id, email)` and
-`execute_pool_binding_for_user(user_id)` deliberately take plain strings, not a `Principal` — see
-below for why. `auto_claim_pending_grants_for(*, user_id, email)` (new, 2026-09-17) scans for every
-`pending` grant matching an email and claims them in one pass — called from `GET
-/api/v1/execute/contexts` on every Execute sign-in, replacing the old manual invite-code redeem UI.
-`list_claimed_grant_workspaces_for(user_id)` (new) returns every workspace a user holds a claimed
-grant for — the context switcher (§3.6) needs the full list, not just the single "primary" binding
-`execute_grant_by_user` tracks. `execute_chat_access_for(user_id, workspace_id)` (new) is the
-switcher's access check: true for the user's own personal workspace, any workspace with a claimed
-grant, or any Clerk org they're a real member of (`saas.py::clerk_user_organizations`).
+**Functions:** `create_`/`revoke_`/`list_execute_grants`, `execute_grant_count` (same `_locked_store` discipline as machines); `claim_execute_grant(*, grant_id, user_id, email)`; `auto_claim_pending_grants_for(*, user_id, email)`; `list_claimed_grant_workspaces_for(user_id)`; `execute_chat_access_for(user_id, workspace_id)` (personal workspace, claimed grant, or real Clerk org membership).
 
-**Correctness note (why not a synthetic Principal):** `ensure_human_edit_available`/`record_llm_usage`
-both call `billing_for(principal)` → `saas.ensure_principal(principal)`, which writes a `memberships`
-row and would silently register an Execute grantee as a Build Studio workspace member, inflating the
-`seats` meter. The fix: `ensure_execute_pool_available(workspace_id, ...)` and
-`record_execute_pool_usage(workspace_id, ...)` are workspace-id-scoped twins of those two functions,
-using the existing **read-only** `billing_for_workspace(workspace_id)` (already used by delta-sync for
-exactly this "no Principal available" reason) instead. Both share the same `_locked_store(f"llm-usage:
-{workspace_id}:{period}")` advisory-lock key as the Build Studio path — this is why multiple Execute
-grantees sharing one pool concurrently is already safe, no new locking code needed. This now meters
-as its own usage class, `usage_class="execute_chat"` — same pool, same wallet fallback as
-`human_edit`, tracked as a separate counter purely for reporting (`entitlements.py::_combined_pool_used`
-sums both when checking/displaying the shared limit — see §13.4's "AI Usage Credits" rename note).
+**Never a synthetic `Principal`:** `ensure_human_edit_available`/`record_llm_usage` go through `saas.ensure_principal`, which would write a membership row and inflate `seats`. Execute uses workspace-scoped twins, `ensure_execute_pool_available` / `record_execute_pool_usage`, built on read-only `billing_for_workspace`, with the same `_locked_store("llm-usage:{ws}:{period}")` key, so concurrent grantees are safe.
 
-API surface — all in-process now, no service-token bridge:
-- Clerk-authenticated, admin-only (`entitlement_routes.py`): `GET /entitlements/execute-grants`,
-  `POST /entitlements/execute-grants {email}` (checks the `execute_seats` cap, idempotent on a
-  repeat invite to the same pending email — the response no longer carries an `invite_url`, since
-  there's nothing to send; the grant just auto-claims on that email's next Execute sign-in), `POST
-  /entitlements/execute-grants/revoke {grant_id}`, and the Phase-1 fallback `POST
-  /entitlements/execute-grants/claim {grant_id}`.
-- `GET /api/v1/execute/contexts` (new, 2026-09-17) — the personal/team context switcher: every
-  workspace the signed-in caller can use Execute under, each with `credits_remaining`
-  (`execute_pool_status`), plus a side effect of auto-claiming any pending grant for their email.
+**API** (in-process):
+- admin: `GET /entitlements/execute-grants`, `POST /entitlements/execute-grants {email}` (checks the cap; idempotent for a pending email; no invite URL), `POST …/revoke {grant_id}`, fallback `POST …/claim {grant_id}`;
+- `GET /api/v1/execute/contexts` (§3.6): every usable workspace with `credits_remaining`, auto-claiming pending grants for the caller's verified email.
 
-Claim flow (since 2026-09-17): an admin invites by email → nothing further needs sending → the
-invitee signs into Conxa Execute (or anywhere in Conxa, same Clerk app) with that email → the next
-call to `GET /api/v1/execute/contexts` sees the `pending` grant, matches the verified email from the
-JWT, and claims it automatically, writing the `execute_grant_by_user` pointer. From then on that
-workspace appears in their context switcher, and selecting it makes their Execute chat draw from that
-workspace's AI Usage Credits pool. This closes what used to be Execute's only network coupling back
-to conxa-cloud (a shared-secret HTTP bridge, `SKILL_EXECUTE_SERVICE_TOKEN`) — it's simply the same
-backend now, so "coupling" isn't a meaningful category here anymore.
+### 13.8 Runtime Fleet Registry
 
-### 13.5 Enterprise BYOK (Azure OpenAI)
+The opposite of §13.6: **no limit, ever.** Installed runtimes register for visibility, security, and support only. This path must never call `ensure_machine_slot` or read `PLAN_LIMITS["machines"]`.
 
-The compliance argument, not a cost play: vision anchor generation sends screenshots of a customer's
-internal screens to third-party LLM providers, which is a dead stop in a bank's security review.
-Compiling against the customer's own Azure OpenAI deployment means no screenshot of their systems ever
-leaves their tenancy. Gated on the `byok` plan capability — Enterprise only. Bedrock and Vertex are
-tracked in `TODO.md`; Azure OpenAI was chosen first because it's OpenAI-compatible and reuses the
-existing router call path with minimal changes.
+- `server.js::_phonehome()` posts `install_id`, `platform`, `runtime_version`, served workspace ids, `hostname`, `username` (the local OS account, the only "who" available), `os_release`, `os_arch`, and `capabilities` (`max_recovery_tier`, `update_channel`) to `POST /api/v1/telemetry/runtime-start`, plus `skill_versions` and `sync_errors` (§5.5). Optional fields are sticky.
+- `GET /api/v1/telemetry/runtimes`: workspace-scoped, `limit`/`offset` (1–500), with `stale_count`/`version_distribution` over the full filtered set (in-process slice, fine to ~10k rows).
+- `POST /api/v1/telemetry/runtimes/revoke` (owner/admin): a dashboard label only; never affects sync, phone-home, or execution. No un-revoke; a reinstall gets a fresh `install_id`.
+- UI: `conxa-cloud/frontend/src/FleetPage.tsx` (`/fleet`), status `active`/`stale`/`revoked`. Contract: `docs/Backend-Schema.md` §5.9a.
 
-**Storage** (`app/services/byok.py`): KV namespace `workspace_llm_keys`, one record per workspace —
-`{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}`. The API key
-is AES-256-GCM encrypted at rest under `SKILL_BYOK_ENCRYPTION_KEY` (32 raw bytes, base64-encoded) via
-`cryptography.hazmat.primitives.ciphers.aead.AESGCM` — no new dependency, already present transitively.
-An unconfigured key (`byok_not_configured`, 500) refuses to encrypt or decrypt rather than falling back
-to plaintext.
+### 13.9 Enterprise BYOK (Azure OpenAI)
 
-**Routes** (`app/api/byok_routes.py`, `PUT/GET/DELETE /api/v1/workspace/llm-key`, owner/admin only via
-`require_admin`): `GET` returns metadata only (`configured`, `provider`, `endpoint`, `deployment`,
-`api_version`) — the key itself is never returned once stored.
+A compliance feature: vision anchors send screenshots of internal screens to LLM providers, which fails bank security reviews. With BYOK, screenshots stay in the customer's Azure tenancy. Gated on `byok`. Bedrock and Vertex are in TODO.md.
 
-**Router integration**: `byok_pool_entry_for(principal)` (`app/services/byok.py`) returns `None` unless
-the plan carries `byok` *and* a key is configured, in which case it builds a one-off `PoolEntry`:
-`endpoint` is the full Azure chat-completions URL
-(`{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}`),
-`auth_style="api_key_header"` (Azure's REST API wants an `api-key` header, not `Authorization: Bearer`
-— the two required a small `_call_provider` change alongside `_is_openai_compatible_endpoint`, which
-now also accepts a pre-built `.../chat/completions` URL, not just the `/v1` convention the pooled
-providers use). `llm_proxy_routes._meter_and_call` checks `byok_pool_entry_for` first, before the
-pooled-provider path, and routes through `LLMRouter.call_entry_directly` when it returns an entry.
+- **Storage** (`app/services/byok.py`): KV `workspace_llm_keys`, `{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}`. AES-256-GCM under `SKILL_BYOK_ENCRYPTION_KEY` (32 bytes, base64). A missing key refuses to encrypt or decrypt (`byok_not_configured`), never plaintext.
+- **Routes** (`app/api/byok_routes.py`, owner/admin): `PUT`/`GET`/`DELETE /api/v1/workspace/llm-key`. `GET` returns metadata only.
+- **Routing:** `byok_pool_entry_for(principal)` builds a one-off `PoolEntry` (endpoint `{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}`, `auth_style="api_key_header"`). `_meter_and_call` checks it first and uses `call_entry_directly`. `_is_openai_compatible_endpoint` accepts full `/chat/completions` URLs.
+- Compile credits still apply (they meter reach, not Conxa's token cost).
 
-Compile credits still apply on BYOK — credits meter reach against the plan, not Conxa's token cost.
 
 ---
 
-## 14. Database & Storage Architecture
+## 14. Storage
 
-### 14.1 KV Store (Primary Abstraction)
+### 14.1 KV Store
 
-`conxa_core/db.py` provides a dual-mode key-value store:
+`conxa_core/db.py` is a dual-mode key-value store:
 
 ```
-Mode 1: PostgreSQL (SKILL_DATABASE_URL set)
-  Table: kv_store
-    namespace  TEXT        PRIMARY KEY part 1
-    key        TEXT        PRIMARY KEY part 2
-    data       JSONB
-    created_at TIMESTAMPTZ
-    updated_at TIMESTAMPTZ
-
-Mode 2: Filesystem (no SKILL_DATABASE_URL)
-  data/kv/{namespace}/{sha256(key)}.json
+PostgreSQL (SKILL_DATABASE_URL set)          Filesystem (unset; dev / Build Studio)
+  kv_store(namespace TEXT, key TEXT,           data/kv/{namespace}/{sha256(key)}.json
+           data JSONB, created_at, updated_at)
+  PRIMARY KEY (namespace, key)
 ```
 
-Key namespaces in use:
-- `workflows` — Workflow model JSON
-- `skill_packs_meta` — SkillPack model JSON, keyed by workspace_id
-- `entitlement_usage` — monthly usage row keyed by `workspace_id:YYYY-MM`
-- `compile_reservations` — compile-credit reservations keyed by reservation id
-- `tracking_tokens` — workspace_id → {token, company, version, workspace_id, owner_user_id, updated_at}
-- `sync_tokens` — workspace_id → {token, company, version, workspace_id, owner_user_id, updated_at}
-- `tracking/{workspace_id}` — run_id → [event batches]
-- `runs` — workflow_id → [run records]
-- `selector_cache` — DOM hash → selector candidates
+With `SKILL_AUTH_REQUIRED=true` the app refuses to start without `SKILL_DATABASE_URL`; there's no filesystem fallback in production. `db.healthcheck()` backs `/readyz`.
 
-### 14.2 Additional File Storage
+Main namespaces (full map: `docs/Backend-Schema.md`):
 
-Beyond the KV store:
-- `data/sessions/{id}/events.jsonl` — raw event stream (append-only)
-- `data/sessions/{id}/screenshots/` — PNG screenshots per step
-- `data/skills/{id}/skill.json` — compiled SkillPackage
-- `data/skill-packs/{co}/` — built skill package folder
-- `data/installers/{co}/installer.exe` — uploaded installer binary
+| Namespace | Contents |
+|---|---|
+| `workflows`, `skill_packs_meta` | Workflow / SkillPack records by `workspace_id` |
+| `sync_tokens`, `tracking_tokens` | `workspace_id` → `{token, version, workspace_id, owner_user_id, updated_at}` |
+| `skillpack_files__{ws}`, `release_files`, `skillpack_known_skills` | published files, immutable release snapshots, per-skill rows (`archived`) |
+| `installer_versions__{ws}` | installer binaries (base64) + metadata |
+| `component_versions`, `manifest` | per-component versions; the signed unified manifest |
+| `tracking/{ws}` | `run_id` → event batches |
+| `runtime_registrations` | fleet registry (§13.8) |
+| `entitlement_usage`, `compile_reservations`, `entitlement_workflows` | usage per period, reservations, workflow-slot ledger |
+| `execute_grants`, `execute_grant_by_user` | Execute seat grants (§13.7) |
+| `workspace_llm_keys` | BYOK (encrypted) |
+| `cashfree_sub_workspace`, `cashfree_orders_granted` | billing mapping, add-on idempotency |
+| `rate_limits` | delta-sync rate limiting |
+| `selector_cache` | DOM hash → selector candidates (GC loop in `main.py` lifespan, every 6 h + startup) |
 
-### 14.3 Production Database Requirements
+### 14.2 File Storage
 
-In production (`SKILL_AUTH_REQUIRED=true`), the app refuses to start without `SKILL_DATABASE_URL`. The filesystem fallback is **blocked** in production.
+- Build Studio: see §2.3.
+- Cloud disk (`data/skill-packs/`, `data/installers/`): a fast-path cache over KV, rehydrated on miss (§5.8).
+- Runtime: see §4.5.
 
 ---
 
 ## 15. Security Model
 
-### 15.1 Current Security Boundaries
+Numbered gaps and fix status live in `docs/Security.md` (SG-01…). This section is the boundary summary.
 
 | Boundary | Mechanism |
 |---|---|
-| Cloud API auth | Clerk JWT (RS256, verified via JWKS) |
-| Build Studio auth | Clerk PKCE (no implicit flow) |
-| Runtime session encryption | AES-256-GCM, key = HKDF(company_token) |
-| Telemetry ingest | Package tracking token (secrets.token_urlsafe(32)) |
-| Installer download | HMAC-SHA256 signed, time-limited `ts`+`sig` query params when `SKILL_INSTALLER_SIGNING_KEY` is set (SG-07); public (slug is the only "credential") in dev when unset |
-| Skill pack sync | Rate-limited; token optional in local dev |
-| Auth file exclusion | Compiler refuses if auth.json found in build input |
-| Request body limits | 1MB general; 250MB publish/upload |
-| Slug ownership | First publisher claims; workspace-scoped |
-| CORS | Explicit allowlist (`SKILL_CORS_ORIGINS`) + Vercel preview regex |
+| Cloud API | Clerk JWT (RS256 via JWKS); `require_admin` RBAC on publish, release, rollback, archive, workflow create/delete, billing, BYOK, grants |
+| Build Studio / Execute login | Clerk PKCE (S256), tokens in OS keyring / `safeStorage` |
+| Runtime → cloud | Installer-embedded `sync_token` (read-only, one workspace) and tracking token; `compare_digest` |
+| Target-platform sessions | AES-256-GCM, per-machine key in the OS keychain; never leave the machine; never in build output |
+| Update integrity | Ed25519-signed manifest (key baked into host) + SHA-256 per artifact + `--selfcheck` for the host |
+| Governance policy | Ed25519-signed, same key; signed `expires_at` (§12.5) |
+| Telemetry integrity | HMAC chain per batch (§12.4); no-token fallback rejected in production (`SKILL_TRACKING_HMAC_SECRET`/`SKILL_AUTH_REQUIRED`, SG-05) |
+| Installer download | HMAC-SHA256 `ts`+`sig`, 10-min window, when `SKILL_INSTALLER_SIGNING_KEY` is set (SG-07); public in dev |
+| Proxy identity (Execute) | HMAC-signed; static-secret fallback kept for an old deployment (§3.3) |
+| Body limits | 1 MB general; 250 MB publish/upload; 8 MB vision/Execute chat |
+| CORS | Explicit allow-list (`SKILL_CORS_ORIGINS`) + Vercel preview regex |
+| Local inbound surface | Hand-over loopback listener only while pending, per-pause token (§11.4); Execute's browser control channel is loopback |
+| Recovery safety | Uniqueness-gated resolution and overrides; destructive/entity halts; safe-label dismissal allow-list (§10, §9.6) |
 
-### 15.2 Security Gaps (Current State)
-
-- Sync token is a shared secret across all of a company's end users — a leaked installer grants read-only access to that company's data-only skill packs. Session encryption uses a separate per-machine key so individual users' sessions remain protected.
-- Skill pack delta rate limit is in-memory — not persisted across restarts.
-- No device registration or runtime instance tracking.
-- Installer download requires a signed, time-limited link once `SKILL_INSTALLER_SIGNING_KEY` is configured in production (SG-07); still fully public — anyone with the slug URL can download — when that key is left unset (dev).
-- `SKILL_TRACKING_HMAC_SECRET` (or `SKILL_AUTH_REQUIRED`) now gates the fallback: telemetry from a company with no stored token is rejected in production, and only still accepted in dev when neither is set (SG-05).
+**Accepted risks:**
+- The sync token is shared by all of a workspace's installs, so a leaked installer grants read-only access to that workspace's released skills (not sessions).
+- Runtime identity is per workspace, not per end user.
+- Local file-drop signals (`resume/`, `login-done/`) trust the local user.
 
 ---
 
-## 16. Deployment Architecture
+## 16. Deployment
 
-### 16.0 Dev/Prod Environment Isolation
+### 16.1 Dev/Prod Isolation
 
-A single switch, **`CONXA_ENV`** (`dev` | `prod`), selects one of two fully isolated
-stacks so Development and Production coexist on one machine with zero interference and
-Production only ever receives releases promoted from Dev.
+One switch, **`CONXA_ENV`** (`dev` | `prod`), selects two fully isolated stacks that coexist on one machine.
 
-**The switch resolves everywhere from one variable:**
-- **Python (cloud + Studio backend):** `conxa_core.config.active_environment()` reads
-  `CONXA_ENV` and loads `.env.{dev,prod}` (`env_files()`), sets the first-class
-  `settings.environment`, and a model-validator refuses to boot a `prod`-labeled
-  process with auth off. `state_base_dir()` honors `CONXA_STUDIO_HOME` so Studio state
-  splits into `~/.conxa-build-studio-dev` vs `~/.conxa-build-studio`.
-- **Runtime (`runtime/env.js`, applied once at the top of `bootstrap.js`):** normalizes
-  `process.env` with the per-env `CONXA_DIR` / `CONXA_DATA_DIR` / `CONXA_APP_DIR` /
-  `CONXA_UPDATE_CHANNEL` / `CONXA_API_URL`. **Safety default = prod** (a shipped install
-  with no `CONXA_ENV` must keep its `~/.conxa` tree and the `stable` channel); dev is
-  opt-in. The cloud/Studio side defaults the *other* way (dev), because the danger on a
-  developer workstation is accidentally touching prod.
-- **Studio (`conxa-builder/electron/env.js`):** injects the dev/prod cloud, Clerk, and
-  `CONXA_STUDIO_HOME` into the spawned Python backend. Shipped default = prod.
-
-**Isolation matrix**
+- **Python** (cloud + Studio backend): `conxa_core.config.active_environment()` loads `.env.{dev,prod}` (`env_files()`), sets `settings.environment`, and refuses a `prod` process with auth off. `state_base_dir()` honors `CONXA_STUDIO_HOME`. Defaults to **dev** (the risk on a workstation is touching prod).
+- **Runtime** (`runtime/app/env.js`, bundled into the host and applied first in `bootstrap.js`): normalizes `CONXA_DIR`, `CONXA_DATA_DIR`, `CONXA_APP_DIR`, `CONXA_UPDATE_CHANNEL`, `CONXA_API_URL`. Defaults to **prod** (a shipped install without `CONXA_ENV` must keep `~/.conxa` and `stable`).
+- **Studio** (`conxa-builder/electron/env.js`): injects cloud, Clerk, and `CONXA_STUDIO_HOME` into the backend. Shipped default is prod.
 
 | Concern | Dev | Prod | Lever |
 |---|---|---|---|
-| Env file | `.env.dev` | `.env.prod` | `CONXA_ENV` → `env_files()` |
+| Env file | `.env.dev` | `.env.prod` | `CONXA_ENV` |
 | Runtime install/data | `~/.conxa-dev` / `Conxa-Dev` | `~/.conxa` / `Conxa` | `CONXA_DIR`, `CONXA_DATA_DIR` |
 | Studio state | `~/.conxa-build-studio-dev` | `~/.conxa-build-studio` | `CONXA_STUDIO_HOME` |
 | Cloud API | `127.0.0.1:8000` | `apis.conxa.in` | `CONXA_CLOUD_API`, `CONXA_API_URL` |
 | Update channel | `dev` | `stable` | `CONXA_UPDATE_CHANNEL` → `?channel=` |
-| MCP server entry | `conxa-dev` | `conxa` | NSIS `MCP_SERVER` (build-time) |
+| MCP entry key | `conxa-dev` | `conxa` | `env.js` dev flag (§4.3) |
 | Billing | Cashfree `TEST` | Cashfree `PROD` | `CASHFREE_ENV` |
 
-**Operator switch:** `scripts/conxa.sh <dev|prod> <backend|frontend|studio|runtime>`
-(`conxa.ps1` on Windows; `make dev-*` / `make prod-*` shortcuts). It exports `CONXA_ENV`
-plus the isolated path roots, then launches the target.
+- **Operator switch:** `scripts/conxa.sh <dev|prod> <backend|frontend|studio|runtime>` (`conxa.ps1`; `make dev-*`/`prod-*`).
+- **`pack.json` URLs** (`sync_endpoint`, `tracking_url`) are frozen at publish from the cloud's `SKILL_API_BASE_URL`, so dev installers never phone prod.
+- **Releases go straight to stable:** a clean `app-vX.Y.Z`/`host-vX.Y.Z` tag builds in CI and posts to the prod cloud's stable channel (`CLOUD_API_URL`/`CLOUD_ADMIN_TOKEN`) via `POST /api/v1/admin/component-versions/{component}`. There's no hosted dev cloud and no promotion workflow; `?channel=dev` exists only for a local runtime pointed at a local backend. The cloud re-signs the manifest on every publish. Details: `SHIP-GUIDE.md`.
 
-**pack.json invariant:** `sync_endpoint` and `tracking_url` are frozen into each pack at
-publish time from the cloud's `SKILL_API_BASE_URL` (`skill_package_builder.py`). Because Dev
-publishes against the dev cloud, dev-built installers embed dev URLs — a dev installer
-never phones home to prod. Both sync and tracking now derive from one env-consistent base.
+### 16.2 CI Gates
 
-**Release flow (direct-to-stable):** a clean semver tag (`app-vX.Y.Z`, `host-vX.Y.Z`)
-builds in CI and, on success, posts straight to the **stable** update channel on the prod
-cloud (`CLOUD_API_URL`/`CLOUD_ADMIN_TOKEN`). There is no hosted dev cloud to stage a build
-on first — `conxa-cloud/render.dev.yaml` was removed (commit `91eebe8`), and the dev lane
-now runs only on `127.0.0.1:8000`, unreachable from a GitHub-hosted runner. The
-`?channel=dev|stable` distinction still exists server-side (`updates_routes.py`) for a
-developer manually pointing a local runtime at their own dev backend, but CI no longer
-publishes to it, and there is no promotion step — the `promote-release.yml` workflow that
-used to bridge dev→stable was removed along with it. Signing is unchanged: the cloud
-re-signs the stable manifest with its Ed25519 key on every publish, and the runtime
-verifies against the public key baked in at build time.
+- `build-runtime-host.yml`: builds the host exe with `--no-bytecode`, verifies `host-manifest.json` (`check_host_manifest.js`), runs the execution gate (`runtime/test/gate_replay.js` + `gate-skill/`) against the fresh exe, tags `host-vX.Y.Z`.
+- `build-runtime-app.yml`: obfuscates the app layer (`page_scripts.js` with mangling only, §4.1), runs the gate against the declared `MIN_HOST` exe **before** zip/release/publish, tags `app-vX.Y.Z`. A red gate usually means `MIN_HOST` is stale.
+- `check_recovery_purity.js`: Tier A stays zero-token.
+- `build-studio.yml`, `build-execute.yml`: Electron + NSIS desktop builds.
 
-### 16.1 Cloud Backend (Render)
+### 16.3 Cloud Backend (Render)
 
 ```
-Build root:        conxa-cloud/backend/
-Build command:     ./build.sh
-  pip install ../../packages/conxa-core
-  pip install -r requirements.txt
-Start command:     ./start.sh
-  uvicorn app.main:app --host 0.0.0.0 --port $PORT
-Health check:      GET /healthz (liveness)
-Deploy gate:       GET /readyz (DB ping)
-Environment:       SKILL_AUTH_REQUIRED=true requires (app refuses to boot otherwise —
-                   app/main.py::_validate_production_config):
-  SKILL_DATABASE_URL, SKILL_CLERK_ISSUER, SKILL_CLERK_JWKS_URL,
-  SKILL_CORS_ORIGINS, CASHFREE_APP_ID, CASHFREE_SECRET_KEY,
-  CASHFREE_WEBHOOK_SECRET, CASHFREE_STARTER_PLAN_ID,
-  CASHFREE_PRO_PLAN_ID, SKILL_API_BASE_URL,
-  SKILL_TRACKING_HMAC_SECRET, SKILL_INSTALLER_SIGNING_KEY,
-  CONXA_MANIFEST_SIGNING_KEY, + at least one *_API_KEYS
+Root:          conxa-cloud/backend/   (Dockerfile also available; context = repo root)
+Build:         ./build.sh   → pip install ../../packages/conxa-core && pip install -r requirements.txt
+Start:         ./start.sh   → uvicorn app.main:app --host 0.0.0.0 --port $PORT  (init_db() on startup)
+Liveness:      GET /healthz
+Deploy gate:   GET /readyz  (DB ping)
 ```
 
-`CONXA_MANIFEST_SIGNING_KEY` is in that list as of 2026-08-04: without it `manifest_signer.py`
-silently serves an **unsigned** `/api/v1/manifest.json`, which every runtime then discards as
-unverifiable — self-updates stop platform-wide with no error on either side. Failing the boot
-makes that misconfiguration loud instead of silent.
+With `SKILL_AUTH_REQUIRED=true`, `app/main.py::_validate_production_config` refuses to boot unless these are set: `SKILL_DATABASE_URL`, `SKILL_CLERK_ISSUER`, `SKILL_CLERK_JWKS_URL`, `SKILL_CORS_ORIGINS`, `CASHFREE_APP_ID`, `CASHFREE_SECRET_KEY`, `CASHFREE_WEBHOOK_SECRET`, `CASHFREE_STARTER_PLAN_ID`, `CASHFREE_PRO_PLAN_ID`, `SKILL_API_BASE_URL`, `SKILL_TRACKING_HMAC_SECRET`, `SKILL_INSTALLER_SIGNING_KEY`, `CONXA_MANIFEST_SIGNING_KEY`, and at least one `*_API_KEYS`. (Without the manifest key the manifest is served unsigned, every runtime discards it, and self-updates stop silently.)
 
-**Optional, not boot-required (2026-08-08)** — each fails gracefully (not down) when unset, so they're
-deliberately absent from the required list above:
-- `LLM_STARTER_*` / `LLM_PRO_*` (`PROVIDER`, `ENDPOINT`, `API_KEYS`, `TEXT_MODEL`, `VISION_MODEL`,
-  `FALLBACK_TEXT_MODEL`, `FALLBACK_VISION_MODEL`) — each tier's own independent single-deployment
-  provider block, routed to the `"starter"`/`"pro"` compile pool respectively (§13.1a). Unset
-  `_ENDPOINT`/`_API_KEYS` means that tier contributes no pool entries, so Starter/Pro compiles get no
-  quality lift over Free until these are configured.
-- `SKILL_BYOK_ENCRYPTION_KEY` — 32 raw bytes, base64-encoded, for Enterprise BYOK key-at-rest
-  encryption (§13.5). Unset means BYOK storage refuses every write/read (`byok_not_configured`, 500)
-  rather than silently storing plaintext.
-- `SKILL_RESEND_API_KEY` / `SKILL_BUG_REPORT_TO_EMAIL` — the dashboard "Report a bug" page
-  (`POST /api/v1/bug-reports`, §Backend-Schema.md §5.9b). Unset means the endpoint returns
-  `503 bug_reports_not_configured` rather than silently dropping reports. Resend (HTTPS API) is used
-  instead of SMTP because the cloud backend runs on Render's free plan, which blocks outbound SMTP
-  ports.
-- ~~`CASHFREE_ADDON_PLAN_ID`~~ - removed 2026-08-22: add-on packs are one-time Payment Link
-  purchases and need no plan IDs (only `CASHFREE_APP_ID` / `CASHFREE_SECRET_KEY` /
-  `CASHFREE_WEBHOOK_SECRET`).
+**Optional** (degrade gracefully when unset):
+- `LLM_STARTER_*` / `LLM_PRO_*`: tier pools (§13.2); unset gives no quality lift over Free.
+- `SKILL_BYOK_ENCRYPTION_KEY`: BYOK refuses with `byok_not_configured`.
+- `SKILL_RESEND_API_KEY`, `SKILL_BUG_REPORT_TO_EMAIL`: bug reports return `503 bug_reports_not_configured`. Resend is used because Render's free plan blocks SMTP.
 
-### 16.1a Conxa Execute (deleted, 2026-09-17)
+The service runs on Render's free plan (ephemeral disk, §5.8). Conxa Execute has no service of its own (§3.6).
 
-There is no separate Render service for Conxa Execute anymore — see §3.6. The desktop app deploys
-as an Electron installer only (`.github/workflows/build-execute.yml`, same NSIS/electron-builder
-shape as Build Studio, §16.3) and talks to the same `conxa-api` service §16.1 describes. Nothing to
-provision here beyond the one new Clerk OAuth client under `clerk.conxa.in` (§3.6).
+### 16.4 Cloud Frontend (Vercel)
 
-### 16.2 Cloud Frontend (Vercel)
+Root `conxa-cloud/frontend/`, `npm run build`. The route handler `/api/v1/*` proxies to `API_ORIGIN`. Env: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, `API_ORIGIN`.
 
-```
-Project root:      conxa-cloud/frontend/
-Build command:     npm run build
-Deploy:            next start
-Environment:
-  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-  CLERK_SECRET_KEY
-  API_ORIGIN  (points to Render backend)
-```
+### 16.5 Desktop Apps
 
-### 16.3 Build Studio (Windows)
+- **Build Studio:** `electron-builder` + NSIS `.exe`, shipping Electron and the PyInstaller backend (`dist/backend/`, bundles `conxa_core` + `conxa_compile`). Chromium, NSIS, and the runtime are fetched at first launch (§2.4). Auto-updates via electron-updater from `/api/v1/updates/studio/latest.yml`.
+- **Conxa Execute:** same shape (`build-execute.yml`), feed `/api/v1/updates/execute/latest.yml`, plus its own Clerk OAuth client (§3.6).
+- Auth and updater details: `docs/Auth-and-Updater.md`.
 
-Distributed as a `.exe` installer built via `electron-builder` + NSIS. Ships:
-- Electron app (Node.js bundled)
-- PyInstaller backend bundle (`dist/backend/`)
-- Does NOT ship: Chromium, NSIS, conxa-runtime.exe (fetched on first launch via bootstrap)
+### 16.6 Runtime (End-User Machine)
 
-### 16.4 Runtime (End-User Machine)
+Ships inside the workspace installer (§8). Per-user, no UAC:
+- **Windows:** `%USERPROFILE%\.conxa\` with versioned `conxa-runtime/` and `conxa-app/` plus `current` junctions (§4.5).
+- **Mac:** build scripts exist (`npm run build:mac`); Windows is primary.
 
-Ships inside the company-specific installer produced by Build Studio. Per-user install (no UAC). Installs to:
-- Windows: `$PROFILE\.conxa\conxa-runtime.exe` (i.e. `C:\Users\<user>\.conxa\`) plus `conxa-app\` for the pre-extracted app layer
-- Mac: `~/.conxa/runtime/runtime` (planned; Mac support is in build scripts but Windows is the primary target)
-
-MCP registration is done by `conxa-runtime.exe register-mcp` itself (see §4.2a) — NSIS just invokes the subcommand, no config-editing logic lives in the installer template. Auto-detects the Microsoft Store/MSIX config path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise for Claude Desktop, which avoids MSIX filesystem virtualization issues affecting per-user config paths on Windows (see claude-code issue #26073) — and does the equivalent for every other detected host. An earlier design used a `.mcpb` Desktop Extension instead — that mechanism has been removed and no longer exists in the installer. A design before that generated a throwaway PowerShell script per host from the NSIS template — replaced because it reserialized the whole config file (losing comments/key order), wrote non-atomically, and its uninstaller hardcoded the registration key separately from the installer's channel-derived one, so a dev-channel uninstall could leave a dangling entry behind.
+MCP registration is done only by `conxa-runtime.exe register-mcp` (§4.3). For Claude Desktop it detects the Microsoft Store/MSIX path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) before `%APPDATA%\Claude\`, avoiding MSIX filesystem virtualization issues, and the equivalent for every other host.
 
 ---
 
 ## 17. Known Gaps & Tech Debt
 
-| Gap | Location | Severity | Notes |
+Open items only; resolved history is in `Done.md`. The backlog of record is `TODO.md`.
+
+| Gap | Where | Severity | Notes |
 |---|---|---|---|
-| Delta sync ships all files **within a changed skill** | `skillpack_update_routes.py::_build_delta()` | Low | Per-skill granularity is real (§5.9/§11.1) — republishing one skill never re-downloads others. What remains is per-*file* diffing inside a single changed skill (a handful of small JSON files each), a much smaller gap than the whole-company retransfer this replaced. |
-| ~~Selector cache GC unscheduled~~ **RESOLVED** | `selector_cache.cleanup_expired_entries()` + `main.py` lifespan | — | Background loop (default 6h + startup) sweeps expired selector-cache entries and old snapshot blobs |
-| ~~Billing quotas not enforced~~ **RESOLVED** | `entitlements.py`, `publish_routes.py`, `llm_proxy_routes.py` | — | Plan limits enforced (publish slot, compile credits, Human-Edit pool); enforce flags on by default; provider is Cashfree |
-| Sync token is a shared installer secret | `sync_tokens` KV + pack.json | Low | Read-only, single-company scope; per-machine session encryption key mitigates session-file risk |
-| ~~Rate limit cache in-memory~~ **RESOLVED** | `rate_limits` KV namespace | — | Persisted in `conxa_core.db`; survives restarts, shared across instances (in-memory fallback in local dev) |
-| ~~Stripe fields in config~~ **RESOLVED** | removed | — | Stripe fully removed (config, endpoints, dep, frontend flag); Cashfree is the wired gateway (switched from Razorpay 2026-06-30) |
-| ~~No device/runtime registration~~ **RESOLVED** | `telemetry_routes.py` `/runtime-start`, `runtime/drift.js` | — | Runtime-start telemetry + pre-execution structural-fingerprint drift gate give visibility into active runtimes and redesign detection (Implementation-Plan §2.1/§2.2) |
-| ~~No enterprise RBAC enforcement~~ **PARTIAL** | `app/services/rbac.py` | Medium | `require_admin` enforced on publish, workflow create/delete, bundle release; fine-grained per-skill/analyst roles still Phase 3 |
-| Runtime auth per-company only | `auth_manager.js` | Medium | No per-user identity at runtime |
-| ~~Installer download fully public~~ **RESOLVED** | `publish_routes.py:get_installer` | — | Requires signed, time-limited `ts`+`sig` when `SKILL_INSTALLER_SIGNING_KEY` is set; public download preserved only in dev (SG-07) |
-| ~~`research/frontend/` is a dead prototype~~ **N/A** | — | — | Directory does not exist in the repo |
-| ~~Aptfile has Playwright deps~~ **N/A** | — | — | `conxa-cloud/backend/Aptfile` does not exist in the current repo — removed at some point after this gap was first logged, not merely unused |
-| ~~`worker.py` scaffold~~ **N/A** | — | — | `app/worker.py` does not exist in the current repo — the job-queue scaffold described here was never committed (or was removed); see `TODO.md` for the actual durable-queue gap |
-| ~~`tracking_routes.py` public ingest endpoint bypasses `/api/v1`~~ **RESOLVED (reframed) 2026-07-09** | `app/api/tracking_routes.py`, `main.py` | — | The public telemetry-ingest route at `/api/tracking/{company}/events` is now a documented, **permanent** back-compat alias (installer-baked `pack.json.tracking.tracking_url` for already-deployed runtimes points at it and can never be migrated remotely — see the versioned-installer-architecture's `{installer_version}`-frozen-at-build-time rule). `/api/v1/tracking/...` and the new versioned `/api/v1/workflows/{installer_version}/{company}/tracking/events` both exist alongside it, all three calling the same `_ingest_events_impl()`. See `TODO.md` ARCH-1 and `CLAUDE.md` Key Invariants. |
-| No CDN/multi-region blob storage | `blob_read_write_token` config | Low | Config field still unwired, but durability gap is closed: installer versions and skill-pack files now persist to Postgres (`installer_versions__{slug}`, `skillpack_files__{slug}` KV namespaces), surviving Render disk wipes. Base64-in-Postgres doesn't scale indefinitely — revisit if installers approach `build_artifact_upload_max_bytes` (250 MB) regularly or DB storage cost/limits become an issue. |
-| ~~`selector_cache_ttl_days` has no GC scheduler~~ **RESOLVED** | Config | — | Duplicate of the "Selector cache GC unscheduled" row above, which was resolved — the background loop honours this TTL. Kept only so the stale claim isn't re-derived from an older copy of this table. |
-| ~~CI execution gate disabled~~ **RESOLVED 2026-08-04** | `.github/workflows/build-runtime-app.yml`, `runtime/test/gate_replay.js` | — | Real-skill replay against the declared `MIN_HOST` exe runs before zip/release/publish and blocks the build on failure. Its first run caught a stale `MIN_HOST` (`host-v1.1.2` → `host-v2.0.0`): every app layer published since 2026-07-30 had been claiming a `min_host` it could not actually run under. A red app-layer gate usually means `MIN_HOST` is stale, not that the gate is wrong. |
-| Cancelled file-picker click can hang a run | `compiler/step_anchors.py::clean_steps`, `runtime/browser.js` | Medium | The 2026-08-06 fix drops a recorded click on a file input **only when a following `upload`/`upload_intent` proves it was superseded** (§9.3). If the user opens the native picker while recording and cancels it, no `change` event fires, no upload step is emitted, and the lone click survives compilation — at run time it opens an OS dialog nothing can drive. Tracked as TODO.md BUILD-13, with both a compiler-side and a runtime-side `filechooser`-guard option scoped. |
+| Delta sync ships every file of a changed skill | `skillpack_update_routes.py::_build_delta` | Low | Per-skill granularity is real; per-file diffing within a skill isn't |
+| Shared installer sync token | `sync_tokens` + `pack.json` | Low | Read-only, one workspace; sessions are protected by per-machine keys |
+| Runtime identity is per workspace | `auth_manager.js` | Medium | No per-end-user identity at runtime |
+| Fine-grained RBAC | `app/services/rbac.py` | Medium | `require_admin` only; per-skill/analyst roles pending |
+| Free 1-install cap unenforced | §13.6 | Medium | Needs authenticated install provisioning (TODO.md CLOUD-3) |
+| No CDN/blob storage | `blob_read_write_token` unwired | Low | Base64-in-Postgres is durable; revisit near the 250 MB upload cap or DB limits |
+| `CONXA_REQUIRED_RUNTIME` default still `>=1.0.3` | `skill_package_builder_output.py` | Medium | Branch, `for_each`, choice, and hand-over handlers now ship in tagged app layers; until the floor is raised, a very old runtime silently skips those steps (§11) |
+| Cancelled file-picker click with no upload | `step_anchors.py::clean_steps` | Medium | The lone click survives compile; the runtime's `filechooser` listener suppresses the picker, but the step's intent is lost (TODO.md BUILD-13) |
+| `failed_step_key` / overlay positions can mis-resolve after reorders | `editor/evidence.py` | Low | Full fix: persist `step_key` into `execution.json` (§7.4) |
+| Some `page.evaluate()` calls bypass `page_eval.js` | `runtime/app/` | Medium | TODO.md EXEC-29 follow-up |
+| Hand-over not durable across restart; not resumable inside `for_each` | §11.4 | Medium | EXEC-22; no compile guard for hand-over in loops |
+| Recording gate scopes by `apps_for_workflow`; runtime gates on the whole group | §5.3.3 | Low | Tracked in TODO.md |
+| No authoring UI for `try_dismiss`/`wait_for_one_of` options, `for_each` bodies, Strict Mode, entity-binding confirmation | Human Edit | Low | BUILD-6, PROD-3-UI |
+| Analytics retention is read-side only | `app/services/tracking.py` | Low | No write-side prune |
+| Concurrency cap is flat | `run_registry.js` | Low | RT-3-CAP-SIZING |
+| `beforeunload` dialogs unhandled | recorder + runtime | Low | TODO.md |
+
+

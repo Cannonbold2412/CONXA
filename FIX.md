@@ -49,3 +49,7 @@ Yesterday's fix that tells you to rebuild when an app's sign-in setup genuinely 
 **Fixed the online service failing to start after a deploy — 2026-09-25**
 The cloud service crashed on launch because it was missing one of the two database connectors its database address asked for. Like a plug that did not fit the socket, nothing could talk to the database. We added the missing connector so the service starts normally again.
 — 2026-09-25
+
+**Rewrote the main technical reference so it describes how things work today — 2026-09-25**
+The engineering handbook had grown to nearly five times the length it needed, because every change was added as a new paragraph on top of the old ones instead of replacing them. Readers had to wade through several outdated versions of the same explanation to find the current one, like a recipe card covered in crossed-out edits. It is now rewritten to describe only how the product works today, at well under half its old length, with related topics grouped together. Every other document and note that pointed to a page inside it was updated so those links still land in the right place.
+— 2026-09-25

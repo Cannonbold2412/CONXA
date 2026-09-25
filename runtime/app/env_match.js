@@ -18,7 +18,7 @@
  *   - viewport: width differs by more than 25%, OR the two widths sit on opposite sides of a
  *               common responsive breakpoint (1024px, 768px) — the ranges where nav commonly
  *               collapses into a hamburger menu.
- * Role is deliberately not compared here — see docs/TRD.md §10.6a for why capture stops short
+ * Role is deliberately not compared here — see docs/TRD.md §9.7 for why capture stops short
  * of it.
  */
 

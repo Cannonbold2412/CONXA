@@ -345,7 +345,7 @@ def runtime_host_manifest() -> dict:
     Deprecated in favour of GET /api/v1/manifest.json (unified, signed). Kept as a
     thin shim, now reading from the same KV-backed component_versions store instead
     of process-local globals, for runtimes that haven't picked up the manifest-driven
-    self-updater yet (see runtime/manifest_manager.js). docs/TRD.md §3.2a.
+    self-updater yet (see runtime/manifest_manager.js). docs/TRD.md §3.3.
     """
     c = _component("conxa_runtime")
     if c is None:
@@ -374,7 +374,7 @@ def runtime_host_manifest() -> dict:
 def runtime_app_manifest() -> dict:
     """
     Deprecated in favour of GET /api/v1/manifest.json (unified, signed). Kept as a
-    thin shim reading from the same KV-backed component_versions store. docs/TRD.md §3.2a.
+    thin shim reading from the same KV-backed component_versions store. docs/TRD.md §3.3.
     """
     c = _component("conxa_app")
     if c is None:

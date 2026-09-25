@@ -456,7 +456,7 @@ just a Build Studio concept.
   (`app/api/execute_bridge_routes.py`, `/api/v1/internal/execute/*`) for conxa-execute to check/debit
   the pool; a workspace-id-scoped refactor of `ensure_human_edit_available`/`record_llm_usage` (new
   `ensure_execute_pool_available`/`record_execute_pool_usage`) so a claimed grant never registers the
-  claimant as a Build Studio workspace member — see the correctness note in `docs/TRD.md` §13.4c.
+  claimant as a Build Studio workspace member — see the correctness note in `docs/TRD.md` §13.7.
   `GET /entitlements/current` dual-emits `ai_usage_credits` alongside the deprecated
   `human_edit_tokens` key.
 - **conxa-execute backend:** `app/cloud_bridge.py` (new), `app/routes_grants.py` (new, `POST
@@ -470,7 +470,7 @@ just a Build Studio concept.
   `usage_class="human_edit"`, and the `human_edit_pool_exceeded` error code are all unchanged —
   display-only rename, zero migration. The "Human Edit" workflow-editing screen/feature name
   (`HumanEditPage.tsx`) is a distinct concept and was deliberately left untouched.
-- **Docs:** `docs/TRD.md` §3.6, §13.4, new §13.4c; `docs/Backend-Schema.md` §5.3 + KV namespace table.
+- **Docs:** `docs/TRD.md` §3.6, §13.5, new §13.7; `docs/Backend-Schema.md` §5.3 + KV namespace table.
 
 **Tests:** 3 new tests in `conxa-cloud/tests/test_entitlements.py` (seat-cap + idempotent re-invite,
 claim binds the pool without creating a workspace membership, email-mismatch rejection + revoke frees
@@ -611,7 +611,7 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 - **App layer** (`conxa-app/`, ~60 KB zip): all application JS obfuscated via `javascript-obfuscator`. Hot-synced on every cold start with no restart required.
 - `bootstrap.js` (new) is the pkg entry point. Loads `conxa-app/server.js` from disk; falls back to bundled copy if absent or `min_host` incompatible.
 
-> **Correction (2026-07-04):** this entry originally described the app layer as compiled to V8 bytecode (`.jsc` via `bytenode`) and loaded as `server.jsc`. That approach was tried and reverted — V8 bytecode masks the Node version and caused the Playwright selector engine to segfault in pkg-bundled binaries (see `docs/TRD.md` §4.3/§5.8 and the `--no-bytecode` Key Invariant in `CLAUDE.md`). The app layer ships as plain obfuscated JS (`server.js`), not bytecode.
+> **Correction (2026-07-04):** this entry originally described the app layer as compiled to V8 bytecode (`.jsc` via `bytenode`) and loaded as `server.jsc`. That approach was tried and reverted — V8 bytecode masks the Node version and caused the Playwright selector engine to segfault in pkg-bundled binaries (see `docs/TRD.md` §4.4/§5.7 and the `--no-bytecode` Key Invariant in `CLAUDE.md`). The app layer ships as plain obfuscated JS (`server.js`), not bytecode.
 - `(global.__hostRequire || require)` bridge lets disk-loaded `.jsc` files resolve npm deps bundled in the host VFS.
 - **Sync optimisation:** `sync.js` rewritten — parallel company sync (`Promise.allSettled`), parallel file downloads (`Promise.all`), 5-min recency skip (client-side, prevents 429s), reduced timeouts (delta: 3s, files: 8s). Outer timeout: 15s → 4s.
 - **`syncState` execution gate:** `execute_skill` awaits both skill-pack sync and app-layer update before running. Never hangs (all failures caught, gate opens with cached data).
@@ -627,7 +627,7 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 
 ### ✅ Enterprise-Grade Auto-Update Architecture — DONE 2026-07-01
 
-**What was built:** Replaced the two-layer split's `.bak`/`.next` single-backup update mechanism and two unsigned manifest endpoints with a versioned-directory + single-signed-manifest architecture. See TRD.md §4.1, §4.3, §4.4, §5.8, §11.3 for the authoritative reference.
+**What was built:** Replaced the two-layer split's `.bak`/`.next` single-backup update mechanism and two unsigned manifest endpoints with a versioned-directory + single-signed-manifest architecture. See TRD.md §4.1, §4.4, §4.5, §5.7, §5.7 for the authoritative reference.
 
 **Changes:**
 - **Versioned directories.** Every component — `conxa-runtime`, `conxa-app`, and each individual skill — is now `<component>/<version>/` with a `current` directory junction, retaining the last 3 versions (`runtime/version_manager.js`, new). Rollback is instant and needs no re-download; junctions were chosen over JSON pointer files specifically because Claude Desktop's MCP config stores a literal path to the host exe, which only the OS can resolve transparently.
@@ -641,7 +641,7 @@ closed-shadow CDP pierce fallback; pre-execution `structural_fingerprint` drift 
 **Result:** Instant no-network rollback (vs. one-step-only before); tamper-proof update manifest (vs. unsigned); staged rollout capability (vs. all-or-nothing); per-skill update granularity (vs. whole-company re-sync).
 
 **Follow-ups since:**
-- **Same-launch app updates + `min_host` enforcement (2026-08-03).** The `conxa_app` check moved out of `server.js`'s `startupSync` and into `bootstrap.js`, running *before* the app layer is `require()`'d — so a new app version is live on the launch that downloaded it instead of the next one. The manifest's local TTL cache was dropped (every launch fetches fresh, cache is failure-fallback only), `checkForUpdates()` gained a `components` filter, and the host leg now reuses the manifest bootstrap already fetched. A `min_host` floor is checked at decision time as well as load time, so a too-new app layer is never installed on an old host rather than being activated and rolled back on every launch. The pre-load leg runs on a deliberately tight budget (3s manifest, 2 retries × 5s zip) with every failure swallowed. `runtime/bootstrap.js`, `manifest_manager.js`, `server.js`, `test/test_manifest_manager.js`; TRD §4.3/§5.8/§11.3.
+- **Same-launch app updates + `min_host` enforcement (2026-08-03).** The `conxa_app` check moved out of `server.js`'s `startupSync` and into `bootstrap.js`, running *before* the app layer is `require()`'d — so a new app version is live on the launch that downloaded it instead of the next one. The manifest's local TTL cache was dropped (every launch fetches fresh, cache is failure-fallback only), `checkForUpdates()` gained a `components` filter, and the host leg now reuses the manifest bootstrap already fetched. A `min_host` floor is checked at decision time as well as load time, so a too-new app layer is never installed on an old host rather than being activated and rolled back on every launch. The pre-load leg runs on a deliberately tight budget (3s manifest, 2 retries × 5s zip) with every failure swallowed. `runtime/bootstrap.js`, `manifest_manager.js`, `server.js`, `test/test_manifest_manager.js`; TRD §4.4/§5.7/§5.7.
 - **Signing key required in production (2026-08-04).** `_validate_production_config()` now refuses to boot without `CONXA_MANIFEST_SIGNING_KEY`. Absent it, the manifest is served unsigned and every runtime silently discards it — self-updates would stop fleet-wide with no error on either end. `conxa-cloud/backend/app/main.py`, `tests/test_product_routes.py`.
 - **CI execution gate re-enabled (2026-08-04).** `build-runtime-app.yml` replays a real skill against the declared `MIN_HOST` exe before the zip/release/publish steps. Its first run caught a stale `MIN_HOST` (`host-v1.1.2` → `host-v2.0.0`); every app layer published since 2026-07-30 had been shipping a false `min_host` claim. See TODO.md ARCH-2.
 
@@ -848,7 +848,7 @@ Build Studio is BUILD/PUBLISH only and Conxa Cloud is the sole
 RELEASE/DEPLOYMENT control plane: `Workflow → Compile → Test → Publish` (Studio)
 → `Ready for Release → Review → Release/Deploy → Desired Version` (Cloud) →
 `Sync → Verify → Install → Execute → Report Status` (Runtime). See
-`docs/App-Flow.md` §8/§8.1/§8.1a and `docs/TRD.md` §5.5a for the full mechanism.
+`docs/App-Flow.md` §8/§8.1/§8.1a and `docs/TRD.md` §5.5 for the full mechanism.
 
 - **Cloud (`app/api/publish_routes.py`):** `_publish_skill_pack_impl` now stops
   after writing the immutable snapshot + a version row with the new status

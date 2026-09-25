@@ -156,7 +156,7 @@ class Settings(BaseSettings):
     # Studio -> cloud proxy -> provider is a double hop through a free-tier Render
     # instance; 2s (the old default, calibrated for a direct call) benched every
     # pool key on a single slow response and 502'd the whole compile. See
-    # docs/TRD.md §13.2 and TODO.md CLOUD-11.
+    # docs/TRD.md §13.3 and TODO.md CLOUD-11.
     llm_text_timeout_ms: int = 20000
 
     # Pack structuring + skill.md tuning (calls Text endpoint above)
@@ -348,7 +348,7 @@ class Settings(BaseSettings):
     # Whole-request wall-clock ceiling across every attempt + wait in one route_text/
     # route_vision call. Deliberately under Render's free-tier proxy timeout (~100s) so
     # a degraded pool returns a real 502 with error_detail instead of Render's edge
-    # dropping the connection first. See docs/TRD.md §13.2.
+    # dropping the connection first. See docs/TRD.md §13.3.
     llm_router_total_budget_secs: float = 75.0
     # Starter and Pro each get a fully independent, single-deployment provider
     # block — own endpoint, own keys, own text/vision models, own fallback

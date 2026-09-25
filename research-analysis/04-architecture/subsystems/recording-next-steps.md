@@ -33,7 +33,7 @@ attaching `classified_effect`/`value_readback`/`url_delta`/`dialog_signal` to ev
 `RecordedEvent.post_condition` and `StateChange.dom_diff` are now carried through
 (`packages/conxa-core/conxa_core/models/events.py`); `build.py::_build_assertions` prefers this
 live evidence over the generic wait_for/success_conditions inference. No runtime change — see
-`docs/TRD.md` §10.2 and `docs/Backend-Schema.md` §3.6.
+`docs/TRD.md` §10.3 and `docs/Backend-Schema.md` §3.6.
 
 **What.** After each action, classify the already-captured delta in-page and attach it to the
 event as a small structured `post_condition`:
@@ -88,7 +88,7 @@ converts the step to a real `try_dismiss` branch. This is stricter than the "sti
 false positive, unconfirmed hint compiles to required" framing below implied for the *compiled
 step*'s own behavior — that part holds exactly as written — but conversion into an actual branch
 is human-initiated only, per CLAUDE.md's "branch steps compile only from observed states + human
-confirmation" invariant. See `docs/TRD.md` §10.7 and `docs/App-Flow.md` §7.
+confirmation" invariant. See `docs/TRD.md` §11.1 and `docs/App-Flow.md` §7.
 
 **What.** Make the recorder notice interstitials during the human's single pass and flag them:
 

@@ -930,7 +930,7 @@ async function _waitForTicketsCalm(context, getRepresentativePage, {
 // so there is exactly one context for every run in the panel. That branch re-tests in a fresh TAB
 // of the same shared context instead — weaker (it still shares the context's other cookies) but
 // still catches the same page-memory-only failure a same-context re-test can reach. A real,
-// accepted gap for host-owned logins — see docs/TRD.md §4.5's CDP-context limitation.
+// accepted gap for host-owned logins — see docs/TRD.md §4.7's CDP-context limitation.
 // ponytail: reload-in-shared-context for host-owned, not a true isolated context — upgrade if
 // Electron ever exposes Target.createBrowserContext.
 async function _proveSession(entryUrl, { hostOwned, context, hostRunId, browser, state, definition }) {

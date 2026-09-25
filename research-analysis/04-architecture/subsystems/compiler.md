@@ -146,7 +146,7 @@ Properties (each maps to a downstream capability):
 >
 > **In plain language:** the doc wanted the compiler to ask itself "do I actually need to ask the AI about this step, or am I already confident?" on a step-by-step basis. Instead, for identifying elements, the answer became a permanent "no, never ask the AI" — which gets the same cost win (way fewer AI calls) through a simpler, blunter rule rather than a smart per-step judgment call. The AI is still asked about a step's *intent* (what is this step trying to do) and, when things go wrong during a live run, how to *recover* — just not about what selector to use.
 
-**Today.** Each step independently fires intent-adjacent, selector, semantic, recovery, and (optional) vision-anchor LLM calls (TRD §7.2). No global optimization pass; redundant work is not deduped; the LLM does jobs deterministic code could do (e.g., re-describing a step whose identity the floor already pins). **(Partially superseded — the selector LLM call is gone entirely, not just deduped; `clean_steps`/`fix_step_order` dedup passes do run today. Intent/semantic/recovery LLM calls remain as described.)**
+**Today.** Each step independently fires intent-adjacent, selector, semantic, recovery, and (optional) vision-anchor LLM calls (TRD §7.3). No global optimization pass; redundant work is not deduped; the LLM does jobs deterministic code could do (e.g., re-describing a step whose identity the floor already pins). **(Partially superseded — the selector LLM call is gone entirely, not just deduped; `clean_steps`/`fix_step_order` dedup passes do run today. Intent/semantic/recovery LLM calls remain as described.)**
 
 **Future design — a CIR rewrite pipeline (classic compiler optimization passes), all deterministic:**
 

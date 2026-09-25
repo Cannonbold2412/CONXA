@@ -244,7 +244,7 @@ type StepValidationPanelProps = {
 }
 
 /** Shows what confirms this step actually worked, and lets a human edit that check by hand
- *  (`docs/TRD.md` §10.2a VERIFY). Edits live in the same form state as the rest of the step —
+ *  (`docs/TRD.md` §9.5 VERIFY). Edits live in the same form state as the rest of the step —
  *  one "Save step" action saves both, instead of a second independent save control. */
 function StepValidationPanel({ step, assertions, onChange }: StepValidationPanelProps) {
   return (

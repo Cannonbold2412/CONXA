@@ -1288,7 +1288,7 @@ class RecordingSession:
         """EXEC-36: capture the recording environment (locale, timezone, viewport, device pixel
         ratio, a locale-formatted date sample, platform) once, at session start, so the runtime
         can WARN — never block — when a replay happens in a materially different environment
-        (docs/TRD.md §10.6a). Best-effort and swallowed on failure, same discipline as
+        (docs/TRD.md §9.7). Best-effort and swallowed on failure, same discipline as
         _write_diagnostics_sync; a missing sidecar (old session, or a page that never finished
         loading) compiles cleanly — build.py treats an absent environment.json as "unknown."
         Role/permissions are deliberately NOT captured here: there is no generic, reliable way to

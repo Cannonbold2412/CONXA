@@ -168,7 +168,7 @@ Skill packs contain only compiled automation data (selectors, intents, recovery 
 
 ### Fix Applied
 
-The rate-limit timestamp is now persisted in the existing `conxa_core.db` KV dual-store (new `rate_limits` namespace, keyed by `sha256(token)[:16]` via `_rate_limit_key()`) whenever a database is configured (`using_database()`) — see `_rate_limit_last()` / `_rate_limit_set()`. The 5-minute window now survives restarts and is shared across horizontally-scaled instances. Falls back to the original in-memory dict only in local/Studio mode where no database is configured. **Redis was not introduced** — it isn't installed or provisioned; the KV store already provides durable, shared storage, so the TRD §11.1 "move to Redis" note is superseded by this simpler fix. Tested in `tests/test_skillpack_sync.py`.
+The rate-limit timestamp is now persisted in the existing `conxa_core.db` KV dual-store (new `rate_limits` namespace, keyed by `sha256(token)[:16]` via `_rate_limit_key()`) whenever a database is configured (`using_database()`) — see `_rate_limit_last()` / `_rate_limit_set()`. The 5-minute window now survives restarts and is shared across horizontally-scaled instances. Falls back to the original in-memory dict only in local/Studio mode where no database is configured. **Redis was not introduced** — it isn't installed or provisioned; the KV store already provides durable, shared storage, so the TRD §5.6 "move to Redis" note is superseded by this simpler fix. Tested in `tests/test_skillpack_sync.py`.
 
 ---
 
@@ -431,7 +431,7 @@ key leak to one workspace and makes rotation tractable.
 
 ### Description
 
-Machine binding (`docs/TRD.md` §13.4a) sends `X-Conxa-Machine`, a SHA-256 hash of the Windows
+Machine binding (`docs/TRD.md` §13.6) sends `X-Conxa-Machine`, a SHA-256 hash of the Windows
 `MachineGuid`, on every build-side cloud call. The raw GUID never leaves the machine — only the hash is
 transmitted and stored (`workspace_devices` KV). That said, a SHA-256 hash of a stable, low-entropy
 identifier (a per-Windows-install GUID) is itself a **stable cross-session identifier**: it does not
@@ -454,7 +454,7 @@ aggregated or exposed cross-workspace, treat them with the same care as any othe
 
 ### Description
 
-Per-plan analytics retention (`docs/TRD.md` §13.4 — Free 0 days, Starter 90, Pro 365, Enterprise
+Per-plan analytics retention (`docs/TRD.md` §13.5 — Free 0 days, Starter 90, Pro 365, Enterprise
 custom) is enforced by filtering `_visible_run_records`/`_visible_runtime_registrations` **on read**.
 There is no write-side prune: telemetry older than a workspace's retention window still exists in
 storage, it's just no longer returned by the query paths a workspace's own dashboard uses. This is
@@ -480,7 +480,7 @@ filtering was judged sufficient for the customer-facing guarantee at current sca
 ### Description
 
 Free and Starter workspaces are gated to `distribution="internal"` installers; Pro and Enterprise may
-distribute externally (`docs/TRD.md` §13.4, `ensure_distribution_allowed`). That gate is enforced on
+distribute externally (`docs/TRD.md` §13.5, `ensure_distribution_allowed`). That gate is enforced on
 what the Studio *declares* via the `distribution` query param at installer upload — a Starter customer
 who deliberately uploads with `distribution=external` omitted, then hands the resulting "internal"
 installer to their own external customers anyway, is not technically prevented from doing so. Conxa has
@@ -488,7 +488,7 @@ no way to inspect what a downloaded `.exe` is later used for.
 
 ### Recommended Fix
 
-This is a deliberate trade-off, not an oversight (see `docs/TRD.md` §13.4): hard-blocking based on
+This is a deliberate trade-off, not an oversight (see `docs/TRD.md` §13.6): hard-blocking based on
 runtime install behavior would mean building DRM into the installer, which the product doesn't want.
 The boundary that's actually enforced is what the installer is *stamped and branded* as (internal vs.
 external, Conxa vs. white-label) — visible in the dashboard and telemetry, and a contract violation a

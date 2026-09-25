@@ -16,7 +16,7 @@ Three claims in `docs/` are not true in the code:
 
 2. **`verifyAssertions()` per step (TRD §9.1).** Not defined or called anywhere in the runtime. Outcome verification only happens if the compiler emitted explicit `assert`/`check` *step types* into the plan. There is **no independent post-condition check** after normal steps — the field-wide blind spot the research flagged as the #1 reliability move (`master-insights.md` R1) is present in Conxa too.
 
-3. **Selector scoring at runtime (TRD §10.2, "highest scorer is used").** `selector_score.py` is compile-side Python only. The runtime tries selectors in array order and takes the first that resolves. There is no live scoring.
+3. **Selector scoring at runtime (TRD §10.3, "highest scorer is used").** `selector_score.py` is compile-side Python only. The runtime tries selectors in array order and takes the first that resolves. There is no live scoring.
 
 **What *is* genuinely built and good:** the deterministic recovery ladder is real and richer than the docs suggest; the **auth-failure re-authentication self-heal** (detect login redirect → open headed re-auth window → rebuild context → resume) is production-grade and a real enterprise need; iframe-chain handling via `rootCandidates`/`frameLocator` is correct and matches the invariant; the integrity gate, retry budget, and atomic sync are solid.
 
@@ -76,7 +76,7 @@ For each: Current Architecture · Strengths · Weaknesses · Risks · Technical 
 
 **Strengths.** Multi-signal fingerprint is conceptually aligned with the research's #3 insight (orthogonal multi-signal identity). data-testid prioritized. Anchor phrases + position hint give relational context.
 
-**Weaknesses.** **Scoring is compile-time only; the runtime ignores it** (tries selectors in order). The fingerprint is emitted but the runtime never *scores live DOM candidates against it* — so the "stable identity to score against" (TRD §10.2) is aspirational. Selector generation is **LLM-dependent**; there is no deterministic Playwright-style generator (research insight #3: mine `selectorGenerator`) as a floor/fallback. Ordering is by generator preference, not by the empirically-correct durability order (semantic > structural; research `research-audit.md` C.1).
+**Weaknesses.** **Scoring is compile-time only; the runtime ignores it** (tries selectors in order). The fingerprint is emitted but the runtime never *scores live DOM candidates against it* — so the "stable identity to score against" (TRD §10.3) is aspirational. Selector generation is **LLM-dependent**; there is no deterministic Playwright-style generator (research insight #3: mine `selectorGenerator`) as a floor/fallback. Ordering is by generator preference, not by the empirically-correct durability order (semantic > structural; research `research-audit.md` C.1).
 
 **Risks.** LLM variance in selector quality; cost; no deterministic fallback if the LLM is unavailable mid-compile.
 

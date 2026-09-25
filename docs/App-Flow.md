@@ -120,7 +120,7 @@ The Group Page (`/groups/:groupId`) is the primary interface for recording and m
 
 ### 4.1 Authentication is set up once per group, not per workflow
 
-As of the Workflow Groups change (see `docs/TRD.md` §5.2a), a workflow no longer records its own login — it inherits its group's app sessions. The same Group Page that hosts the workflow rows also hosts the group's own Applications panel (add/edit/remove apps, connect sessions); a workflow's Record node stays disabled with an explanatory tooltip until every app in its group is authenticated.
+As of the Workflow Groups change (see `docs/TRD.md` §5.3), a workflow no longer records its own login — it inherits its group's app sessions. The same Group Page that hosts the workflow rows also hosts the group's own Applications panel (add/edit/remove apps, connect sessions); a workflow's Record node stays disabled with an explanatory tooltip until every app in its group is authenticated.
 
 ```mermaid
 flowchart TD
@@ -145,7 +145,7 @@ flowchart TD
 
 **Key invariant:** each app's captured session lives at `data/groups/{group_id}/auth/{app_id}.json`. It is NEVER copied into the skill pack build output.
 
-**Learning the sign-in signals (P0: Application Authentication Recording, 2026-09-25).** Step J above — `RecordingSession.learn_auth` — observes the app's `login_url` three ways (signed in, a fresh cookie-less context, and the just-saved session reloaded fresh) and keeps only the signals that differ between "signed in" and "genuinely signed out." That learned definition is what the runtime later evaluates directly, instead of guessing from a generic page-shape heuristic — see `docs/TRD.md` §5.2a ("Learned per-app authentication definitions") for the full mechanism, the definition's shape, and how a failed self-test surfaces in the wizard.
+**Learning the sign-in signals (P0: Application Authentication Recording, 2026-09-25).** Step J above — `RecordingSession.learn_auth` — observes the app's `login_url` three ways (signed in, a fresh cookie-less context, and the just-saved session reloaded fresh) and keeps only the signals that differ between "signed in" and "genuinely signed out." That learned definition is what the runtime later evaluates directly, instead of guessing from a generic page-shape heuristic — see `docs/TRD.md` §5.3 ("Learned per-app authentication definitions") for the full mechanism, the definition's shape, and how a failed self-test surfaces in the wizard.
 
 ### 4.1a Recording a workflow starts pre-authenticated to every app in its group
 
@@ -155,9 +155,9 @@ Recording no longer discards what happens to the session while it's open: it aut
 
 ### 4.1b Testing/running a workflow needs every app in its group signed in — and never fails mid-run for a gap recording papered over
 
-A workflow runs only when **every** app in its group is signed in (`docs/TRD.md` §5.2a "A group is the unit of sign-in", AUTH-14) — there is no per-workflow subset, so a compiled skill carries no `required_apps`. Recording is looser (§4.1a: only the apps the workflow's own URLs touch must be connected before it starts); the runtime is stricter, so a group with an app nobody has connected yet fails at pre-flight, not mid-run. Pre-flight validates every app's saved session (a recent check is remembered for a few hours), seeds the browser from all of them, and if more than one needs signing in, every login window opens together with one message naming all of them, rather than one window per run attempt. Build Studio's Run Test also refuses to run a pack built before the group's sign-in setup last changed (an app re-Connected under a new id, a sign-in definition learned) — rebuild the skill package first (`sign_in_setup_stale`, AUTH-15).
+A workflow runs only when **every** app in its group is signed in (`docs/TRD.md` §5.3 "A group is the unit of sign-in", AUTH-14) — there is no per-workflow subset, so a compiled skill carries no `required_apps`. Recording is looser (§4.1a: only the apps the workflow's own URLs touch must be connected before it starts); the runtime is stricter, so a group with an app nobody has connected yet fails at pre-flight, not mid-run. Pre-flight validates every app's saved session (a recent check is remembered for a few hours), seeds the browser from all of them, and if more than one needs signing in, every login window opens together with one message naming all of them, rather than one window per run attempt. Build Studio's Run Test also refuses to run a pack built before the group's sign-in setup last changed (an app re-Connected under a new id, a sign-in definition learned) — rebuild the skill package first (`sign_in_setup_stale`, AUTH-15).
 
-A session that expires **mid-run** normally fails the run outright and asks the person to call the skill again — re-authentication happens on that next call's own pre-flight check. An app whose sign-in was learned (has a saved `auth_definition`) is the one exception: the run instead opens a sign-in window automatically and resumes itself once the person finishes signing in, with no second call needed. See `docs/TRD.md` §5.2a ("Mid-run expiry now auto-retries").
+A session that expires **mid-run** normally fails the run outright and asks the person to call the skill again — re-authentication happens on that next call's own pre-flight check. An app whose sign-in was learned (has a saved `auth_definition`) is the one exception: the run instead opens a sign-in window automatically and resumes itself once the person finishes signing in, with no second call needed. See `docs/TRD.md` §5.3 ("Mid-run expiry now auto-retries").
 
 ### 4.2 Record a Workflow (inline action)
 
@@ -199,7 +199,7 @@ Compiling inserts a small marker step ("switched to a new tab" / "switched back 
 each crossing, and at replay time the runtime follows the same tabs the recording did — waiting
 for a tab the site is expected to open, or opening one itself for a tab the user opened manually.
 A file downloaded in one tab can also be picked up and uploaded again in a later tab, in the same
-run, with no extra step required. See `docs/TRD.md` §6.3, §7.1, §9.1a.
+run, with no extra step required. See `docs/TRD.md` §6.4, §7.1, §9.2.
 
 **Recording a file upload** works exactly like any other step from the user's point of view: click the
 page's upload control, pick a file, done — except the dialog that opens is the Studio's own, not
@@ -208,7 +208,7 @@ in (or its extracted folder, for a downloaded zip). Three earlier attempts to ma
 picker remember that folder never worked reliably, so recording now intercepts the picker request
 and shows its own dialog instead — see `docs/TRD.md` §7.1. What gets recorded is the file's *name*,
 never its path (browsers do not expose paths), so the compiled skill turns the upload into a required
-`file_path` input the calling agent must supply at run time. See `docs/TRD.md` §9.3.
+`file_path` input the calling agent must supply at run time. See `docs/TRD.md` §9.4.
 
 ---
 
@@ -375,7 +375,7 @@ exact same `cmd_patch_step` a manual edit uses (its own undo entry, its own quot
 Human Edit pool); rejecting logs the decision without touching the compiled skill. Switching to a
 different step while a proposal is pending prompts the same "you'll lose this" confirmation the
 re-target wizard already shows for an unsaved edit — discarding one this way still counts as a
-rejection, not a silent drop. See `docs/UI-UX-Brief.md` §2.7 and `docs/TRD.md` §7.2a.
+rejection, not a silent drop. See `docs/UI-UX-Brief.md` §2.7 and `docs/TRD.md` §7.4.
 
 **Verify fix (BUILD-26 stage e, 2026-09-10):** after accepting a proposal, a **Verify fix** button
 appears — clicking it first shows a count of the workflow's non-reversible steps ("this run
@@ -450,7 +450,7 @@ skill has its own independent version number (a brand-new skill's first
 publish is v1.0.0, no previous-version requirement) and its own publish/test
 gate — publishing "Create a Lead" never requires, checks, or touches "Update
 Opportunity," even if "Update Opportunity" is failing its tests. Full
-mechanism in `docs/TRD.md` §5.5a; API contracts in `docs/Backend-Schema.md`
+mechanism in `docs/TRD.md` §5.5; API contracts in `docs/Backend-Schema.md`
 §5.1d.
 
 ```mermaid
@@ -581,7 +581,7 @@ flowchart TD
 
 **Install scope:** Per-user (`RequestExecutionLevel user`), installs to `$PROFILE\.conxa` (i.e. `%USERPROFILE%\.conxa`). No admin elevation required. Correctly resolves to the logged-in user's profile (avoids the elevated-admin-wrong-profile bug).
 
-**Versioned layout:** Every component the installer lays down (host exe, app layer, each skill) is its own versioned directory with a `current` directory junction pointing at it — see TRD.md §4.4. Junctions are used (rather than a plain flat copy) because this is the exact same on-disk convention the runtime's self-updater writes into later; the installer's initial install and every subsequent update speak the same layout from day one. Directory junctions don't require admin rights or Developer Mode, unlike true NTFS symlinks.
+**Versioned layout:** Every component the installer lays down (host exe, app layer, each skill) is its own versioned directory with a `current` directory junction pointing at it — see TRD.md §4.5. Junctions are used (rather than a plain flat copy) because this is the exact same on-disk convention the runtime's self-updater writes into later; the installer's initial install and every subsequent update speak the same layout from day one. Directory junctions don't require admin rights or Developer Mode, unlike true NTFS symlinks.
 
 **MCP registration:** The installer writes directly into `claude_desktop_config.json` via a generated PowerShell script that does a non-destructive JSON merge (preserves any existing `mcpServers` entries). The registered `command` points at `conxa-runtime\current\conxa-runtime.exe` — a stable path that is written **once**, at install time, and never rewritten; every future self-update simply flips the `current` junction to a new version directory, so Claude Desktop's config never needs to change again. The script auto-detects the Microsoft Store/MSIX install path (`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\`) and falls back to `%APPDATA%\Claude\` otherwise. If `~/.claude.json` (Claude Code) already exists, the same entry is merged there too; it is never created if absent.
 
@@ -670,7 +670,7 @@ send a payment), the user can ask to preview it first: `execute_skill(..., dry_r
 every ordinary step normally but, on reaching the destructive one, only confirms its target is
 still findable — it never clicks/submits it. The response names exactly what it held back
 ("Dry run: 1 committing step skipped — Click 'Delete invoice'"), and the user decides whether to
-re-run for real. See `docs/TRD.md` §10.6a.
+re-run for real. See `docs/TRD.md` §9.7.
 
 ---
 
@@ -680,7 +680,7 @@ Before step 0, the runtime runs an **advisory pre-execution drift check** (`runt
 it looks for the pack's recorded structural landmarks on the live page and, if most are gone
 (a redesign signal), emits a `drift_detected` telemetry event that surfaces on the vendor
 dashboard's `/drift` queue. This **never blocks** — execution proceeds straight into the per-step
-loop below and normal recovery still applies. See TRD §10.6.
+loop below and normal recovery still applies. See TRD §9.7.
 
 ```mermaid
 flowchart TD
@@ -759,7 +759,7 @@ consequential step — every remedy that re-runs the action re-checks the post-c
 (`verifyStep`) before being counted as recovered (`runtime/run.js` `recoverWithSelector`). A
 verify-fail skips the exception-ladder single-remedy retry (re-running the same action against the
 same, already-checked DOM can't fix it) and continues the rest of Tier A (a11y / re-hover / dialog).
-See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify wiring.
+See `docs/TRD.md` §9.5/§10.4 for the assertion vocabulary and the re-verify wiring.
 
 ---
 
@@ -768,7 +768,7 @@ See `docs/TRD.md` §10.2a/§10.2b for the assertion vocabulary and the re-verify
 Skills can fire on a schedule with **no chat application open**. Schedules live only on the
 customer machine (Horizon-2 doctrine — the cloud holds neither schedules nor work items); the
 scheduler daemon drives the same runtime engine a chat host would. Full architecture:
-`docs/TRD.md` §4.6.
+`docs/TRD.md` §4.8.
 
 **Creating a schedule (two doors, one store):**
 
@@ -858,7 +858,7 @@ flowchart TD
     P --> Q["Next phone-home reports last_sync_errors alongside skill_versions — feeds Cloud's Deployment dashboard 'failed' status (§8.1a)"]
 ```
 
-Each skill is compared and activated **independently** — republishing one skill never redownloads or re-touches the others (see TRD.md §5.9). A checksum mismatch or a download/activation failure for one skill is recorded (`code`: `checksum_mismatch` | `download_failed` | `activation_failed`) and cleared the moment that skill next activates successfully — it never blocks or delays any other skill's sync.
+Each skill is compared and activated **independently** — republishing one skill never redownloads or re-touches the others (see TRD.md §5.8). A checksum mismatch or a download/activation failure for one skill is recorded (`code`: `checksum_mismatch` | `download_failed` | `activation_failed`) and cleared the moment that skill next activates successfully — it never blocks or delays any other skill's sync.
 
 ---
 
@@ -891,7 +891,7 @@ flowchart TD
 
 Because each new version lands in its own directory rather than overwriting whatever file the *currently running* process loaded from, activation never needs to wait for a "safe restart" — there's nothing running that could be disrupted by it.
 
-The two legs are timed differently on purpose. The app layer is checked *before* anything loads it, so a new app version takes effect on the same launch that downloaded it — which is why its download budget is deliberately small and every failure is swallowed rather than surfaced. The host exe can't possibly apply until the next spawn, so it keeps a generous retry budget and runs in the background alongside skill sync. See `docs/TRD.md` §5.8.
+The two legs are timed differently on purpose. The app layer is checked *before* anything loads it, so a new app version takes effect on the same launch that downloaded it — which is why its download budget is deliberately small and every failure is swallowed rather than surfaced. The host exe can't possibly apply until the next spawn, so it keeps a generous retry budget and runs in the background alongside skill sync. See `docs/TRD.md` §5.7.
 
 ---
 
@@ -917,7 +917,7 @@ flowchart TD
 
 ## 17. Entitlement Gates (Trial, Machines, Distribution, BYOK)
 
-Added 2026-08-08 for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.4). These gates sit in
+Added 2026-08-08 for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.5). These gates sit in
 front of steps 6 (Pipeline & Compilation) and 9 (Build Installer & Publish) above — they don't replace
 those flows, they can block entry into them.
 
@@ -976,7 +976,7 @@ prompt (`docs/UI-UX-Brief.md`).
 workspace routes to the customer's own deployment instead of the shared pool — silently, with no
 per-call toggle. `GET` on the same endpoint never returns the key, only whether one is configured.
 
-**Plan-aware installer naming and icon**, added 2026-08-09 (`docs/TRD.md` §13.4a, `docs/Backend-Schema.md`
+**Plan-aware installer naming and icon**, added 2026-08-09 (`docs/TRD.md` §13.6, `docs/Backend-Schema.md`
 §5.1c): a Free-tier installer that predates this feature would run and update on any machine — an
 earlier same-day attempt at hard-locking that (machine-hash stamped into `pack.json`, checked by the
 runtime and the delta-sync endpoint) was reverted for blocking legitimate reinstalls, so no such lock

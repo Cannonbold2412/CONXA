@@ -8,7 +8,7 @@ ARCH-3 contract/executor boundary. Every field below is tagged:
               shadow-DOM structure, hover chains. Free to change per executor backend.
   [mixed]     the class/field holds both; sub-fields are tagged individually.
 New fields (e.g. EXEC-1's branch primitives) must pick one on introduction — see
-docs/Backend-Schema.md §3.0 and docs/TRD.md §7.3a for the full design note.
+docs/Backend-Schema.md §3.0 and docs/TRD.md §7.7 for the full design note.
 """
 
 from __future__ import annotations

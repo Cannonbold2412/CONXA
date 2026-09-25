@@ -78,7 +78,7 @@ Large or time-series data lives in flat files, not the KV store:
 
 ### 1.4 Runtime-Local Scheduler Store (PROD-5, local-only)
 
-Schedules for the standalone runner (`docs/TRD.md` §4.6) live **only on the customer machine**
+Schedules for the standalone runner (`docs/TRD.md` §4.8) live **only on the customer machine**
 under `<CONXA_DATA_DIR>/scheduler/schedules/<sch_id>.json` — one file per schedule, atomic
 tmp+rename writes. They are never synced to or read from the cloud; the Horizon-2 doctrine
 (`docs/PRD.md` §14.5) keeps schedules and work items off Conxa infrastructure.
@@ -112,7 +112,7 @@ tmp+rename writes. They are never synced to or read from the cloud; the Horizon-
   `error` (scheduler↔engine plumbing failure).
 - Related runtime-local files: `scheduler/state.json` (status snapshot for tray/CLI),
   `daemon.lock`, `commands/*.cmd`, daily logs, and `locks/<host>.lock` (cross-process platform
-  mutex) — see TRD §4.6.
+  mutex) — see TRD §4.8.
 
 ---
 
@@ -173,7 +173,7 @@ A business-domain folder ("Sales") that owns both a set of Workflows and the
 applications those workflows sign in to. Auth is captured **once per app, at
 the group level** — this replaced the old per-workflow `WorkflowAuth` field
 (auth was previously captured once per workflow; now every workflow in a
-group shares the group's app sessions). See `docs/TRD.md` §5.2a for the full
+group shares the group's app sessions). See `docs/TRD.md` §5.3 for the full
 setup/recording/execution flow.
 
 ```python
@@ -203,7 +203,7 @@ class GroupApp(BaseModel):
                                 # signed-out observation of `login_url`, proven by a 3-way self-test
                                 # before being saved. None for an app connected before this feature,
                                 # or whose self-test never passed (the runtime falls back to its
-                                # generic detection ladder for that app). See docs/TRD.md §5.2a
+                                # generic detection ladder for that app). See docs/TRD.md §5.3
                                 # ("Learned per-app authentication definitions") and
                                 # conxa_compile.auth_learning's module docstring for the shape:
                                 # {version, probe_url, signed_out: {final_path, markers,
@@ -233,7 +233,7 @@ recording ended with back into each app's own file (scoped to the cookie
 domains/origins that app already owned), and re-saves it via
 `set_group_app_auth` — so a session stays "captured" as long as it's still
 being used, not just from the moment it was first connected. See
-`docs/TRD.md` §5.2a ("Per-workflow recording gate + session write-back").
+`docs/TRD.md` §5.3 ("Per-workflow recording gate + session write-back").
 
 **Compiled skill-pack layout:** a WorkflowGroup's `id` also decides *where a
 skill's files live on disk* — `pack.json` carries a `skill_groups` field
@@ -241,18 +241,18 @@ skill's files live on disk* — `pack.json` carries a `skill_groups` field
 is auth-app metadata, `skill_groups` is the path index) and each skill is
 written to `skill-packs/{company}/{group_id}/{skill_slug}/` (the sentinel
 `"_default"` when a workflow's `group_id` is empty), both in Build Studio's
-local build output and after the real runtime syncs. See `docs/TRD.md` §5.2a
+local build output and after the real runtime syncs. See `docs/TRD.md` §5.3
 and §11.1 for the full on-disk layout and delta-sync wire format.
 
 Each skill's own `manifest.json` also carries `"unclaimed_hosts": [hostname, ...]` **only when non-empty** —
 hostnames the recording visited that no `GroupApp` of its group covers (`group_store.unclaimed_hosts`,
-AUTH-1; see `docs/TRD.md` §5.2a "Unclaimed hosts"). Advisory only: the runtime warns, it never gates on it.
+AUTH-1; see `docs/TRD.md` §5.3 "Unclaimed hosts"). Advisory only: the runtime warns, it never gates on it.
 
 A skill's `manifest.json` carries no per-skill app list. The runtime's group-auth gate
 (`runtime/app/browser.js::getGroupAuthContext`) requires **every** `GroupApp` of the skill's
 group (from `pack.json`'s `groups`) to be signed in before running it, and seeds the merged
 session from every app in the group that has a saved session. (`required_apps` was removed
-2026-09-25, AUTH-14 - see `docs/TRD.md` §5.2a "A group is the unit of sign-in"; an older
+2026-09-25, AUTH-14 - see `docs/TRD.md` §5.3 "A group is the unit of sign-in"; an older
 manifest's copy is ignored.)
 
 **Platform tags (2026-08-23):** `Workflow.visited_hosts: list[str]` records the
@@ -266,7 +266,7 @@ recording gate uses. The group page renders these as platform chips
 (e.g. `Render` `Vercel` on one card). At execution time the same union drives
 concurrency: the runtime adds every group app's host to the run's
 `host_lock` set, so runs sharing any touched platform serialize while
-disjoint-platform runs execute in parallel (see `docs/TRD.md` §4.5 and
+disjoint-platform runs execute in parallel (see `docs/TRD.md` §4.6 and
 §5.2a "Platform tags").
 
 ### 2.3 SkillPack (Workspace-Level, Shared)
@@ -462,7 +462,7 @@ recorded answer, instead of `{{gender}}`, named after the question).
 
 `optional` is excluded from the packaged manifest's `inputs_required` (`skill_package_builder_output.py::_compute_inputs_required`), which is what the runtime's pre-execution gate and the MCP tool's `inputSchema.required` both read (`runtime/server.js`).
 
-**Auto-declared inputs.** Any `{{placeholder}}` present in the execution steps but absent from the declared input list is appended automatically at package time. One is special-cased: **every upload step binds to `file_path`**, regardless of the picker element's label — a recording can only ever capture a file's *name*, never a path, so the real path must arrive as a runtime input. Its description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk path is expected rather than a filename. The description also states that a **folder path** may be given when the page's upload control accepts more than one file — the runtime expands a directory into every file directly inside it, which is how a batch upload of 20 or 200 documents is driven without enumerating each file. It does not claim how many files the control accepts: that is a property of the live page (`multiple`), so the runtime asks the element at replay time and refuses a folder aimed at a single-file control with a clear message. See `docs/TRD.md` §9.3.
+**Auto-declared inputs.** Any `{{placeholder}}` present in the execution steps but absent from the declared input list is appended automatically at package time. One is special-cased: **every upload step binds to `file_path`**, regardless of the picker element's label — a recording can only ever capture a file's *name*, never a path, so the real path must arrive as a runtime input. Its description is enriched with the recorded example filename (`"Path to the file to upload (e.g. invoice.pdf)"`) so an agent calling `get_skill_inputs` knows a real on-disk path is expected rather than a filename. The description also states that a **folder path** may be given when the page's upload control accepts more than one file — the runtime expands a directory into every file directly inside it, which is how a batch upload of 20 or 200 documents is driven without enumerating each file. It does not claim how many files the control accepts: that is a property of the live page (`multiple`), so the runtime asks the element at replay time and refuses a folder aimed at a single-file control with a clear message. See `docs/TRD.md` §9.4.
 
 ### 3.2 SkillMeta
 
@@ -505,7 +505,7 @@ class SkillStep(BaseModel):
     url: str                   # Expected URL for this step
     frame: dict                # Iframe chain structural marker (url/url_pattern per level)
     tab: dict                  # {id, index, opened_by, opener_tab} — empty means tab_0, the
-                                # initial page. Runtime resolves it per step: TRD §9.1a
+                                # initial page. Runtime resolves it per step: TRD §9.2
     target: dict               # Raw recorded target element data
     identity_bundle: IdentityBundle          # REQUIRED — single source of element identity (see §3.4a)
     handler_hints: HandlerHints              # hover_chain, virtualization (see §3.4b)
@@ -567,7 +567,7 @@ names a neighbour rather than the element — using it produced role selectors t
 nothing at replay. An element with no accessible name gets no role signal and resolves
 structurally instead. Implemented once per side and kept in lockstep:
 `identity_bundle.py::_accessible_name`, `resolver.js::scoreCandidate`,
-`cascade.js::a11yRecoveryName`. See `docs/TRD.md` §10.2a.
+`cascade.js::a11yRecoveryName`. See `docs/TRD.md` §10.3.
 
 ### 3.4a IdentityBundle (Final Selector Architecture)
 
@@ -622,7 +622,7 @@ class HandlerHints(BaseModel):
                                           # for a skill compiled before this field existed, and
                                           # to the page's dominant scrollable element for a
                                           # compiled choice/dropdown-kind control with neither —
-                                          # see TRD.md §10.2c.
+                                          # see TRD.md §10.5.
     allow_forced_action: bool
     control_kind: str = ""               # "" = dispatch by action type alone (every action but
                                           # the two below); "date_picker" was the first populated
@@ -669,7 +669,7 @@ class HandlerHints(BaseModel):
 
 `SkillStep.branch` (`dict`, empty for ordinary linear steps) holds the payload for the three
 conditional/branch action kinds — `if_present`, `try_dismiss`, `wait_for_one_of`. See
-`docs/TRD.md` §10.7 for runtime execution semantics (best-effort, never enters recovery).
+`docs/TRD.md` §11.1 for runtime execution semantics (best-effort, never enters recovery).
 
 | `action` | `branch` keys | Probe target |
 |---|---|---|
@@ -720,7 +720,7 @@ UI yet — see `TODO.md` BUILD-6.
 `SkillStep.optional_hint` (`dict | None`) is the recorder's advisory flag that this step's target
 sat inside what looked like an optional interstitial (dialog or cookie/consent banner) during
 recording — carried verbatim from the recorded event's `optionality`/`branch_hint` fields
-(`RecordedEvent`, `packages/conxa-core/conxa_core/models/events.py`; see `docs/TRD.md` §10.7 for
+(`RecordedEvent`, `packages/conxa-core/conxa_core/models/events.py`; see `docs/TRD.md` §11.1 for
 the detection heuristic). The per-step compile loop never reads it. Two consumers convert it into
 a real `try_dismiss` branch (§3.4c), both through the same builder
 (`compiler/second_opinion.py::build_try_dismiss_from_hint`) so the two paths cannot produce
@@ -764,7 +764,7 @@ browser tab produced an event; `SkillStep.tab` (§3.3) is the compiled twin, car
 verbatim from the event that produced the step. Since 2026-08-23 every tab — including `tab_0` —
 compiles to an explicit block, so a return-to-the-initial-tab `tab_switch` marker names its
 destination at replay time; only events with no tab stamp (pre-multi-tab recordings) compile to an
-empty `tab` field (see `docs/TRD.md` §6.3 for how
+empty `tab` field (see `docs/TRD.md` §6.4 for how
 the recorder assigns it, §7.1 for compile-time `tab_open`/`tab_switch` marker insertion, §9.1a for
 runtime resolution).
 
@@ -786,7 +786,7 @@ identically (every step resolves to the initial page, exactly as before this fie
 `ActionKind` gained two recorded-only kinds: `browser_back` and `browser_forward`
 (`packages/conxa-core/conxa_core/models/events.py`). They capture browser Back/Forward button
 presses (and Alt+←/→), which produce no in-page DOM event the bridge could see — the recorder
-detects them via per-page CDP navigation-history tracking instead (see `docs/TRD.md` §6.1a).
+detects them via per-page CDP navigation-history tracking instead (see `docs/TRD.md` §6.2).
 
 ```python
 # RecordedEvent.action.value (JSON string):
@@ -810,7 +810,7 @@ A navigation that is neither Back/Forward nor the natural result of a recorded c
 user retyped the URL bar or picked a bookmark mid-recording) used to be silently dropped — replay
 then had no step for it at all. The recorder now tells the two apart via CDP's
 `Page.frameRequestedNavigation` (fires only for page-initiated navigations — link/submit/script,
-never address-bar/bookmark/`goto()`; see `docs/TRD.md` §6.1b) and emits a `manual_navigate`
+never address-bar/bookmark/`goto()`; see `docs/TRD.md` §6.2) and emits a `manual_navigate`
 synthetic event, same `{from_url, to_url}` value shape as `browser_back`/`browser_forward`.
 
 - **Recorded by:** `session.py::_drain_nav_history_checks_sync`, gated on
@@ -899,7 +899,7 @@ pending dialog.
 
 `SkillStep.for_each` (`dict`) is the "for each row matching X, do steps A-C" iteration payload —
 empty for ordinary steps. Built on the entity-binding machinery (§EntityBinding) already
-shipped, not new resolution logic; see `docs/TRD.md` §10.8 for the full mechanism (the
+shipped, not new resolution logic; see `docs/TRD.md` §11.2 for the full mechanism (the
 `executeOneStep` extraction that lets a loop body reuse the exact recovery/GATE/VERIFY/dry-run
 path every top-level step gets) and its sibling **PROD-3-DRYRUN** section (§10.6a) for the
 required dry-run/cap/entity-binding safety mechanisms it depends on.
@@ -963,7 +963,7 @@ same way the `downloaded_file*` family is already excluded. And the BUILD-25 sec
 `{{downloaded_file}}`/`{{downloaded_files_dir}}` (`docs/TRD.md`'s "A downloaded file can bind to
 a later upload" section) into a hand-typed input instead —
 `second_opinion.py::_apply_one` now refuses whenever the step's value already contains any
-`{{placeholder}}`, not just when `input_binding` is set. See `docs/TRD.md` §10.8 for the full
+`{{placeholder}}`, not just when `input_binding` is set. See `docs/TRD.md` §11.2 for the full
 account of both.
 
 **One-click "generalize this to a loop" suggestion (EXEC-39, 2026-09-13).**
@@ -986,7 +986,7 @@ show it the moment Human Edit loads. New RPCs (`handlers/copilot.py`):
   request and filters out anything already rejected, not just at the next compile — a "Dismiss"
   must not reappear on a plain page reload.
 
-See `docs/TRD.md` §10.8 for the full mechanism, including a `step_key`-ordinal subtlety
+See `docs/TRD.md` §11.2 for the full mechanism, including a `step_key`-ordinal subtlety
 (`download_observed`'s fallback key hashes identically across a workflow, disambiguated only by
 occurrence position) that made "clear the whole suggestion list on any apply" the correct choice
 over "remove just the applied one."
@@ -1001,7 +1001,7 @@ than wrapping it into the loop body, archiving it into `compile_report["archived
 category `superseded_by_loop_navigate` — same archive shape `flag_noise` uses, so it stays
 reversible. This ships alongside a structural fix to `archive_flagged_steps` itself: it now
 refuses to archive any step that triggers an observed download or opens a file-chooser upload,
-independent of what a `flag_noise` finding said — see `docs/TRD.md` §10.8's BUILD-33 writeup.
+independent of what a `flag_noise` finding said — see `docs/TRD.md` §11.2's BUILD-33 writeup.
 
 **BUILD-34 (2026-09-13): `template_literal` matching is percent-encoding-aware.** Every
 comparison of `template_literal` against a step's `url` field — the detector's navigate match, the
@@ -1010,12 +1010,12 @@ apply mutation's defensive re-check, and its actual `{{<as>_id}}` templating —
 percent-encoding before matching rather than re-encoding the filename (encoding is ambiguous,
 decoding isn't). A raw substring check previously missed any filename containing a URL-reserved
 character (`+`, space, non-ASCII, ...) entirely, with no error — the suggestion simply never
-appeared. See `docs/TRD.md` §10.8's BUILD-34 writeup.
+appeared. See `docs/TRD.md` §11.2's BUILD-34 writeup.
 
 ### 3.4j AI Review Step (EXEC-13)
 
 An author-placed reasoning checkpoint, not a page action — no `target`/`identity_bundle`, and
-outside the Tier 1-4 recovery cascade entirely (never a `recovery` block). See `docs/TRD.md` §10.9
+outside the Tier 1-4 recovery cascade entirely (never a `recovery` block). See `docs/TRD.md` §11.3
 for the full park/resume mechanism; this section is the data shape.
 
 **Execution step** (`execution.json`, emitted by `skill_package_builder_saved_skill.py`'s
@@ -1053,7 +1053,7 @@ a paused `ai_review` step, parallel to `execute_skill`'s `step_overrides` param 
 through `applyStepOverrides`: the answer is bound straight into `inputs` under the step's
 `output_name`. A pause response carries `_meta: {"conxa/ai_review": {step_index, prompt,
 output_schema}}` alongside its `content` blocks, for a programmatic (non-agent) caller to answer
-without parsing the prose header — see `docs/TRD.md` §10.9 for the Build Studio sandbox's own use
+without parsing the prose header — see `docs/TRD.md` §11.3 for the Build Studio sandbox's own use
 of this.
 
 **Answer validation** (`runtime/app/review_pause.js::validateReviewAnswer`, mirrored in Python by
@@ -1073,7 +1073,7 @@ destructive step acts on.
 ### 3.4k Hand-Over Step (EXEC-21, hand-over shape)
 
 `ai_review`'s human sibling: a planned pause with no `target`/`identity_bundle`, outside the
-Tier 1-4 recovery cascade for the same reasons as §3.4j. See `docs/TRD.md` §10.10 for the full
+Tier 1-4 recovery cascade for the same reasons as §3.4j. See `docs/TRD.md` §11.4 for the full
 park/resume mechanism (three resume signals — banner, file drop, loopback HTTP — and why the host
 lock is released rather than held for the pause); this section is the data shape.
 
@@ -1299,7 +1299,7 @@ Cached per (steps + goal + page_urls + sibling_bindings) hash, sharing the versi
 cache (`llm/llm_cache.py`) that `workflow_intent.py` also uses. Gated by
 `SKILL_LLM_SEMANTIC_SUGGESTIONS_ENABLED` (default on). A disabled, failed, or empty pass falls
 back to the rules-only compile — byte-identical to a compile that never ran the pass; a pass that
-applies something deliberately is not. See `docs/TRD.md` §7.2 for the validation gates and the
+applies something deliberately is not. See `docs/TRD.md` §7.3 for the validation gates and the
 reasoning behind that trade.
 
 ### 3.10 Reviewer Edit Log (BUILD-25 stage a, 2026-09-09)
@@ -1412,7 +1412,7 @@ says whether an accepted proposal actually worked, not just that a reviewer like
 | `for_each_start` | (EXEC-38) A for_each loop began — row enumeration finished | `si`, `total` (rows found), `cap` (effective max_iterations after clamping) |
 | `for_each_row_fail` | (EXEC-38) One row's loop body failed | `si`, `row_index`, `continued` (whether `on_row_error: "continue"` let the loop proceed) |
 | `for_each_done` | (EXEC-38) A for_each loop finished (success or a `stop`-mode failure that halted it) | `si`, `processed`, `failed`, `total` |
-| `park_created` | A run paused and parked its live page — Tier 3/4 agent recovery, an `ai_review` checkpoint, or (EXEC-21) a `handover` step, all sharing one park primitive (`docs/TRD.md` §10.1a/§10.9/§10.10) | `si`, `kind` (`"handover"` when a hand-over parked; omitted for the other two cases) |
+| `park_created` | A run paused and parked its live page — Tier 3/4 agent recovery, an `ai_review` checkpoint, or (EXEC-21) a `handover` step, all sharing one park primitive (`docs/TRD.md` §10.2/§11.3/§11.4) | `si`, `kind` (`"handover"` when a hand-over parked; omitted for the other two cases) |
 | `park_resumed` | A parked run resumed execution on the same live page it paused on | `si` |
 | `handover_resumed` | (EXEC-21) A parked hand-over's self-driven resume completed | `si` |
 | `wf_ok` | Workflow completed successfully | `dur` (ms), `tot`, `rec` (recovered steps) |
@@ -1629,7 +1629,7 @@ Three deliberate differences from the delta route beside it:
 - **Zip bytes returned directly**, not a link to one. Render's free plan has no persistent disk (the reason `_ensure_skill_pack_on_disk` exists), so an archive written somewhere to be fetched afterwards could be gone by the time the client asked.
 - **No legacy unversioned equivalent.** A pack still carrying the old `sync_endpoint` shape gets no artifacts until it is republished onto the versioned form.
 
-The delta response gained a matching per-skill `artifacts: [{path, sha256}]` array — metadata only, never `content_base64`. It is present on `no_change` entries too, so a pack installed before artifact sync existed can backfill without waiting for an unrelated republish. Everything not in the five-file code set (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) is an artifact; today that means `visuals/`. See `docs/TRD.md` §10.1a for the two-pass client behaviour and the on-disk store.
+The delta response gained a matching per-skill `artifacts: [{path, sha256}]` array — metadata only, never `content_base64`. It is present on `no_change` entries too, so a pack installed before artifact sync existed can backfill without waiting for an unrelated republish. Everything not in the five-file code set (`execution.json`, `recovery.json`, `inputs.json`, `manifest.json`, `validation.json`) is an artifact; today that means `visuals/`. See `docs/TRD.md` §10.2 for the two-pass client behaviour and the on-disk store.
 
 Every versioned route validates `{installer_version}` against the allow-list (400 `unsupported_installer_version` otherwise) and delegates to the exact same shared implementation function as its legacy, unversioned counterpart — behavior is identical across generations. **`{installer_version}` is frozen into an installer at build time** (stamped into `pack.json.installer_version` at publish time by Build Studio, read from `GET /api/v1/workflows/generations`'s `current` field) and is never reassigned remotely for an already-installed runtime. "Migrating customers to a new generation" means Conxa flips the *default* generation that **new** installer builds stamp (`POST /api/v1/admin/workflows/generations`) — it does not, and cannot, change the URLs already baked into a customer's machine. The legacy, unversioned routes are kept mounted **permanently** as the implicit "v1" behavior for every already-deployed installer — never removed.
 
@@ -1789,7 +1789,7 @@ tracked as `TODO.md` PROD-6).
 The installer's `.exe` icon is a separate, build-time-only concern (embedded in the binary by Build
 Studio before upload, so the cloud has no upload-time hook for it): Build Studio checks
 `GET /entitlements/current`'s `plan` before calling the local builder and drops any supplied
-`logo_path` on the Free plan. See `docs/TRD.md` §13.4's "Plan-aware installer naming and icon" note.
+`logo_path` on the Free plan. See `docs/TRD.md` §13.6's "Installer naming and icon" note.
 
 ### 5.2 Skill Pack Delta
 
@@ -1797,7 +1797,7 @@ See §5.9 (Skill-Pack Delta Sync) — the sole current contract for this endpoin
 
 ### 5.3 Entitlements
 
-**Rewritten 2026-08-08** for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.4). The
+**Rewritten 2026-08-08** for the capability ladder (`docs/PRD.md` §11, `docs/TRD.md` §13.5). The
 per-slug `skill_pack_slots` meter was removed entirely — a workspace may publish under unlimited
 product slugs on every tier, tracked only via `publish_owners` for the ownership-conflict check, not
 for a limit. `machines` replaced it as the numeric meter.
@@ -1852,7 +1852,7 @@ hard-stopping the whole compile when the vision-anchor LLM provider pool is exha
 fetches this once per compile (`handlers/compile.py::cmd_compile` calls this same endpoint via
 `backend.py::_apply_vision_fallback_entitlement`) and applies it locally — replacing what used to be
 a Build-Studio-local-only environment variable (`SKILL_VISION_ANCHOR_FALLBACK_ON_EXHAUSTION`) with no
-cloud-side control at all. See `docs/TRD.md` §13.2.
+cloud-side control at all. See `docs/TRD.md` §13.3.
 
 **Added 2026-08-09 — `workflow_lock` (persistent workflow-slot ledger).** `compile_credits` above is a *monthly* meter that resets every period; it never reclaims access to workflows a workspace already published in an earlier, higher-tier period. `workflow_lock` is the separate, never-resetting answer to that gap: every distinct `(workspace_id, workflow_id)` a workspace has ever published is recorded once, on first publish, in the `entitlement_workflows` KV namespace (`app/services/entitlements.py::record_published_workflow`). On every read, `_reconcile_workflow_locks` reuses the plan's current `compile_credits` number as a standing cap on how many of those workflows may stay **active** — it keeps the `limit` most-recently-published unlocked and locks the rest, oldest first. This self-heals on every read: a downgrade locks the oldest excess automatically, an upgrade unlocks them back in the same order, with no separate migration step. `ensure_workflow_publishable` enforces the same cap at publish time (`app/api/publish_routes.py`): republishing an already-active workflow (a new version) is always allowed; republishing a **locked** one raises `workflow_locked` (402); publishing a **brand-new** workflow once the workspace is already at its cap raises `workflow_limit_exceeded` (402). Scope is deliberately company-side only — locking never touches already-installed end-customer runtimes, which keep syncing and running a workflow they already have regardless of the SaaS company's current plan (execution is local and the cloud isn't in that path, same rationale as `ensure_trial_active`). Gated by the same `entitlements_enforce_compile` flag as the monthly meter.
 
@@ -1869,12 +1869,12 @@ Dashboard: the "Build Studio Devices" card on `conxa-cloud/frontend/src/Settings
 **Renamed 2026-09-16 — `human_edit_tokens` → "AI Usage Credits".** Customer-visible label only; the
 wire response now dual-emits `ai_usage_credits` (canonical) alongside the legacy `human_edit_tokens`
 key (deprecated, kept only until already-installed Build Studio Electron builds have auto-updated
-past this change — see `docs/TRD.md` §13.4). Internal storage keys, the `usage_class="human_edit"`
+past this change — see `docs/TRD.md` §13.5). Internal storage keys, the `usage_class="human_edit"`
 string, and the `human_edit_pool_exceeded` error code are all unchanged — zero migration.
 
 **Added 2026-09-16 — `execute_seats`.** New numeric meter: people a workspace has granted Conxa
 Execute access to via `POST /entitlements/execute-grants` below, independent of Build Studio org
-membership. See `docs/TRD.md` §13.4c for the full grant/claim/shared-pool design.
+membership. See `docs/TRD.md` §13.7 for the full grant/claim/shared-pool design.
 
 **Added 2026-09-17 — `execute_chat_tokens`.** Line-item breakdown only, always `limit: null,
 unlimited: true` — Conxa Execute's chat usage draws from the exact same pool `ai_usage_credits`
@@ -1900,7 +1900,7 @@ automatic (`GET /api/v1/execute/contexts` below).
 workspace_name, kind: "personal"|"member"|"grant", credits_remaining}], "active_workspace_id": str}`.
 Conxa Execute's personal/team context switcher: every workspace the caller can use Execute under.
 Also auto-claims any `pending` grant matching the caller's verified email as a side effect. See
-`docs/TRD.md` §13.4c.
+`docs/TRD.md` §13.7.
 
 **POST /api/v1/usage/compile/reserve**
 
@@ -1940,7 +1940,7 @@ Request:
 reservation (returns its current status unchanged); use refund for that case.
 
 **POST /api/v1/usage/compile/refund** (added 2026-08-23, part of the mega-workflow 502 fix —
-see `TRD.md` §13.2)
+see `TRD.md` §13.3)
 
 Request:
 ```json
@@ -2394,7 +2394,7 @@ Response:
 }
 ```
 
-`group` is the skill's `group_id` from `pack.json`'s `skill_groups` map (falling back to `"_default"`), telling `runtime/sync.js` which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to write into (§2.2, `docs/TRD.md` §5.2a) — present on both `"update"` and `"no_change"` entries since a "no_change" skill on a company that hasn't republished since group-nesting shipped still needs its group reported so the client's next `since` computation stays correct. `_build_delta()` falls back to a company's old flat `skill-packs/{company}/{skill_slug}/` cloud-storage location if the nested one doesn't exist yet (packs published before this feature), so already-published companies keep syncing without needing to republish.
+`group` is the skill's `group_id` from `pack.json`'s `skill_groups` map (falling back to `"_default"`), telling `runtime/sync.js` which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to write into (§2.2, `docs/TRD.md` §5.3) — present on both `"update"` and `"no_change"` entries since a "no_change" skill on a company that hasn't republished since group-nesting shipped still needs its group reported so the client's next `since` computation stays correct. `_build_delta()` falls back to a company's old flat `skill-packs/{company}/{skill_slug}/` cloud-storage location if the nested one doesn't exist yet (packs published before this feature), so already-published companies keep syncing without needing to republish.
 
 Each skill's version is read from `component_versions` KV (`skill_packs:{company}:{skill}`, written at publish time), falling back to the shared `pack.json.skill_pack_version` for packs published before independent per-skill versioning existed.
 
@@ -2417,7 +2417,7 @@ The sync_token is also returned in the publish response so the Build Studio can 
 `plan`/`distribution` (added 2026-08-09) are informational — surfaced so Build Studio can reflect the
 workspace's current plan/reach in its own UI without a separate `/entitlements/current` round trip. An
 earlier revision of this field pair drove a machine-lock stamp (`pack.json.build_machine_id`); that
-mechanism was removed the same day — see §5.1c and `docs/TRD.md` §13.4.
+mechanism was removed the same day — see §5.1c and `docs/TRD.md` §13.5.
 
 **KV namespace:** `sync_tokens` — keyed by slug, stores `{token, company, version, workspace_id, owner_user_id, updated_at}`.
 
@@ -2522,7 +2522,7 @@ test run (`overlays.jsonl`, below), never a selector the model invented:
 For `primitive: "if_present"`, `patch` carries `{intent: "dismiss_if_present", target: {primary_selector: <overlay container signal>, fallback_selectors: []}}` and `nested_step` carries the one
 click step's `{target, identity_bundle, intent, semantic_description}` to insert into its branch
 body. `identity_bundle` in `nested_step` is built by `editor/overlay_identity.py::
-bundle_from_descriptor` — see TRD §7.2a for the durability/orthogonality reuse and why
+bundle_from_descriptor` — see TRD §7.4 for the durability/orthogonality reuse and why
 `source: "runtime"` is a new `IdentitySignal.source` value.
 
 **Streaming (BUILD-26 stage c).** While `copilot_turn` is in flight, the connection also carries
@@ -2841,8 +2841,8 @@ erDiagram
 | `component_versions` | `conxa_runtime`, `conxa_app`, `skill_packs:{company}:{skill}` | `ComponentVersion`/`SkillVersion` dict (version, released_at, files[], rollout, min_host/min_runtime) | 5.8 unified manifest — written by CI + `publish_routes.py`, read by `_compose_manifest()` |
 | `manifest` | `current` (composed+signed `UnifiedManifest`), `skill_pack_index` (list of `{company}:{skill}` identifiers), `minimum_versions`, `compatibility` | 5.8 unified manifest — `skill_pack_index` exists because the filesystem-fallback KV store hashes keys, so `component_versions` entries for skills can't be discovered by scanning keys directly |
 | `workspace_devices` | `{workspace_id}:{machine_hash}` | `{workspace_id, machine_hash, last_ip, first_seen, last_seen, revoked?}` | 5.3 machine binding — `machine_hash` is SHA-256 of the Windows `MachineGuid`, never the raw ID. Added 2026-08-08 |
-| `execute_grants` | `{grant_id}` | `{grant_id, workspace_id, email, status, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}` | §5.3 / `docs/TRD.md` §13.4c — Execute seat grants, auto-claimed by email (no invite link since 2026-09-17). Added 2026-09-16 |
-| `execute_grant_by_user` | `{claimed_user_id}` | `{grant_id, workspace_id, email, claimed_at}` | §5.3 / `docs/TRD.md` §13.4c — O(1) primary-pool-binding lookup keyed by the claiming Clerk `user_id`, written on claim, cleared on revoke. Added 2026-09-16 |
+| `execute_grants` | `{grant_id}` | `{grant_id, workspace_id, email, status, granted_at, granted_by, claimed_at, claimed_user_id, revoked_at, revoked_by}` | §5.3 / `docs/TRD.md` §13.7 — Execute seat grants, auto-claimed by email (no invite link since 2026-09-17). Added 2026-09-16 |
+| `execute_grant_by_user` | `{claimed_user_id}` | `{grant_id, workspace_id, email, claimed_at}` | §5.3 / `docs/TRD.md` §13.7 — O(1) primary-pool-binding lookup keyed by the claiming Clerk `user_id`, written on claim, cleared on revoke. Added 2026-09-16 |
 | `workspace_llm_keys` | `{workspace_id}` | `{provider: "azure_openai", endpoint, deployment, api_version, nonce_b64, ciphertext_b64}` | Enterprise BYOK (§TRD 13.5) — the API key is AES-256-GCM encrypted at rest under `SKILL_BYOK_ENCRYPTION_KEY`; never stored or returned in plaintext. Added 2026-08-08 |
 | `legal_acceptances` | `{user_id}:{version}` | `{id, user_id, email, name, workspace_id, workspace_slug, workspace_name, role, auth_provider, identity_source, version, document_hashes, documents[], accepted_at, accepted_at_iso, client_ip, user_agent, app_version, machine_hash}` | §5.14 Build Studio legal acceptance — **write-once**, one row per (user, terms version); a repeat acceptance returns the existing row rather than overwriting it, so the stored timestamp is always the moment the person actually agreed. Deliberately *not* stored only in `saas.audit_events`, which is a global 500-entry ring buffer — an acceptance mirrored there for the Audit page (`legal.accepted`) would be evicted long before it was needed as evidence. Added 2026-08-29 |
 | `kv_store` (meta) | `{namespace}` | Admin use | Internal |
@@ -2914,7 +2914,7 @@ data/  (SKILL_DATA_DIR on Render, or cloud blob storage)
 ### End-User Machine (Runtime)
 
 Every updateable component (host, app, each skill) is a versioned directory with a
-`current` directory junction — see TRD.md §4.4 for the full rationale and
+`current` directory junction — see TRD.md §4.5 for the full rationale and
 `runtime/version_manager.js` for the implementation. App-layer files ship as obfuscated
 plain JS, not V8 bytecode (`.jsc` was abandoned — `@yao-pkg/pkg`'s embedded Node build has
 a different V8 than official nodejs.org Node, causing silent deserialization segfaults).
@@ -3013,4 +3013,4 @@ First publish claims the slug. This prevents a different workspace from overwrit
 
 The tracking token (`secrets.token_urlsafe(32)`) is embedded in the installer, so anyone holding an installer can extract it and submit telemetry as that company. What was closed (SG-05): ingest no longer falls back to a synthetic workspace for a company with no stored token — `_verify_token()` returns `None` (→ 401) and logs a warning whenever either `SKILL_TRACKING_HMAC_SECRET` or `SKILL_AUTH_REQUIRED` is set, and `_validate_production_config()` requires `SKILL_TRACKING_HMAC_SECRET` in production, so the permissive path survives only in true local dev. What remains open: the token is still a bearer secret shipped inside a customer-distributable binary, so a *legitimate* company's own installer can still be used to submit fabricated events for that company.
 
-**Production config gate.** `app/main.py::_validate_production_config()` refuses to start the backend when `SKILL_AUTH_REQUIRED=true` and any of these are unset: `SKILL_DATABASE_URL`, `SKILL_CLERK_ISSUER`, `SKILL_CLERK_JWKS_URL`, `SKILL_CORS_ORIGINS`, the Cashfree credential/plan set, `SKILL_API_BASE_URL`, `SKILL_TRACKING_HMAC_SECRET`, `SKILL_INSTALLER_SIGNING_KEY`, `CONXA_MANIFEST_SIGNING_KEY`, and at least one LLM provider key. Each of these has a silent-degradation failure mode if absent (see `docs/TRD.md` §16.1), which is why they fail the boot rather than warn.
+**Production config gate.** `app/main.py::_validate_production_config()` refuses to start the backend when `SKILL_AUTH_REQUIRED=true` and any of these are unset: `SKILL_DATABASE_URL`, `SKILL_CLERK_ISSUER`, `SKILL_CLERK_JWKS_URL`, `SKILL_CORS_ORIGINS`, the Cashfree credential/plan set, `SKILL_API_BASE_URL`, `SKILL_TRACKING_HMAC_SECRET`, `SKILL_INSTALLER_SIGNING_KEY`, `CONXA_MANIFEST_SIGNING_KEY`, and at least one LLM provider key. Each of these has a silent-degradation failure mode if absent (see `docs/TRD.md` §16.3), which is why they fail the boot rather than warn.

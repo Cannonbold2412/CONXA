@@ -439,7 +439,7 @@ def _publish_skill_pack_impl(
 @router.post("/publish")
 def post_publish(body: PublishBody, request: Request) -> dict[str, Any]:
     """Legacy, unversioned publish route. Kept permanently — see
-    ``post_publish_v2`` for the versioned equivalent, and docs/TRD.md §3.2a
+    ``post_publish_v2`` for the versioned equivalent, and docs/TRD.md §3.3
     for why this can never be removed."""
     principal = current_principal(request)
     require_admin(principal)
@@ -663,7 +663,7 @@ async def _upload_installer_impl(slug: str, request: Request) -> dict[str, Any]:
 async def post_installer_upload(slug: str, request: Request) -> dict[str, Any]:
     """Legacy, unversioned installer-upload route. Kept permanently — see
     ``post_installer_upload_v2`` for the versioned equivalent, and
-    docs/TRD.md §3.2a for why this can never be removed."""
+    docs/TRD.md §3.3 for why this can never be removed."""
     return await _upload_installer_impl(slug, request)
 
 
@@ -749,7 +749,7 @@ def _installer_versions_impl(slug: str, request: Request) -> dict[str, Any]:
 def get_installer_versions(slug: str, request: Request) -> dict[str, Any]:
     """Legacy, unversioned route. Kept permanently — see
     ``get_installer_versions_v2`` for the versioned equivalent, and
-    docs/TRD.md §3.2a for why this can never be removed."""
+    docs/TRD.md §3.3 for why this can never be removed."""
     return _installer_versions_impl(slug, request)
 
 

@@ -796,7 +796,7 @@ Use the standard log block from "How to work" above for both legs. If either bra
 
 **Sites:** S11 (en.wikipedia.org) + S3 (demoqa.com/text-box) · **Tabs:** 1
 
-`ai_review` is an author-placed reasoning checkpoint (`docs/TRD.md` §10.9) — it pauses the run,
+`ai_review` is an author-placed reasoning checkpoint (`docs/TRD.md` §11.3) — it pauses the run,
 asks Claude a structured question about the live page, and binds the answer into a later step. It
 sits outside the recovery cascade (no tokens spent unless this step fires, on purpose) and must
 never be answered by guessing — always verify a real pause happened and a real answer came back.
@@ -863,7 +863,7 @@ class as WF-8's B-8); pause/resume plumbing → `runtime/app/review_pause.js` / 
 **Site:** S13 (google.com/recaptcha/api2/demo) · **Tabs:** 1 (plus any popup the CAPTCHA flow
 itself opens)
 
-`handover` is `ai_review`'s human sibling (`docs/TRD.md` §10.10) — it pauses the run and lets a
+`handover` is `ai_review`'s human sibling (`docs/TRD.md` §11.4) — it pauses the run and lets a
 *person*, not Claude, do the one thing only they can do (here: solve a CAPTCHA), then reclaims the
 page. Unlike `ai_review`, drift while paused is expected and fine — the whole point is letting a
 person change the page.

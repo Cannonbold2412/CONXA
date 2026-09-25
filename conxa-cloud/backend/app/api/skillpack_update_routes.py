@@ -297,7 +297,7 @@ def _delta_impl(workspace_id: str, since: str, request: Request) -> dict[str, An
 def get_skill_pack_delta(workspace_id: str, since: str = "{}", request: Request = None) -> dict[str, Any]:
     """Legacy, unversioned delta route. Kept permanently — see
     ``get_skill_pack_delta_v2`` for the versioned equivalent, and
-    docs/TRD.md §3.2a for why this can never be removed."""
+    docs/TRD.md §3.3 for why this can never be removed."""
     return _delta_impl(workspace_id, since, request)
 
 
@@ -541,7 +541,7 @@ def post_revoke_runtime(body: RevokeRuntimeBody, request: Request) -> dict[str, 
     """Admin-only. Marks a runtime registration as revoked for dashboard
     visibility/audit only — this never blocks skill sync, telemetry ingest,
     or execution, matching the architectural rule that the cloud never
-    enforces on the running side (docs/TRD.md §13.4a). There is no un-revoke;
+    enforces on the running side (docs/TRD.md §13.6). There is no un-revoke;
     a reinstall generates a fresh install_id and re-registers clean.
     """
     principal = principal_from_request(request)
