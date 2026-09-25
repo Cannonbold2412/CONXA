@@ -2,6 +2,9 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## The chat now tells you when your workflow finishes after sign-in — 2026-09-25
+When a workflow had to wait for you to sign in, the chat said "still waiting" and then went quiet, even after the workflow finished successfully. Now the app keeps watching in the background and the chat posts the outcome by itself, like a delivery notification arriving once the parcel is dropped off. The History list also updates to show the real result instead of staying on "waiting".
+
 ## Workflows that download a file no longer freeze in the Execute app — 2026-09-25
 When a workflow downloaded a file inside the Execute app, a Windows "Save As" box popped up and the workflow sat waiting for someone to click Save. The app now saves the file quietly on its own and passes it straight to the next step, so a download-then-upload workflow runs through without anyone touching it.
 

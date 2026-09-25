@@ -44,4 +44,13 @@ function deleteHistoryEntry(at) {
   return list;
 }
 
-module.exports = { loadHistory, pushHistory, deleteHistoryEntry };
+function updateRun(runId, patch) {
+  const list = loadHistory();
+  const entry = list.find((e) => e.run_id === runId);
+  if (!entry) return list;
+  Object.assign(entry, patch);
+  fs.writeFileSync(historyPath(), JSON.stringify(list, null, 2));
+  return list;
+}
+
+module.exports = { loadHistory, pushHistory, deleteHistoryEntry, updateRun };

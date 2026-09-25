@@ -204,6 +204,16 @@ export function App() {
     return list;
   }, [api]);
 
+  // A run that was waiting for sign-in finished in the background and main posted its result.
+  useEffect(() => api.onSessionUpdated(async ({ sessionId: sid }) => {
+    if (sid === sessionRef.current) {
+      const loaded = await api.loadSession({ id: sid });
+      setChatLog(loaded.session?.messages || []);
+    }
+    await refreshHistory();
+    await refreshSessions();
+  }), [api, refreshHistory, refreshSessions]);
+
   const refreshAccount = useCallback(async () => {
     const status = await api.authStatus();
     setSignedIn(status.signedIn);
@@ -315,7 +325,8 @@ export function App() {
     () =>
       chatLog
         .map((m, idx) => ({ m, idx }))
-        .filter(({ m }) => (m.role === "user" || m.role === "assistant") && (msgText(m) || msgImages(m).length)),
+        .filter(({ m }) => (m.role === "user" || m.role === "assistant") && (msgText(m) || msgImages(m).length)
+          && !(m.role === "user" && msgText(m).startsWith("[Conxa run update]"))),
     [chatLog],
   );
   // Past the sign-in gate below, `signedIn` is always true — chat is ready

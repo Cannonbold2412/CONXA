@@ -12,6 +12,7 @@ const path = require("path");
 const mcp = require("./mcp_client");
 const { resolveRuntimeCommand } = require("./runtime_path");
 const { classifyRunResult, extractRunId } = require("./classify");
+const { waitForRunEnd, TERMINAL, FOLLOW_UP_PREFIX } = require("./run_follow");
 const settings = require("./settings");
 const history = require("./history");
 const sessionsStore = require("./sessions");
@@ -317,7 +318,7 @@ Rules:
 - If a run fails, read the failure text. Recovery (self-heal) happens inside the skill runtime; you may retry execute_skill with resume_from / step_overrides only when the failure text asks for them.
 - Do not run a shell, edit files, or browse the web yourself. There is no bash or write tool.
 - execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.
-- If execute_skill says "Authentication required" (an application needs sign-in), the sign-in tab(s) are already open in the browser panel and the workflow starts BY ITSELF once the user has signed in. Tell the user which application(s) to sign in to and do NOT call execute_skill again. Then call get_execution_status with the run_id from that message until its state is completed or failed, and report the result (its summary). If the state is failed because sign-in was closed or cancelled, tell the user and offer to try again.
+- If execute_skill says "Authentication required" (an application needs sign-in), the sign-in tab(s) are already open in the browser panel and the workflow starts BY ITSELF once the user has signed in. Tell the user which application(s) to sign in to and do NOT call execute_skill again. Do NOT keep polling get_execution_status: the result is posted to this chat automatically when the run ends. Only call it if the user asks for the status.
 - To get sign-in out of the way before a run, call authenticate for that skill: it opens the sign-in tab(s) and waits while the user signs in. If it returns status "waiting", tell the user to finish signing in and call authenticate again; when it returns "signed_in", call execute_skill. Never ask the user for their password.`;
 
 // A chat run never starts on the model's say-so alone: the renderer shows a confirm card and
@@ -367,7 +368,61 @@ function userMessage(text, attachments) {
   };
 }
 
-handle("chat:send", async (_e, payload) => {
+// One writer per chat session: a background follow-up and a user turn both load → run → save the
+// same transcript, so they take turns instead of overwriting each other.
+const sessionLocks = new Map(); // sessionId -> tail promise
+function withSessionLock(sessionId, fn) {
+  const run = (sessionLocks.get(sessionId) || Promise.resolve()).then(fn, fn);
+  const tail = run.catch(() => {});
+  sessionLocks.set(sessionId, tail);
+  tail.then(() => { if (sessionLocks.get(sessionId) === tail) sessionLocks.delete(sessionId); });
+  return run;
+}
+
+// A chat run that detached to wait for sign-in ends long after its turn did. Follow it, then wake
+// the model once (no tools, so it cannot re-run anything) to tell the user how it went.
+const following = new Set(); // runIds
+async function followRun(sessionId, runId, skill) {
+  if (following.has(runId)) return;
+  following.add(runId);
+  try {
+    const st = await waitForRunEnd(runId, mcp.callTool);
+    const state = st.state === "unknown" ? "failed" : st.state;
+    const summary = String(st.summary || "").trim();
+    history.updateRun(runId, { status: state, message: summary.slice(0, 300) });
+    await withSessionLock(sessionId, async () => {
+      let stored;
+      try {
+        stored = (await sessionsStore.loadSession(sessionId)).messages;
+      } catch {
+        return; // the chat was deleted while the run was waiting
+      }
+      const note = { role: "user", content: `${FOLLOW_UP_PREFIX} The "${skill}" run (run_id ${runId}) that was waiting for sign-in has ended. Status: ${state}. Result: ${summary || "(none)"}. Tell the user the outcome in one or two plain sentences. Do not run it again.` };
+      const messages = [...stored, note];
+      const full = settings.loadSettings();
+      const r = await runTurn({
+        model: "conxa-execute",
+        system: SYSTEM_PROMPT,
+        messages,
+        tools: [],
+        chatCompletion: executeClient.makeChatCompletion({ targetWorkspaceId: full.activeWorkspaceId, sessionId }),
+      });
+      const tail = r.ok
+        ? r.messages.slice(messages.length + 1) // runTurn prepends the system message
+        : [{ role: "assistant", content: state === "completed" ? `${skill} finished.` : `${skill} ${state}: ${summary || "no details."}` }];
+      await sessionsStore.saveSessionMessages(sessionId, [...messages, ...tail]);
+    });
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("chat:session-updated", { sessionId });
+  } catch (e) {
+    console.error("followRun failed:", e);
+  } finally {
+    following.delete(runId);
+  }
+}
+
+handle("chat:send", (_e, payload) => withSessionLock(payload && payload.sessionId, () => chatSend(payload)));
+
+async function chatSend(payload) {
   const full = settings.loadSettings();
   const sessionId = payload.sessionId;
   if (!sessionId) return fail("no_session");
@@ -383,6 +438,7 @@ handle("chat:send", async (_e, payload) => {
     userMessage(payload.text, payload.attachments),
   ]);
 
+  const detached = new Map(); // runId -> skill: runs parked on sign-in that this turn did not see end
   const tools = await mcp.listChatTools();
   const requestId = payload.requestId;
   let reasoning = "";
@@ -408,7 +464,13 @@ handle("chat:send", async (_e, payload) => {
         args = { ...args, watch: true };
       }
       const text = await mcp.callTool(name, args);
+      if (name === "get_execution_status" && args && args.run_id) {
+        // The model already read how this run ended, so no follow-up is needed.
+        try { if (TERMINAL.has(JSON.parse(text).state)) detached.delete(String(args.run_id)); } catch { /* not JSON */ }
+      }
       if (name === "execute_skill") {
+        const runId = extractRunId(text);
+        if (classifyRunResult(text) === "awaiting_auth" && runId) detached.set(runId, args.skill);
         history.pushHistory({
           at: new Date().toISOString(),
           skill: args.skill,
@@ -429,8 +491,9 @@ handle("chat:send", async (_e, payload) => {
     if (last && last.role === "assistant" && !last.tool_calls) last.thinking = reasoning;
   }
   await sessionsStore.saveSessionMessages(sessionId, result.messages);
+  for (const [runId, skill] of detached) followRun(sessionId, runId, skill);
   return { ok: true, text: result.text };
-});
+}
 
 // ─── Auto-update ────────────────────────────────────────────────────────────
 // autoDownload/autoInstallOnAppQuit stay at electron-updater's defaults (true)

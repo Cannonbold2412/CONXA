@@ -78,6 +78,7 @@ export type Bridge = {
   chatSend: (p: { text: string; sessionId: string; requestId?: string; editIndex?: number; attachments?: Attachment[] }) => Promise<{ ok: boolean; text?: string; message?: string }>;
   onChatDelta: (cb: (p: ChatDelta) => void) => () => void;
   onConfirmRun: (cb: (p: ConfirmRun) => void) => () => void;
+  onSessionUpdated: (cb: (p: { sessionId: string }) => void) => () => void;
   confirmRunReply: (p: { id: string; approved: boolean }) => Promise<{ ok: boolean }>;
   listSessions: () => Promise<{ ok: boolean; sessions?: SessionSummary[]; message?: string }>;
   createSession: () => Promise<{ ok: boolean; session?: SessionSummary; message?: string }>;
