@@ -415,6 +415,7 @@ async function _writeStudioEvidence(page, err, resolvedEntry, steps, failedAt, s
       failed_stable_hash: failedStableHash,
       step_no: stepNo,
       message: err.message,
+      raw_message: err.rawMessage || err.message,
       page_url: page.url(),
       viewport,
       scroll_y: scrollY,

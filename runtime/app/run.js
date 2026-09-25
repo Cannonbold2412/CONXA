@@ -16,6 +16,7 @@
 // test suite import through this barrel.
 
 const { mapErrorToCode } = require("./tracker");
+const { plainCause } = require("./errors");
 const { classifyException, remedyFor, buildRepairEvent } = require("./recovery");
 const { detectPreExecDrift } = require("./drift");
 const { compareEnvironment } = require("./env_match");
@@ -129,7 +130,14 @@ function sweepOldRuns(runsBaseDir, maxAgeMs = RUN_RETENTION_MS, excludeRunId = n
 }
 
 function stepFailure(step, stepIndex, cause, preShot, warnings) {
-  const err = new Error(`Step ${stepIndex + 1} (${step.type}) failed: ${cause && cause.message ? cause.message : String(cause)}`);
+  // Shaped once here (the single funnel every step failure passes through) rather than at each
+  // of the 5 places downstream that interpolate err.message into a response — see errors.js.
+  // rawMessage keeps the original text (with Playwright's "Call log:" trace) for evidence/logs;
+  // err.message itself is now "<plain summary> (<technical detail>)", never the raw dump.
+  const rawMessage = cause && cause.message ? cause.message : String(cause);
+  const { summary, detail } = plainCause(cause instanceof Error ? cause : new Error(rawMessage));
+  const err = new Error(`Step ${stepIndex + 1} (${step.type}) failed: ${summary} (${detail})`);
+  err.rawMessage = rawMessage;
   err.failedAt = stepIndex;
   err.failedStep = step;
   err.preShot = preShot;
@@ -643,17 +651,20 @@ async function runForEachStep(ctx, state, step, page, i) {
   ctx.tracker.emit("for_each_done", { si: i, processed, failed, total: rowIds.length });
 }
 
-async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, hostOwned, hostRunId, dataDir, dryRun, context } = {}) {
+async function runPlan(startPage, steps, inputs, startFrom, slug, { onStep, onPhase, cancelCheck, tracker, downloadQueue, dialogQueue, structuralFingerprint, environmentFingerprint, watch, runId, hostOwned, hostRunId, dataDir, dryRun, isResume, context } = {}) {
   // BUILD-26 stage (f): threaded into recoverStep -> cascade.js's dismiss-overlay remedy, which
   // is the one place the runtime captures an unexpected overlay's identity even on a run that
   // ultimately passes. Optional — omitted (e.g. a Studio caller that predates this) simply
   // means no capture happens, same as today.
   const runCtx = (runId && dataDir) ? { runId, dataDir } : null;
   const t = tracker || { emit: () => {} };
-  // Every invocation starts with a fresh budget. The success path also clears it, but a
-  // *failed* run used to leave its attempt counts behind in this long-lived process, so the
-  // next run of the same skill started already exhausted and recovery never engaged (EXEC-12).
-  clearRetryBudget(slug);
+  // A fresh run starts with a clean budget. The success path also clears it, but a *failed* run
+  // used to leave its attempt counts behind in this long-lived process, so the next FRESH run of
+  // the same skill started already exhausted and recovery never engaged (EXEC-12). A resume,
+  // though, is exactly the call server.js's checkRetryBudget() gates on — clearing it here too
+  // meant that check could never actually exhaust (each resume wiped the count runPlan itself
+  // was about to add to), so a resume must NOT clear it.
+  if (!isResume) clearRetryBudget(slug);
   // Run-wide state threaded through every step by executeOneStep (below) — including a for_each
   // body step (EXEC-38 reuses this same function), so tab-inheritance/settle continuity works
   // identically inside a loop body as at the top level. Mutated in place, never reassigned.

@@ -15,6 +15,7 @@ const fs = require("fs");
 const path = require("path");
 const pageScripts = require("./page_scripts");
 const { evalOn, EVAL_TIMED_OUT } = require("./page_eval");
+const artifactStore = require("./artifact_store");
 
 const REVIEW_RETRY_MAX = 2;
 const _reviewRetries = new Map(); // `${slug}:${stepIndex}` -> attempts
@@ -71,19 +72,30 @@ function validateReviewAnswer(answer, outputSchema) {
   return { valid: errors.length === 0, errors };
 }
 
-// Mirrors failure_response.js's Tier 4 visual-reference lookup (visuals/Image_<n>.*) — ai_review
-// reuses the exact same asset-bundling convention for its reference screenshot (see
-// _saved_step_visual_ref in skill_package_builder_saved_skill.py), just addressed by the
-// explicit relative ref the compiler wrote onto the step instead of a step-number guess.
-function _loadReferenceScreenshot(skillDir, referenceScreenshotRef) {
+// Mirrors failure_response.js's _resolveVisualRef: on a synced (non-Studio) pack the image
+// itself only exists in the content-addressed artifact store, keyed by path through
+// skill-packs/<ws>/artifact-index.json — a plain `skillDir/<ref>` join only ever resolves for
+// the Studio sandbox, which still stages images directly in the skill directory.
+function _loadReferenceScreenshot(skillPacksDir, skillDir, referenceScreenshotRef) {
   if (!skillDir || !referenceScreenshotRef) return null;
-  const candidate = path.join(skillDir, referenceScreenshotRef);
-  if (!fs.existsSync(candidate)) return null;
+  let candidate = null;
+  if (skillPacksDir) candidate = artifactStore.resolveByPath(skillPacksDir, skillDir, referenceScreenshotRef);
+  if (!candidate) {
+    const inPack = path.join(skillDir, referenceScreenshotRef);
+    if (fs.existsSync(inPack)) candidate = inPack;
+  }
+  if (!candidate) return null;
   const ext = path.extname(candidate).toLowerCase();
-  return {
-    data: fs.readFileSync(candidate).toString("base64"),
-    mimeType: ext === ".png" ? "image/png" : "image/jpeg",
-  };
+  try {
+    return {
+      data: fs.readFileSync(candidate).toString("base64"),
+      mimeType: ext === ".png" ? "image/png" : "image/jpeg",
+    };
+  } catch (_) {
+    // Same contract as failure_response._resolveVisualRef: unreadable is the same as absent —
+    // this is a best-effort visual aid, not something that should abort a pause already parked.
+    return null;
+  }
 }
 
 // Builds the MCP response for a planned ai_review pause. Mirrors buildFailureResponse's Tier 4
@@ -123,7 +135,7 @@ async function buildReviewRequest(page, step, stepIndex, resolvedEntry, opts = {
 
   const content = [{ type: "text", text: header }];
 
-  const reference = _loadReferenceScreenshot(resolvedEntry && resolvedEntry.skillDir, referenceScreenshotRef);
+  const reference = _loadReferenceScreenshot(opts.skillPacksDir, resolvedEntry && resolvedEntry.skillDir, referenceScreenshotRef);
   if (reference) {
     content.push(
       { type: "text", text: "Reference image (what this looked like when the workflow was recorded):" },
