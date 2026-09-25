@@ -121,6 +121,15 @@ test("a tab added to a run for a login (new_tab) can ask the renderer to take fo
   assert.strictEqual(last.meta, undefined, "an ordinary tab (or a probe) must not steal focus");
 });
 
+test("a background probe tab (focus:false) never steals the shown tab; a plain new tab still does", () => {
+  const { tabId: loginTab } = panel.newView("run-bg", { label: "Google", focus: true });
+  const probe = panel.newTab("run-bg", { label: "verify", focus: false });
+  assert.strictEqual(last.tabs.find((t) => t.id === loginTab).active, true, "the sign-in stays shown");
+  assert.strictEqual(last.tabs.find((t) => t.id === probe.tabId).active, false);
+  const plain = panel.newTab("run-bg", { label: "user tab" });
+  assert.strictEqual(last.tabs.find((t) => t.id === plain.tabId).active, true);
+});
+
 test("AUTH-6: a tab created with loginKey is described as isLogin; one without is not", () => {
   const { tabId: loginTabId } = panel.newView("run-authkey", { label: "AppA", loginKey: "ws__app_a" });
   assert.strictEqual(last.tabs.find((t) => t.id === loginTabId).isLogin, true);

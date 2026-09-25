@@ -182,17 +182,22 @@ test("unresolvable site tab throws tabNotFound and never falls back to the curre
   );
 });
 
-test("a bound tab that has since closed is re-resolved rather than returned stale", async () => {
+test("a bound tab that has since closed fails loudly rather than silently rebinding to an unrelated page", async () => {
+  // A step never executes on a tab other than the one it was recorded on (CLAUDE.md invariant).
+  // Once tab_1 has been resolved and closes, a later step recorded on tab_1 must not grab
+  // whatever page happens to open next — that page has nothing to do with tab_1.
   const ctx = fakeContext();
   const registry = registryWith(ctx);
   const popup = fakePage("popup-1");
   ctx.fireNewPage(popup);
   const first = await resolveStepPage(registry, { tab: { id: "tab_1", opened_by: "site" } });
   first.close();
-  const replacement = fakePage("popup-2");
-  ctx.fireNewPage(replacement);
-  const second = await resolveStepPage(registry, { tab: { id: "tab_1", opened_by: "site" } });
-  assert.strictEqual(second.id, "popup-2");
+  const unrelated = fakePage("popup-2");
+  ctx.fireNewPage(unrelated);
+  await assert.rejects(
+    () => resolveStepPage(registry, { tab: { id: "tab_1", opened_by: "site" } }),
+    (err) => err.tabNotFound === true
+  );
 });
 
 test("an about:blank popup is settled only after it navigates to a real url", async () => {

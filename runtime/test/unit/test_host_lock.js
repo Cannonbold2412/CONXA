@@ -9,6 +9,9 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const hostLock = require("../../app/host_lock");
 
@@ -112,4 +115,16 @@ test("activeHosts() reports who holds what", async () => {
   assert.strictEqual(row.skill, "deploy-service");
   a.release();
   assert.strictEqual(hostLock.activeHosts().find((h) => h.host === "render.com"), undefined);
+});
+
+test("an unwritable locksDir fails OPEN (in-process-only), never refuses the run", async () => {
+  // A FILE (not a directory) at the locks-dir path makes file_lock.js's mkdirSync/writeFileSync
+  // fail — simulates a read-only/unwritable data dir without touching real permissions.
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "host-lock-fail-"));
+  const blockedLocksDir = path.join(parent, "not-a-dir");
+  fs.writeFileSync(blockedLocksDir, "");
+  const r = await hostLock.acquireHosts(["render.com"], holder("r1"), { locksDir: blockedLocksDir });
+  assert.ok(typeof r.release === "function", "must degrade to in-process locking, not report a blocker");
+  assert.strictEqual(r.blocker, undefined);
+  r.release();
 });

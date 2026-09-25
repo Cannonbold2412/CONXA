@@ -78,7 +78,14 @@ function decideUpdate({ componentName, manifestEntry, currentVersion, installId,
 
   const rollout = manifestEntry.rollout || { percentage: 100 };
   if (rollout.halted) return { update: false, reason: "rollout_halted" };
-  const pct = typeof rollout.percentage === "number" ? rollout.percentage : 100;
+  // A string ("50" from an admin form POST that never got coerced server-side) used to fall
+  // through the `typeof === "number"` check straight to the 100 default — silently turning a
+  // 50% staged rollout into a 100% one on every client. Coerce it; only a genuinely unparseable
+  // value falls back to the explicit default.
+  const rawPct = rollout.percentage;
+  const pct = typeof rawPct === "number" ? rawPct
+    : (typeof rawPct === "string" && rawPct.trim() !== "" && Number.isFinite(Number(rawPct))) ? Number(rawPct)
+    : 100;
   if (pct >= 100) return { update: true, reason: "rollout_100" };
   const bucket = rolloutBucket(installId, componentName);
   return { update: bucket < pct, reason: bucket < pct ? "rollout_in" : "rollout_out" };
@@ -167,13 +174,19 @@ function _extractZip(zipPath, destDir) {
     let cmd, args;
     if (process.platform === "win32") {
       cmd = "powershell";
-      args = ["-NonInteractive", "-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${destDir}' -Force`];
+      // PowerShell single-quoted strings escape an embedded ' by doubling it (same convention
+      // scheduler_cli.js's shortcut builder already uses) — a profile path with an apostrophe
+      // (e.g. C:\Users\O'Brien) used to break this command outright.
+      const psPath = (p) => p.replace(/'/g, "''");
+      args = ["-NonInteractive", "-Command", `Expand-Archive -Path '${psPath(zipPath)}' -DestinationPath '${psPath(destDir)}' -Force`];
     } else {
       cmd = "unzip";
       args = ["-o", zipPath, "-d", destDir];
     }
-    const p = spawn(cmd, args, { stdio: "ignore" });
-    p.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`unzip exit ${code}`))));
+    const p = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    if (p.stderr) p.stderr.on("data", (d) => { stderr += d; if (stderr.length > 2000) stderr = stderr.slice(0, 2000); });
+    p.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`unzip exit ${code}${stderr ? `: ${stderr.trim()}` : ""}`))));
     p.on("error", reject);
   });
 }
@@ -241,7 +254,16 @@ async function updateAppComponent(componentDir, entry, log = () => {}, downloadO
   const zipPath = `${stageDir}.zip`;
   fs.mkdirSync(stageDir, { recursive: true });
   fs.writeFileSync(zipPath, buf);
-  await _extractZip(zipPath, stageDir);
+  try {
+    await _extractZip(zipPath, stageDir);
+  } catch (e) {
+    // A failed extraction used to leave both the staging dir and the zip behind forever —
+    // a slow disk leak on every update attempt that fails this way (a corrupt download, an
+    // unwritable path). Clean up before propagating the real error.
+    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch (_) {}
+    try { fs.unlinkSync(zipPath); } catch (_) {}
+    throw e;
+  }
   try { fs.unlinkSync(zipPath); } catch (_) {}
 
   try { fs.rmSync(versionDir, { recursive: true, force: true }); } catch (_) {}

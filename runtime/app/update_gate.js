@@ -33,7 +33,13 @@ function recordLaunch(dataDir, staged) {
   try {
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ staged, strikes }));
-  } catch (_) {}
+  } catch (e) {
+    // Can't persist the strike count — reporting a low count here would gate every future
+    // launch forever, since it could never climb to MAX_STRIKES. Disarm instead: an unwritable
+    // data dir is a bigger problem than one skipped update-gate warning.
+    console.error(`[update_gate] could not persist strike count for ${staged}: ${e.message}`);
+    return MAX_STRIKES + 1;
+  }
   return strikes;
 }
 

@@ -196,3 +196,79 @@ test("drainSpill leaves a still-failing batch in the spill file", async () => {
     assert.strictEqual(lines.length, 1);
   });
 });
+
+// A rejected (401/404/…) request will never succeed on retry — a rotated tracking token or a
+// route that no longer exists. Unlike a network/5xx failure, this must never spill or stay
+// spilled: doing so used to fill the (capped) spill file with dead lines forever, which then
+// dropped all NEWER real evidence instead (see tracker.js's SPILL_MAX_LINES comment).
+function startRejectingServer(status) {
+  const received = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => { received.push(JSON.parse(body)); res.writeHead(status); res.end("no"); });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve({ server, received, port: server.address().port }));
+  });
+}
+
+test("a permanently-rejected (401) flush is never spilled to disk", async () => {
+  await withTempDataDir(async (dataDir) => {
+    delete require.cache[require.resolve("../../app/tracker")];
+    const { createTracker } = require("../../app/tracker");
+    const { server, received, port } = await startRejectingServer(401);
+    try {
+      const tracker = createTracker(
+        { enabled: true, tracking_url: `http://127.0.0.1:${port}/events`, tracking_token: "stale-token" },
+        { runtime_version: "1.0.0", workflow_id: "wf1" }
+      );
+      const run = tracker.forRun("run-401", {});
+      run.emit("wf_start", {});
+      const result = await tracker.flush();
+      tracker.destroy();
+
+      assert.strictEqual(received.length, 1);
+      assert.strictEqual(result.ok, false);
+      const spillPath = path.join(dataDir, "logs", "telemetry-spill.jsonl");
+      assert.strictEqual(fs.existsSync(spillPath), false);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+test("drainSpill drops an already-spilled line once it comes back 401, instead of keeping it forever", async () => {
+  await withTempDataDir(async (dataDir) => {
+    delete require.cache[require.resolve("../../app/tracker")];
+    const { drainSpill } = require("../../app/tracker");
+    const { server, port } = await startRejectingServer(401);
+    try {
+      const logsDir = path.join(dataDir, "logs");
+      fs.mkdirSync(logsDir, { recursive: true });
+      const spillPath = path.join(logsDir, "telemetry-spill.jsonl");
+      fs.writeFileSync(spillPath, `${JSON.stringify({
+        rid: "run-stale", seq: 0, prev: "", h: "deadbeef", evts: [{ e: "wf_start", ts: 1 }],
+        _dest: { url: `http://127.0.0.1:${port}/events`, token: "stale-token" },
+      })}\n`);
+
+      await drainSpill();
+
+      assert.strictEqual(fs.existsSync(spillPath), false, "a dead-forever line must be dropped, not kept");
+    } finally {
+      server.close();
+    }
+  });
+});
+
+test("mapErrorToCode: recognized failures still classify; everything else is 'unknown', not 'selector_missing'", () => {
+  delete require.cache[require.resolve("../../app/tracker")];
+  const { mapErrorToCode } = require("../../app/tracker");
+  assert.strictEqual(mapErrorToCode(new Error("Locator not found: #foo")), "selector_missing");
+  assert.strictEqual(mapErrorToCode(new Error("Missing selector")), "selector_missing");
+  assert.strictEqual(mapErrorToCode(new Error("Timeout 5000ms exceeded")), "timeout");
+  assert.strictEqual(mapErrorToCode(new Error("net::ERR_CONNECTION_RESET")), "navigation_failed");
+  assert.strictEqual(mapErrorToCode(new Error("Execution cancelled")), "cancelled");
+  assert.strictEqual(mapErrorToCode(new Error("Permission denied writing to disk")), "unknown");
+  assert.strictEqual(mapErrorToCode(new Error("Unexpected token in JSON")), "unknown");
+});

@@ -280,12 +280,10 @@ const GATE_BUDGET_MS = envNumber("CONXA_GATE_BUDGET_MS", 600);
 
 function isFileInputStep(step) {
   const s = asObject(step);
-  const kind = String(s.type || s.action || "").toLowerCase();
+  const kind = String(s.type || "").toLowerCase();
   if (kind === "upload" || kind === "upload_intent") return true;
   const fp = asObject(asObject(s.identity_bundle).fingerprint);
-  if (String(fp.input_type || "").toLowerCase() === "file") return true;
-  const semantic = asObject(asObject(s.signals).semantic);
-  return String(semantic.input_type || "").toLowerCase() === "file";
+  return String(fp.input_type || "").toLowerCase() === "file";
 }
 
 // Phase 8: pre-action GATE — confirm the element is attached, visible, RAF-stable, and enabled

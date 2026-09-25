@@ -38,6 +38,8 @@
     { "name": "host_browser.js",      "profile": "default",
       "_note": "browser.js's _buildExecContext and tabs.js's user-opened-tab branch both require this — the seam that borrows a browser view from Conxa Execute's panel instead of launching Chromium." },
     { "name": "skill_loader.js",      "profile": "default" },
+    { "name": "errors.js",            "profile": "default",
+      "_note": "server.js/run.js require this — the one place raw internal/Playwright error text is shaped into a plain summary." },
     { "name": "tracker.js",           "profile": "default" },
     { "name": "canonical_json.js",   "profile": "default",
       "_note": "Stable JSON stringify (sorted keys) used by tracker evidence-chain hashing and dual-shipped manifest_manager signing." },

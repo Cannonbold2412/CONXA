@@ -268,6 +268,16 @@ def _copy_saved_common(step: dict[str, Any], out: dict[str, Any]) -> dict[str, A
         val = step.get(key)
         if val:
             out[key] = val
+    # Phase 8 post-action VERIFY (runtime/app/assertions.js:stepAssertions) reads
+    # step.validation.assertions — this was silently never copied, so no published pack's
+    # compiled post-condition assertions ever reached execution.json and VERIFY was a no-op
+    # fleet-wide (it always saw "no-assertions" and passed). Only `assertions` is copied, not
+    # the rest of ValidationBlock (wait_for/success_conditions): those are marked legacy
+    # executor detail in the model and nothing in the runtime reads them.
+    validation = step.get("validation")
+    assertions = validation.get("assertions") if isinstance(validation, dict) else None
+    if isinstance(assertions, list) and assertions:
+        out["validation"] = {"assertions": assertions}
     # PROD-3: runtime/app/cascade.js reads step.destructive (top-level) directly, and
     # runtime/app/resolution.js reads step.entity_binding (top-level) directly — neither looks
     # inside identity_bundle, even though identity_bundle.destructive is the compiler's own
@@ -293,8 +303,12 @@ def _saved_check_like_step(step: dict[str, Any], action: str) -> dict[str, Any] 
     elif out["kind"] == "text":
         out["text"] = str(step.get("check_text") or "")
     elif out["kind"] == "snapshot":
-        out["threshold"] = float(step.get("check_threshold") or 0.9)
-    if not any(k in out and out[k] for k in ("pattern", "url", "selector", "text", "threshold")):
+        # No visual-diff engine exists at runtime (runtime/app/handlers.js's check/assert
+        # evaluator has never implemented this kind) — drop rather than ship a step that can
+        # only ever fail with "unsupported check type" at replay. Caller (the None-handling
+        # chain in _build_workflow_from_saved_skill) turns this into a drop-and-warn.
+        return None
+    if not any(k in out and out[k] for k in ("pattern", "url", "selector", "text")):
         return None
     return _copy_saved_common(step, out)
 
@@ -1083,6 +1097,13 @@ def _build_workflow_from_saved_skill(
                 # above, rather than failing the whole build over one unfinished checkpoint.
                 if on_warning:
                     on_warning(f"Step {raw_index}: AI Review has no prompt yet and was removed from the skill. Add a prompt in Human Edit, then rebuild.")
+                continue
+            if normalize_action_kind(action) in {"check", "assert"} and \
+                    str(raw.get("check_kind") or "").strip().lower().replace("-", "_") == "snapshot":
+                # Same drop-and-warn shape as drag_drop above — the runtime has no visual-diff
+                # engine, so this kind can only ever fail at replay.
+                if on_warning:
+                    on_warning(f"Step {raw_index}: snapshot checks aren't supported and were removed from the skill.")
                 continue
             raise ValueError(f"Saved skill step {raw_index} action {action!r} is not exportable.")
         execution_steps.append(converted)

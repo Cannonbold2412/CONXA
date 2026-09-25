@@ -80,6 +80,7 @@ async function acquireHosts(hosts, holder, { isDone, pollMs = 250, locksDir } = 
           },
         };
       }
+      if (fl.fsError) return { release: attempt.release }; // disk unavailable — degrade to in-process-only
       attempt.release(); // undo the local claim — another PROCESS holds the platform
       return {
         host: fl.host || "(external)",

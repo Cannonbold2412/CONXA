@@ -15,7 +15,7 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | MCP — MCP | 1 | MCP-4 |
 | TEST — Testing & Cleanup | 1 | TEST-6 |
 | REC — Recorder | 1 | REC-STALE-1 |
-| AUTH — Authentication | 12 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15 |
+| AUTH — Authentication | 13 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 18 |
 | DEAD — Tech debt | 1 | DEAD-1 |
 | **Total** | **81** | |
 
@@ -1393,7 +1393,7 @@ question — that compile produced inputs named `sports` and `react_select_3_lis
 dropdown's enum is also frozen from the recording (picking a different State still offers the
 recorded State's cities). None of these block a run; all deserve their own item.
 
-## AUTH — Authentication (12 done)
+## AUTH — Authentication (13 done)
 
 ### AUTH-1 — Warn at pre-flight when a workflow visits a host that has no sign-in app configured
 **Resolved:** 2026-09-21
@@ -1480,6 +1480,13 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Category:** Execution & Recovery / Authentication
 - **Description:** Run Test of *Github to Drive File Handoff* (group Enterprise) failed at step 6 (Drive "New") with "Google's saved sign-in expired mid-run" twice in a row, although pre-flight reported `2/2_valid` and Google had been re-Connected seconds earlier; the second run skipped validation entirely (`ttl_cached:2`). The learned definition (AUTH-13) already judged the dead session correctly (verdict `no`) but was never in the stale pack — which defect (1) now prevents. Fixing (1) then made the same `sign_in_setup_stale` error reappear on a plain Reconnect of an unchanged app, which defect (4) fixes.
 - **Complexity:** M — three small, independent fixes plus the investigation; one further same-day fix for the regression defect (1) introduced.
+
+### AUTH-18 — Sign-in tab jumped back to the first login page after typing the Google email
+**Resolved:** 2026-09-25
+- **Resolution:** Two composing causes. (1) Execute's `browser_panel.js::_createTab` made EVERY new tab active, ignoring `focus:false`, so each judge/prover/pre-flight probe tab (which loads the login entry URL) took over the visible view mid-sign-in — `newTab` with explicit `focus:false` now opens parked in the background. (2) The judge fired on the context-wide `newTickets` lookout as soon as Next set a cookie, loading the login URL in the same cookie jar while a multi-step flow was in progress — `login_signals.js::shouldAskJudge` now takes `onSignIn` (from `_sampleLookouts`: an own tab still looks like a login answer) and never asks then; the backup rule and the human override are unchanged. (3) A repeat `execute_skill`/`authenticate` call while sign-in was open built a second session and probed again — `getGroupAuthContext` now returns `already_open` for pending apps up front. Tests: `test_login_signals.js`, `browser_panel.test.js`, `test_group_auth_already_open.js`; `test_session_login_scope.js` fixture now lands on the app after sign-in.
+- **Category:** Authentication
+- **Description:** Github→Drive in Execute: typing the Google email and clicking Next bounced back to the first sign-in page repeatedly.
+- **Complexity:** S
 
 ## DEAD — Tech debt (1 done)
 

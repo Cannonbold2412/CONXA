@@ -10,11 +10,10 @@ const { withDeadline, evalOn, countOn, EVAL_TIMED_OUT } = require("./page_eval")
 
 // Phase 8: post-action VERIFY — check compiled post-condition assertions independently of the
 // action's own success. Returns { pass, channel, evidence }. Absent assertions → pass (no-op).
+// The compiler only ever writes assertions under validation.assertions (ValidationBlock —
+// packages/conxa-core/conxa_core/models/skill_spec.py); nothing emits a top-level step.assertions.
 function stepAssertions(step) {
-  const v = asObject(step.validation);
-  const fromValidation = asArray(v.assertions);
-  const direct = asArray(step.assertions);
-  return [...fromValidation, ...direct].filter(a => a && typeof a === "object");
+  return asArray(asObject(step.validation).assertions).filter(a => a && typeof a === "object");
 }
 
 // Normalize for value_equals comparison: trim, collapse internal whitespace, lowercase.
@@ -35,7 +34,12 @@ async function capturePreStepSignature(page) {
   try {
     const url = page.url();
     const sig = await evalOn(page, pageScripts.preStepSignature, STATE_CHANGED_SELECTOR);
-    if (!sig || sig === EVAL_TIMED_OUT) return { url, textLen: 0, interactiveCount: 0 };
+    // A timed-out probe is unknown, not "definitely empty" — every caller already treats a null
+    // signature as "no evidence" (signatureChanged/evaluateAssertion's state_changed branch both
+    // fail closed to "no movement detected" rather than false-reporting one). Fabricating
+    // {textLen:0, interactiveCount:0} here used to almost always read as "changed" against any
+    // real page, which is a false positive on the exact guard meant to catch a repeated action.
+    if (!sig || sig === EVAL_TIMED_OUT) return null;
     const { textLen, interactiveCount } = sig;
     return { url, textLen, interactiveCount };
   } catch (_) {
@@ -111,13 +115,16 @@ async function anyRootHasMatch(roots, target) {
   return false;
 }
 
-const URL_ASSERTION_TYPES = new Set(["url_changed", "url_exact", "url_pattern", "url"]);
+// The full type list a compiled Assertion can carry (packages/conxa-core's model docstring) —
+// url_pattern is a regex-matching alias of url_changed, kept as its own type at this layer
+// because the two use different match strategies (startsWith vs RegExp).
+const URL_ASSERTION_TYPES = new Set(["url_changed", "url_pattern"]);
 
 // Full navigations may need the page-load budget; same-document hash checks do not.
 function assertionTimeout(type, target, declaredMs) {
   const declared = Number(declaredMs) || 0;
   if (!URL_ASSERTION_TYPES.has(type)) return declared || 3000;
-  if (type === "url_pattern" || type === "url") {
+  if (type === "url_pattern") {
     const raw = String(target || "");
     if (raw.startsWith("#")) return declared || 3000;
   }
@@ -126,17 +133,20 @@ function assertionTimeout(type, target, declaredMs) {
 
 async function evaluateAssertion(roots, page, a, inputs, baseline) {
   const type = String(a.type || "").toLowerCase();
-  const target = interpolate(String(a.target || a.pattern || a.url || a.selector || a.text || ""), inputs);
+  const target = interpolate(String(a.target || ""), inputs);
   const required = a.required !== false;
   const timeout = assertionTimeout(type, target, a.timeout_ms);
   const startedAt = Date.now();
   let ok = true;
+  let recognized = true;
 
   try {
-    if (type === "url_changed" || type === "url_exact") {
+    if (type === "url_changed") {
       ok = await pollPositive(() => page.url() === target || (!!target && page.url().startsWith(target)), timeout);
-    } else if (type === "url_pattern" || type === "url") {
-      ok = !target || await pollPositive(() => new RegExp(target).test(page.url()), timeout);
+    } else if (type === "url_pattern") {
+      // An empty pattern is a compile-time mistake, not "anything matches" — matching that used
+      // to make a required url_pattern assertion a silent no-op.
+      ok = !!target && await pollPositive(() => new RegExp(target).test(page.url()), timeout);
     } else if (type === "selector_present") {
       ok = await pollPositive(() => anyRootHasMatch(roots, target), timeout);
     } else if (type === "selector_absent") {
@@ -178,12 +188,18 @@ async function evaluateAssertion(roots, page, a, inputs, baseline) {
               Math.abs(after.textLen - baseline.textLen) > STATE_CHANGED_TEXT_LEN_TOLERANCE;
         }, timeout);
       }
+    } else {
+      // An unrecognized type is a compiler/runtime version mismatch, not "nothing to check" —
+      // silently passing here meant a typo'd or newer assertion type never actually verified
+      // anything while looking like it had.
+      recognized = false;
+      ok = false;
     }
   } catch (err) {
     ok = false;
   }
 
-  return { type, target, required, ok, elapsed_ms: Date.now() - startedAt };
+  return { type, target, required, ok, recognized, elapsed_ms: Date.now() - startedAt };
 }
 
 async function verifyStep(page, step, inputs, baseline = null, dialogQueue = null) {

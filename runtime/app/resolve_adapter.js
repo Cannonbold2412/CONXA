@@ -55,19 +55,16 @@ function signalToLocator(root, signal, interpolate, inputs) {
   if (engine === "testid") {
     // Honour the page's actual attribute name (data-test-id vs data-testid). Playwright's
     // getByTestId is hard-wired to data-testid with no hyphen, so a hyphenated attribute would
-    // silently match nothing and drop the signal. The signal text after the internal: prefix is
-    // already a literal [attr="value"] CSS selector — use root.locator() on it directly so the
-    // exact attribute name is preserved.
-    const css = raw.replace(/^internal:testid=/, "").trim();
-    if (css.startsWith("[")) return root.locator(css);
-    // Fallback: reconstruct from the attribute name + value captured in the raw string.
-    const m = raw.match(/(data-test-?id)=["']?([^"'\]]+)/);
-    return m ? root.locator(`[${m[1]}="${m[2]}"]`) : root.locator(raw);
+    // silently match nothing and drop the signal. The compiler's to_playwright_grammar always
+    // emits this as a literal [attr="value"] CSS selector after the internal: prefix (see
+    // selector_grammar.py) — use root.locator() on it directly so the exact attribute name is
+    // preserved.
+    return root.locator(raw.replace(/^internal:testid=/, "").trim());
   }
-  if (engine === "role" || engine === "aria") {
+  if (engine === "role") {
     return roleLocator(root, raw) || root.locator(raw);
   }
-  if (engine === "text" || engine === "text_based") {
+  if (engine === "text_based") {
     return textLocator(root, raw) || root.locator(raw);
   }
   if (engine === "relational") {

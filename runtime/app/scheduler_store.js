@@ -151,13 +151,22 @@ function createStore(opts) {
     return record;
   }
 
+  // Distinguish "no inputs were ever configured" (real {}) from "inputs exist but this key
+  // couldn't decrypt them" (a lost/rotated keychain entry) — decryptFn returns null for the
+  // latter, and silently substituting {} used to fire the schedule with every input blank
+  // instead of refusing. See scheduler_daemon.js's consumer of inputs_decrypt_failed.
+  function _decryptedInputs(rec, key) {
+    if (!rec.inputs_enc) return { inputs: {}, inputs_decrypt_failed: false };
+    const decrypted = decryptFn(key, rec.inputs_enc);
+    return decrypted === null
+      ? { inputs: {}, inputs_decrypt_failed: true }
+      : { inputs: decrypted, inputs_decrypt_failed: false };
+  }
+
   /** Full records INCLUDING decrypted inputs — daemon-only. Never expose over MCP. */
   async function list() {
     const key = await _getKey();
-    return listSync().map((rec) => ({
-      ...rec,
-      inputs: rec.inputs_enc ? decryptFn(key, rec.inputs_enc) : {},
-    }));
+    return listSync().map((rec) => ({ ...rec, ..._decryptedInputs(rec, key) }));
   }
 
   /**
@@ -172,7 +181,7 @@ function createStore(opts) {
     const rec = _readFile(_pathFor(id));
     if (!rec) return null;
     const key = await _getKey();
-    return { ...rec, inputs: rec.inputs_enc ? decryptFn(key, rec.inputs_enc) : {} };
+    return { ...rec, ..._decryptedInputs(rec, key) };
   }
 
   /** Apply an allowed-field patch. `last_*`/`next_*` come from the daemon; the rest from users. */
