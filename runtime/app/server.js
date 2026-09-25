@@ -11,6 +11,8 @@ const { installedSkillVersions } = require("./installed_versions");
 const { collectSyncErrors } = require("./sync_errors");
 const pageScripts = require("./page_scripts");
 const { plainCause } = require("./errors");
+const hostBrowser = require("./host_browser");
+const { DOWNLOAD_WAIT_TIMEOUT_MS } = require("./run_config");
 
 // ─── 1. Resolve CONXA_DIR (install, read-only) and CONXA_DATA_DIR (user-writable) ─
 // env.js is the single source of truth for dev/prod path roots. Under the host exe,
@@ -1706,7 +1708,10 @@ async function _handleTool(name, args, extra) {
           const savePromise = (async () => {
             fs.mkdirSync(_downloadsDir, { recursive: true });
             const dest = path.join(_downloadsDir, fname);
-            await download.saveAs(dest);
+            // Under Execute the file never reaches Playwright — Execute's own browser saves it
+            // (host_browser.js::saveDownload, EXEC-46).
+            if (_hostOwned) await hostBrowser.saveDownload({ runId: _hostRunId, download, dest, timeoutMs: DOWNLOAD_WAIT_TIMEOUT_MS });
+            else await download.saveAs(dest);
             _downloads.push(dest);
             // Extraction happens here — at download time, unconditionally — not lazily when
             // some later upload step happens to resolve to a .zip path. Keeps replay symmetric

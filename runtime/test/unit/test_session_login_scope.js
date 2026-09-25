@@ -38,13 +38,17 @@ function page(url, { pwSequence = [false], landUrl } = {}) {
 }
 
 const STATE = { cookies: [{ name: "sid", value: "1", domain: "app.test", path: "/" }], origins: [] };
+// Execute keeps each run's cookies in the run's own partition, reachable only through a page's own
+// CDP session (host_browser.js::pageCookies) — the context's cookies() is Electron's empty default
+// session. Model both: the page jar holds the sign-in, the context jar is empty.
+hostBrowser.pageCookies = async () => STATE.cookies;
 function session({ hostOwned, pages }) {
   return {
     hostOwned, hostRunId: hostOwned ? "r_1" : undefined,
     browser: { on() {}, off() {} },
     context: {
       pages: () => pages, on() {}, off() {}, storageState: async () => STATE,
-      cookies: async () => STATE.cookies, newPage: async () => page("https://app.test/probe-unused"),
+      cookies: async () => (hostOwned ? [] : STATE.cookies), newPage: async () => page("https://app.test/probe-unused"),
     },
   };
 }

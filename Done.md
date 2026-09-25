@@ -7,7 +7,7 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | Area | Done | Items |
 |---|---|---|
 | BUILD — Build Studio | 20 | BUILD-4, 5, 8, 10, 12, 14, 15, 16, 17, 19, 21, 22, 26, 29, 30, 31, 33, 33, 34, 35 |
-| EXEC — Execution & Recovery | 26 | EXEC-1, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 24, 29, 30, 32, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45 |
+| EXEC — Execution & Recovery | 27 | EXEC-1, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 24, 29, 30, 32, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46 |
 | CLOUD — Cloud | 9 | CLOUD-6, 9, 10, 11, 13, 15, 19, 20, 22 |
 | RT — Runtime | 4 | RT-REFACTOR-1, 3, 3-HOST-LOCK, 4 |
 | PROD — Product | 3 | PROD-3, 3-DRYRUN, 5 |
@@ -15,9 +15,9 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | MCP — MCP | 1 | MCP-4 |
 | TEST — Testing & Cleanup | 1 | TEST-6 |
 | REC — Recorder | 1 | REC-STALE-1 |
-| AUTH — Authentication | 15 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 18, 19, 20 |
+| AUTH — Authentication | 16 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 18, 19, 20, 21 |
 | DEAD — Tech debt | 1 | DEAD-1 |
-| **Total** | **83** | |
+| **Total** | **86** | |
 
 ---
 
@@ -644,7 +644,7 @@ inferred from `outer_html`, not read directly.
 
 ---
 
-## EXEC — Execution & Recovery (26 done)
+## EXEC — Execution & Recovery (27 done)
 
 ### EXEC-1 — Conditional / branch steps in the skill format
 **Resolved:** 2026-07-09
@@ -1009,6 +1009,14 @@ inferred from `outer_html`, not read directly.
 - **Why required:** latent isolation gap surfaced while making login tabs individually closable (2026-09-20). Not fixed there because Electron's CDP target has no `Target.createBrowserContext` — per-run isolation needs a different seam (filter by the run's own marker URL / tab id, or a per-run session partition observed from Execute's side).
 - **Complexity:** S–M.
 - **Resolved 2026-09-21:** sign-in detection moved to `browser.js::_waitForSessionLogin`, which polls pages and — for a host-owned (Execute) session — only ever considers pages its own login created (the login tab and its `opener()` descendants), never the shared context at large. Pinned by `runtime/test/unit/test_session_login_scope.js`.
+
+### EXEC-46 — A download in Execute opened a native Save As dialog and stalled the run
+**Resolved:** 2026-09-25
+- **Category:** Execution & Recovery / Conxa Execute
+- **Description:** Github→Drive in Execute stopped at GitHub's "Download raw file": a Windows Save As dialog (window title `blob:https://github.com/…`) sat over the app waiting for a person.
+- **Cause:** each run's views live in their own Electron partition, so Electron's download manager handles every file. With no `will-download` handler it asks the user where to save. Playwright's `download` event still fires, but `download.saveAs()` can never work: it copies from Playwright's artifacts folder, where Electron never writes (ENOENT, confirmed on real Electron for both attachment and blob downloads).
+- **Resolution:** `browser_panel.js::_hookDownloads` gives every run partition a `will-download` handler that sets a save path up front (no dialog) under `%TEMP%/conxa-execute-downloads/<runId>/`, wiped at `run_end`. A new control op `save_download {runId, url, dest}` (`browser_panel.js::saveDownload`) hands the finished file for that URL to the runtime; `server.js`'s download listener calls `host_browser.js::saveDownload` instead of `download.saveAs()` for host-owned runs. Launched runs are unchanged. Tests: `conxa-execute/app/electron/test/browser_panel.test.js` (EXEC-46 case); verified on real Electron with a GitHub-style blob download (file reaches the runtime, zero dialogs).
+- **Complexity:** S
 
 ---
 
@@ -1500,6 +1508,13 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Resolution:** `context.storageState()` throws on Execute's Electron CDP context (`Target.createTarget: Not supported`, confirmed against real Electron) whenever a visited origin's page has closed, because Playwright opens a hidden page to read that origin's `localStorage`. After sign-in there is always such an origin: the judge's probe tabs and the identity provider's redirect hops. The capture threw, and the error was swallowed. `beginInteractiveAuth` then opened a second sign-in tab, which failed the same way and gave up. Nothing was saved (the last write under `%APPDATA%\Conxa\cache\sessions` was Sep 20), the waiting run never started, and the next `authenticate` saw 0/2 signed in. The same double decision appears in every earlier Execute run in `login_signals.log`. Fix: `browser.js::_captureState` reads cookies from the context plus `localStorage` from open pages for host-owned contexts; launched ones keep `storageState()`. A capture or save failure after sign-in is tagged `captureFailed` and never reopens a sign-in tab. Every failed attempt is logged (`login_capture_failed`, `login_attempt_failed`). Test: `test_session_login_scope.js`, where a host-owned context whose `storageState()` throws still captures, and which fails without the fix.
 - **Category:** Authentication
 - **Description:** Github→Drive in Execute on app v3.2.92: both sign-ins completed and their tabs closed, but the transfer never started, and saying "I've already signed in" got another sign-in request.
+- **Complexity:** S
+
+### AUTH-21 — Execute saved sign-ins with no cookies, and never restored saved ones into a run
+**Resolved:** 2026-09-25
+- **Resolution:** After AUTH-20 the Github→Drive run worked, but the saved `arcame__google-drive`/`arcame__github` sessions held **0 cookies**, plus the `localStorage` of `http://localhost:5175` (Execute's own UI). Cause: `browser_panel.js` gives each run its own in-memory partition, while Playwright's one CDP context is Electron's default session. `context.cookies()` read the empty default session, `context.addCookies()` (host_browser.js seeding) wrote into it where no run view could see it, and capture read `localStorage` from every page in the context. So in Execute a sign-in never outlived its run and saved sessions were never restored. A real-Electron spike confirmed the page's own CDP `Network` domain reads and writes the partition. Fix: `host_browser.js::pageCookies`/`setPageCookies` (CDP session on a run page) replace `context.cookies()`/`addCookies()` for capture, seeding and the learned-definition cookie check; `_captureState` reads only the sign-in's own pages. Verified on real Electron: cookies captured from run 1's partition, seeded into a fresh run-2 partition, sent by the site on the next load, and none leaked into the default session. Test: `test_session_login_scope.js` models the empty default jar and fails with `context.cookies()`. Follow-up (same day): sessions saved by the broken code were cookieless yet stamped valid for 6 h, so the next live run skipped the check and landed on Google's signed-out page mid-flow. Pre-flight (`browser.js::getCachedBrowser`) now always live-checks a saved session with no cookies, so those files repair themselves with one sign-in. Test: `test_session_auth.js` "a cookieless saved session stamped valid is still live-checked".
+- **Category:** Authentication
+- **Description:** Found while confirming AUTH-20's live run: the saved Google session file held 156 bytes of ciphertext, which decrypts to no cookies.
 - **Complexity:** S
 
 ## DEAD — Tech debt (1 done)

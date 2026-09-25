@@ -15,6 +15,7 @@ const _tmpConxaDir = fs.mkdtempSync(path.join(os.tmpdir(), "conxa-execute-browse
 process.env.CONXA_DIR = _tmpConxaDir;
 
 const cleared = [];
+const downloadHandlers = {}; // partition -> will-download listener
 class FakeWebContents {
   constructor() {
     this.url = "";
@@ -47,7 +48,12 @@ const realLoad = Module._load;
 Module._load = function (request, ...rest) {
   if (request === "electron") {
     return {
-      session: { fromPartition: (p) => ({ clearStorageData: async () => { cleared.push(p); } }) },
+      session: {
+        fromPartition: (p) => ({
+          clearStorageData: async () => { cleared.push(p); },
+          on: (ev, fn) => { if (ev === "will-download") downloadHandlers[p] = fn; },
+        }),
+      },
       WebContentsView: FakeView,
     };
   }
@@ -135,6 +141,32 @@ test("AUTH-6: a tab created with loginKey is described as isLogin; one without i
   assert.strictEqual(last.tabs.find((t) => t.id === loginTabId).isLogin, true);
   const { tabId: probeTabId } = panel.newTab("run-authkey", { label: "verify", focus: false });
   assert.strictEqual(last.tabs.find((t) => t.id === probeTabId).isLogin, false, "a probe tab (no loginKey) is never shown a Done action");
+});
+
+test("EXEC-46: a run's download is saved silently (no Save As dialog) and handed to the runtime by URL", async () => {
+  panel.newView("run-dl");
+  const handler = downloadHandlers["conxa-run-run-dl"];
+  assert.ok(handler, "every run partition gets a will-download handler");
+  let savePath = null;
+  let finish;
+  const item = {
+    getURL: () => "blob:https://github.com/abc",
+    setSavePath: (p) => { savePath = p; },
+    cancel: () => assert.fail("a live run's download must not be cancelled"),
+    once: (ev, fn) => { if (ev === "done") finish = fn; },
+  };
+  handler({}, item);
+  assert.ok(savePath, "a save path is set up front — that is what stops Electron opening its dialog");
+  const dest = path.join(_tmpConxaDir, "runs", "r1", "Dotnet.gitignore");
+  const saving = panel.saveDownload("run-dl", "blob:https://github.com/abc", dest, 2000);
+  fs.writeFileSync(savePath, "## .NET");
+  finish({}, "completed");
+  assert.deepStrictEqual(await saving, { ok: true });
+  assert.strictEqual(fs.readFileSync(dest, "utf8"), "## .NET");
+  await assert.rejects(panel.saveDownload("run-dl", "blob:https://github.com/abc", dest, 200), /no download/,
+    "a download is handed over once, never twice");
+  await panel.runEnd("run-dl");
+  assert.ok(!fs.existsSync(path.dirname(savePath)), "run end removes Execute's copy of the run's downloads");
 });
 
 test("AUTH-6: loginDone writes the file-drop signal for a real login tab, and no-ops otherwise", () => {

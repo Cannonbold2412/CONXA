@@ -109,14 +109,62 @@ function _createTab(run, runId, label, meta, loginKey, background = false) {
   return tabId;
 }
 
+// Downloads. A run's views live in their own partition, so Electron's download manager handles
+// every file — Playwright's download.saveAs() never gets it (it looks in its own artifacts dir),
+// and with no handler Electron pops its native Save As dialog, which blocks the run on a human
+// (EXEC-46). So every run download is saved here silently, and the runtime claims the finished
+// file by URL through the save_download op (saveDownload below).
+function _downloadDir(runId) {
+  return path.join(os.tmpdir(), "conxa-execute-downloads", runId.replace(/[^\w.-]/g, "_"));
+}
+const _hookedPartitions = new Set(); // Electron keeps one session per partition name for the app's life
+function _hookDownloads(runId, partition) {
+  if (_hookedPartitions.has(partition)) return;
+  _hookedPartitions.add(partition);
+  session.fromPartition(partition).on("will-download", (_e, item) => {
+    const run = _runs.get(runId);
+    if (!run) { item.cancel(); return; }
+    const dir = _downloadDir(runId);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, String(run.downloads.length + 1));
+    item.setSavePath(file); // a set path is what stops Electron from asking the user
+    run.downloads.push({
+      url: item.getURL(),
+      done: new Promise((resolve) => item.once("done", (_ev, state) => resolve(state === "completed" ? file : null))),
+    });
+  });
+}
+
+// Control-channel op: "save_download" — hand the finished file for `url` (the first not yet
+// claimed, so a loop downloading the same URL twice gets both) to the runtime at `dest`.
+async function saveDownload(runId, url, dest, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  let entry;
+  for (;;) {
+    const run = _runs.get(runId);
+    entry = run && run.downloads.find((d) => !d.claimed && d.url === url);
+    if (entry || Date.now() > deadline) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!entry) throw new Error(`no download of ${url} in run ${runId}`);
+  entry.claimed = true;
+  const file = await entry.done;
+  if (!file) throw new Error(`download of ${url} did not complete`);
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(file, dest);
+  fs.rmSync(file, { force: true });
+  return { ok: true };
+}
+
 // Control-channel op: "new_view" — first tab of a run. Returns the marker URL the
 // runtime waits for (host_browser.js::_findPageByMarker). `loginKey` (AUTH-6) is set only for an
 // actual sign-in tab, never a judge/prover probe tab — see browser_control.js's op doc.
 function newView(runId, { label, focus, loginKey } = {}) {
   let run = _runs.get(runId);
   if (!run) {
-    run = { partition: _partitionFor(runId), tabs: [], activeTabId: null };
+    run = { partition: _partitionFor(runId), tabs: [], activeTabId: null, downloads: [] };
     _runs.set(runId, run);
+    _hookDownloads(runId, run.partition);
   }
   const tabId = _createTab(run, runId, label, focus ? { focus: true } : undefined, loginKey);
   return { markerUrl: run.tabs.find((t) => t.id === tabId).markerUrl, tabId };
@@ -225,6 +273,7 @@ async function runEnd(runId) {
     // sitting in the partition indefinitely — worth knowing about, not swallowing.
     console.error(`browser_panel: failed to clear storage for run ${runId}`, err);
   }
+  try { fs.rmSync(_downloadDir(runId), { recursive: true, force: true }); } catch (_) {}
   if (_onTabsChanged) _onTabsChanged(runId, []);
 }
 
@@ -240,4 +289,4 @@ function setActiveBounds(runId, tabId, rect) {
   run.activeTabId = tabId;
 }
 
-module.exports = { init, newView, newTab, closeTab, navigate, runEnd, setActiveBounds, loginDone };
+module.exports = { init, newView, newTab, closeTab, navigate, runEnd, setActiveBounds, loginDone, saveDownload };

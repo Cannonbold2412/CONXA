@@ -322,7 +322,10 @@ async function getGroupAuthContext(workspace_id, group, authManager, opts = {}) 
       return;
     }
     const key = _appKey(workspace_id, app);
-    if (sessionPath && _readValidationCache(key, sessionPath)) {
+    // A cookieless saved session never skips the live check: before AUTH-21 Execute saved sign-ins
+    // with 0 cookies yet stamped them valid, and the run then met a signed-out site mid-flow.
+    const hasCookies = Array.isArray(stored.cookies) && stored.cookies.length > 0;
+    if (hasCookies && sessionPath && _readValidationCache(key, sessionPath)) {
       results.push({ app, stored, sessionPath, valid: true, fromCache: true });
       return;
     }
@@ -505,22 +508,26 @@ async function _persistSession(workspace_id, state, authManager, sessionsDir, lo
 // context can't use context.storageState(): for every origin visited by a page that has since
 // closed (the judge's probe tabs, an identity provider's redirect hops) Playwright opens a hidden
 // page to read its localStorage, and Electron's CDP can't create one (host_browser.js header) —
-// it threw, the sign-in was never saved, and the run never started (AUTH-20). Read cookies from
-// the context and localStorage from the pages still open instead.
-// ponytail: localStorage only from still-open pages on host-owned contexts — an app that keeps its
-// login in localStorage of an origin whose page already closed loses it; open a background tab per
-// origin (hostBrowser.openTab) if one ever needs that.
-async function _captureState(context, hostOwned) {
+// it threw, the sign-in was never saved, and the run never started (AUTH-20). And context.cookies()
+// reads Electron's default session, not the run's own partition, so it came back empty (AUTH-21).
+// So: cookies through a CDP session on one of this login's own pages (hostBrowser.pageCookies),
+// localStorage from those same pages — never context.pages(), which also holds other runs' views
+// and Execute's own UI.
+// ponytail: localStorage only from this login's still-open pages — an app that keeps its login in
+// localStorage of an origin whose page already closed loses it; open a background tab per origin
+// (hostBrowser.openTab) if one ever needs that.
+async function _captureState(context, hostOwned, pages = []) {
   if (!hostOwned) return context.storageState();
+  const live = pages.filter((p) => { try { return !p.isClosed(); } catch (_) { return false; } });
+  if (!live.length) throw new Error("no open page of this sign-in left to read it from");
   const origins = new Map();
-  for (const p of context.pages()) {
+  for (const p of live) {
     try {
-      if (p.isClosed()) continue;
       const o = await evalOn(p, pageScripts.originStorage, undefined, 2000);
       if (o && o !== EVAL_TIMED_OUT && o.origin && o.origin !== "null" && o.localStorage.length) origins.set(o.origin, o);
     } catch (_) {}
   }
-  return { cookies: await context.cookies(), origins: [...origins.values()] };
+  return { cookies: await hostBrowser.pageCookies(live[0]), origins: [...origins.values()] };
 }
 
 // ─── Browser sessions (registry in browser_session.js) ─────────────────────────
@@ -733,7 +740,8 @@ async function _gatherDefinitionObservation(page, probeUrl) {
     if (m !== EVAL_TIMED_OUT && Array.isArray(m)) markers = m;
   } catch (_) {}
   let cookieNames = [];
-  try { cookieNames = (await page.context().cookies()).map((c) => c.name); } catch (_) {}
+  // The page's own cookie jar — under Execute, context.cookies() reads the wrong one (AUTH-21).
+  try { cookieNames = (await hostBrowser.pageCookies(page)).map((c) => c.name); } catch (_) {}
 
   return {
     final_url: page.url(),
@@ -1204,7 +1212,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
       await _waitForTicketsCalm(loginCtx, landedPage);
       const landed = landedPage();
       try { if (landed) lastUrl = landed.url(); } catch (_) {}
-      try { lastState = await _captureState(loginCtx, hostOwned); } catch (e) {
+      try { lastState = await _captureState(loginCtx, hostOwned, [loginPage]); } catch (e) {
         if (logFn) logFn("warn", "login_capture_failed", { key: workspace_id, error: e.message });
         return;
       }
@@ -1277,7 +1285,7 @@ async function _waitForInteractiveAuth(workspace_id, opened, opts = {}) {
 
   // Last-resort fallback: try once more in case context is still accessible.
   if (lastState === null) {
-    try { lastState = await _captureState(loginCtx, hostOwned); } catch (_) {}
+    try { lastState = await _captureState(loginCtx, hostOwned, [loginPage]); } catch (_) {}
   }
 
   await _closeLoginBrowser();
@@ -1392,7 +1400,7 @@ async function _waitForSessionLogin(key, opened, opts = {}) {
     await _waitForTicketsCalm(ctx, landedPage);
     const page = landedPage();
     landedUrl = page ? page.url() : "";
-    try { state = await _captureState(ctx, session.hostOwned); } catch (e) {
+    try { state = await _captureState(ctx, session.hostOwned, myLivePages()); } catch (e) {
       if (logFn) logFn("warn", "login_capture_failed", { key, error: e.message });
     }
     if (state) {

@@ -2,6 +2,15 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Workflows that download a file no longer freeze in the Execute app — 2026-09-25
+When a workflow downloaded a file inside the Execute app, a Windows "Save As" box popped up and the workflow sat waiting for someone to click Save. The app now saves the file quietly on its own and passes it straight to the next step, so a download-then-upload workflow runs through without anyone touching it.
+
+## Empty saved sign-ins no longer pass as "signed in" — 2026-09-25
+Sign-ins saved by the earlier broken version were empty, but the app had marked them as checked and trusted them for six hours. The workflow then reached the site signed out and failed partway through. An empty saved sign-in is now always checked again, so you're asked to sign in once at the start instead.
+
+## Sign-ins in the Execute app now carry over to your next run — 2026-09-25
+Signing in inside the Execute app worked for the run you were doing, but the app saved an empty copy of your sign-in, so the next run would have asked you to sign in all over again. Each run keeps its browser data in its own private drawer, and the app was reading from, and restoring into, the wrong drawer. It now uses the run's own drawer both ways, so you sign in once and later runs stay signed in. It also stopped accidentally saving a bit of the Execute app's own screen data alongside your sign-in.
+
 ## Fixed signing in successfully but the workflow never starting — 2026-09-25
 In the Execute app, you could finish signing in to Google and GitHub, watch the sign-in window close, and then nothing would happen, and saying "I've already signed in" just got you asked to sign in again. The app was failing to save your sign-in, because of a limit in the app's built-in browser that it didn't account for, and it hid that failure. It now saves your sign-in in a way that works inside the app, so the workflow starts on its own right after you sign in. If saving ever fails again, it is now recorded instead of silently asking you to sign in a second time.
 

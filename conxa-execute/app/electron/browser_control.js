@@ -13,6 +13,8 @@
  *                       or a sign-in tab of a session that already has a panel open
  *   close_view { runId, tabId }   -> { ok: true }           destroy ONE view (a finished login)
  *   run_end    { runId }          -> { ok: true }           destroy the run's views + partition
+ *   save_download { runId, url, dest, timeoutMs? } -> { ok: true }  copy the run's finished download
+ *                       of `url` to `dest` (Execute saves run downloads itself — browser_panel.js)
  * `label` names the tab in the panel's strip (a login tab carries its app name). `loginKey`
  * (AUTH-6) marks a tab as an actual sign-in tab — never set on a judge/prover probe tab — so the
  * renderer can show an "I'm done signing in" action on it; the raw key never reaches the renderer,
@@ -63,7 +65,7 @@ function start() {
   });
 }
 
-async function _dispatch({ op, runId, tabId, label, focus, loginKey }) {
+async function _dispatch({ op, runId, tabId, label, focus, loginKey, url, dest, timeoutMs }) {
   if (!runId) throw new Error("missing runId");
   switch (op) {
     case "new_view":   return panel.newView(runId, { label, focus, loginKey });
@@ -73,6 +75,9 @@ async function _dispatch({ op, runId, tabId, label, focus, loginKey }) {
       await panel.closeTab(runId, tabId);
       return { ok: true };
     case "run_end":    await panel.runEnd(runId); return { ok: true };
+    case "save_download":
+      if (!url || !dest) throw new Error("missing url or dest");
+      return panel.saveDownload(runId, url, dest, timeoutMs);
     default: throw new Error(`unknown op: ${op}`);
   }
 }

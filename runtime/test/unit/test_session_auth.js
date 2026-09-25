@@ -125,6 +125,20 @@ async function run() {
     releaseCachedBrowser(r.leaseKey);
   });
 
+  await check("a cookieless saved session stamped valid is still live-checked, and a sign-in is asked for", async () => {
+    await reset();
+    const ws = workspace("cookieless");
+    storeValidSession(ws, "a", "localhost");
+    // What Execute saved before AUTH-21: no cookies, only its own UI's localStorage — yet stamped valid.
+    const file = path.join(SESSIONS(), `${ws}__b_raw_state.json`);
+    fs.writeFileSync(file, JSON.stringify({ cookies: [], origins: [{ origin: "http://localhost:5175", localStorage: [{ name: "x", value: "1" }] }] }));
+    browser._writeValidationCache(`${ws}__b`, file);
+    const r = await getCachedBrowser(ws, null, opts(ws));
+    assert.strictEqual(r.authPending, true, "an empty saved session must not pass as signed in");
+    assert.deepStrictEqual(r.apps.map((x) => x.id), ["b"]);
+    await reset();
+  });
+
   await check("one app valid, one expired -> the valid one is untouched, exactly one login tab opens, all in ONE Chromium", async () => {
     await reset();
     const ws = workspace("partial");

@@ -45,30 +45,61 @@ function controlUrl() {
 // POST {op, ...body} to Execute's control channel and return the parsed JSON reply.
 // Loopback-only, short timeout — a wedged Execute must fail fast into the caller's
 // fallback rather than hang the run.
-async function _controlPost(op, body) {
+async function _controlPost(op, body, timeoutMs = 5000) {
   const url = controlUrl();
   if (!url) throw new Error("host_browser: CONXA_HOST_CONTROL_URL not set");
   const { body: raw } = await httpClient.postForBuffer(url, {
     json: { op, ...body },
-    timeoutMs: 5000,
+    timeoutMs,
   });
   return JSON.parse(raw.toString("utf8"));
 }
 
-// Seed a Playwright storageState into Execute's existing (single) browser context.
-// This is the manual equivalent of what chromium.launch()'s
-// browser.newContext({ storageState }) does in one call — split into its two parts
-// because Electron's context can't be created fresh, only reused:
-//   - cookies: context.addCookies() works fine over CDP against Electron (confirmed
-//     by the Stage-0 spike) as long as each cookie carries a real domain, not a
-//     file:// url.
+// A download in a host-owned run is saved by Execute, not Playwright: the run's views live in their
+// own Electron partition, whose download manager never writes where download.saveAs() looks
+// (confirmed on real Electron — ENOENT). Execute hands the finished file over instead (EXEC-46).
+async function saveDownload({ runId, download, dest, timeoutMs }) {
+  await _controlPost("save_download", { runId, url: download.url(), dest, timeoutMs }, timeoutMs + 5000);
+}
+
+// Cookies of the storage a PAGE actually uses, in Playwright's cookie shape. Execute gives each
+// run its own in-memory Electron partition (browser_panel.js), but Playwright's one CDP context
+// is Electron's DEFAULT session: context.cookies() reads it (always empty for a run) and
+// context.addCookies() writes into it (never seen by a run's views) — confirmed against real
+// Electron (AUTH-21). The Network domain of a CDP session on the page itself goes through that
+// page's own partition, so both directions go through here.
+async function pageCookies(page) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { cookies } = await cdp.send("Network.getAllCookies");
+    return cookies.map((c) => ({
+      name: c.name, value: c.value, domain: c.domain, path: c.path,
+      expires: c.session ? -1 : c.expires, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite || "Lax",
+    }));
+  } finally { await cdp.detach().catch(() => {}); }
+}
+
+async function setPageCookies(page, cookies) {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Network.setCookies", {
+      cookies: cookies.map(({ expires, ...c }) => (typeof expires === "number" && expires > 0 ? { ...c, expires } : c)),
+    });
+  } finally { await cdp.detach().catch(() => {}); }
+}
+
+// Seed a Playwright storageState into the run's view — the manual equivalent of what
+// chromium.launch()'s browser.newContext({ storageState }) does in one call, split into its two
+// parts because Electron's context can't be created fresh, only reused:
+//   - cookies: through the page's own CDP session (setPageCookies — not context.addCookies(),
+//     which lands in Electron's default session instead of the run's partition).
 //   - localStorage: Playwright has no CDP call for this; the only way is to visit
 //     each origin and set it from the page itself, same as Playwright's own
 //     storageState-loading code does internally when it owns the context.
 async function _seedStorageState(context, page, storageState) {
   if (!storageState) return;
   if (Array.isArray(storageState.cookies) && storageState.cookies.length) {
-    await context.addCookies(storageState.cookies);
+    await setPageCookies(page, storageState.cookies);
   }
   const origins = Array.isArray(storageState.origins) ? storageState.origins : [];
   for (const o of origins) {
@@ -152,4 +183,4 @@ function release({ runId, tabId }) {
   // idle cleanup (or app restart) reclaims it; never worth failing a run over.
 }
 
-module.exports = { endpoint, controlUrl, acquire, newTab, openTab, release };
+module.exports = { endpoint, controlUrl, acquire, newTab, openTab, release, pageCookies, setPageCookies, saveDownload };
