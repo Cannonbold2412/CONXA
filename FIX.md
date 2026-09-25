@@ -36,3 +36,7 @@ When the assistant listed what a task needs, the lines showed up with raw dashes
 **Fixed "rebuild the skill package" wrongly showing up after a normal reconnect — 2026-09-25**
 Yesterday's fix that tells you to rebuild when an app's sign-in setup genuinely changed had a side effect: every time you simply reconnected an app that hadn't changed at all, the system stamped a "just learned this" timestamp onto its notes and then saw that timestamp as a change — so it demanded a rebuild every single time, like a librarian re-stamping a book "new" every time it's returned and then insisting it must be re-catalogued. It now compares what it actually learned about the sign-in, not when it learned it, and keeps the existing notes untouched when a reconnect confirms nothing changed. Reconnecting an app and testing again now works without an unnecessary rebuild in between. If you're seeing this message right now, rebuild the skill package one more time to clear it out — after that, it shouldn't reappear unless the sign-in setup genuinely changes.
 — 2026-09-25
+
+**Fixed the online service failing to start after a deploy — 2026-09-25**
+The cloud service crashed on launch because it was missing one of the two database connectors its database address asked for. Like a plug that did not fit the socket, nothing could talk to the database. We added the missing connector so the service starts normally again.
+— 2026-09-25

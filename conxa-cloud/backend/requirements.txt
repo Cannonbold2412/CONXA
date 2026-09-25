@@ -19,3 +19,5 @@ cryptography>=42.0.0
 
 # Postgres driver (db.py uses SQLAlchemy + psycopg2 in production)
 psycopg2-binary>=2.9.0
+# Also needed when SKILL_DATABASE_URL uses the postgresql+psycopg:// scheme
+psycopg[binary]>=3.1
