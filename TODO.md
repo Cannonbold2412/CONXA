@@ -45,8 +45,8 @@ Counts are of still-open items only. Resolved items live in [`Done.md`](Done.md)
 | P1 — Blocking / Foundational | 3 |
 | P2 — High Value, Do Soon (incl. Discovered Items) | 36 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 20 |
-| P4 — Low Urgency, Opportunistic | 34 |
-| **Total** | **108** |
+| P4 — Low Urgency, Opportunistic | 38 |
+| **Total** | **112** |
 
 ---
 
@@ -1459,7 +1459,7 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 
 ---
 
-## P4 — Low Urgency, Opportunistic (34 remaining)
+## P4 — Low Urgency, Opportunistic (38 remaining)
 
 ### AUTH-10 — A same-host app whose success page is public could pass the signed-out-baseline check while actually signed out
 - **Category:** Execution & Recovery / Authentication
@@ -1486,6 +1486,30 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 - **Description:** Both real-server e2e files (run by hand — `npm test` covers only `test/unit`) fail 4 checks each on clean HEAD (verified 2026-09-25 in a throwaway worktree). Their fixtures assume the pre-AUTH-9 detection ("an empty storage state counts as signed-in when the app lands on a non-login URL", per `integration_host_lock.js`'s own comment); the local fixture server answers every path with the same page, so the genuine signed-out baseline equals the probe and nothing ever validates. Make a pre-seeded session distinguishable from the cookie-less baseline (e.g. the server redirects `/login` → `/home` only when a session cookie is present, and the fixture seeds that cookie) or give the fixture apps a learned `auth_definition`. `integration_group_auth_error_surfacing.js` is unaffected.
 - **Why required:** they guard host-lock keying and the detached sign-in flow, which are currently untested.
 - **Complexity:** S–M.
+
+### RT-5 — Sync/telemetry keys skill-pack files by the installer's on-disk folder name, not `workspace_id`
+- **Category:** Runtime / Testing & Cleanup
+- **Description:** Found during a 2026-09-25 legacy/error-handling audit. `runtime/app/sync.js`, `sync_errors.js`, `installed_versions.js`, and `durable_context.js` all use the skill-packs directory name as if it were the workspace id. That folder name is `workspace_dir_slug(installer_name)` (the company domain the installer was built with — `installer_builder.py`'s deliberate, cosmetic-only exception to the `workspace_id`-is-the-identity-key rule, see CLAUDE.md Key Invariants) and only falls back to the real `workspace_id` slug when no domain was given. The real cloud workspace id lives at `pack.published.workspace_id` / `pack.tracking.workspace_id`. When a domain was set, `sync_errors.collectSyncErrors()`'s per-workspace keys, `installed_versions`, and the generated SKILL.md's `execute_skill` hint all carry the domain slug instead.
+- **Why required:** cosmetic today (the folder name still round-trips correctly for sync/tracking, which use the bearer token, not the folder name, to authorize), but any future cloud-side lookup by folder-name-as-workspace-id would silently resolve the wrong workspace.
+- **Complexity:** S — read `pack.published.workspace_id` (falling back to the folder name only if absent) at the handful of call sites instead of the folder name directly.
+
+### RT-6 — `file_lock.js`'s claim phase is check-then-write, not atomic (no `O_EXCL`)
+- **Category:** Runtime
+- **Description:** Found during the same 2026-09-25 audit. `acquireFileLocks`'s claim phase (`_writeAll`) reads every lock file to confirm it's free, then writes all of them — two processes can both pass the free-check in the same window and both believe they hold the platform. The module's own `ponytail:`-style comment already flags this as a known, deliberate simplification (defense-in-depth behind the in-process `host_lock.js` map, not the sole guard).
+- **Why required:** low severity today (the in-process map already prevents same-engine double-acquire; this only matters across two separate engine processes racing within the same poll window), but worth a real fix before cross-process concurrency is relied on for anything higher-stakes.
+- **Complexity:** S/M — write with `wx` (fail-if-exists) instead of `w`, treating an `EEXIST` as "someone else just claimed it" rather than success.
+
+### RT-7 — `canonical_json.js` doesn't provably match the cloud's Python `json.dumps(sort_keys=True)`
+- **Category:** Runtime
+- **Description:** Found during the same 2026-09-25 audit. The runtime's `canonicalJSON` (used for both telemetry evidence-chain hashing and manifest-signature verification) has no cross-language test vector against the cloud's Python signer. Known JS/Python divergences that could silently break signature verification fleet-wide: an integral float serializes as `50.0` in Python vs `50` in JS, exponent notation differs (`1e-07` vs `1e-7`), and non-BMP-character key sort order differs (Python compares by code point, JS string comparison is UTF-16-code-unit-based).
+- **Why required:** a single float slipping into a signed manifest's `rollout`/`minimum_versions` from an admin form would make every client's signature check fail silently (see `manifest_manager.js`'s already-fixed string-percentage bug, this same audit, for how an unexpected type gets into that payload).
+- **Complexity:** S — add a shared cross-language test vector (same input dict, assert identical output string in both `canonical_json.js` and the cloud's Python signer), and coerce numeric manifest fields to `int` server-side before signing as a belt-and-suspenders fix.
+
+### RT-8 — Remaining items from the 2026-09-25 runtime legacy/error-handling audit
+- **Category:** Runtime / Testing & Cleanup
+- **Description:** A full audit of `runtime/` (this session, see `FIX.md` 2026-09-25 "Cleaned up old, unused code…") found substantially more silent-fallback and dead-legacy-shim instances than fit in one session's scope. Fixed: the highest-risk bugs (retry budget, `.first()`-of-many-matches clicking, check/assert step evaluation, closed-tab rebinding, update-gate/file-lock fail-open, scheduler input-decrypt/stale-command handling, telemetry spill, a missing `errors.js` shaping helper) plus dead-code removal in `locators.js`/`resolution.js`/`recovery.js`/`resolve_adapter.js`/`assertions.js`, plus the compiler-side `validation.assertions` gap (RT-5/RT-6/RT-7 above are the three follow-ups that got their own items). Still open, not yet fixed: `browser.js`'s corrupt-pack-fallback wording and plaintext-session-on-encryption-failure path, `skill_loader.js`'s silent corrupt-manifest drops, `policy_gate.js`'s unlogged signature-verification failures, `bootstrap.js`/`min_host_gate.js`'s missing per-reason messages, `host/cli_sync.js`'s always-exit-0 behavior, `version_manager.js`'s real-directory-at-`current` handling, `server.js`'s six duplicated early-return teardown blocks and four duplicated exit-teardown blocks (one already missing an `await`, per its own comment), dead legacy branches in `handlers.js` (`upload_intent`, `recovery.alternatives`) and `server.js` (the old `AppData\Local\Conxa\chromium` path, `input.json`, `published.workspace_id`/`tracking.company_id`), and `browser.js`'s unused `CONXA_LOGIN_SETTLE_MS`/`_successPrefix`/`_loginEntryUrl`/non-group `captureReAuth` leftovers.
+- **Why required:** none of these are known-exploitable or currently reported as breaking a real run (unlike the ones fixed this session) — they're maintainability debt and lower-probability silent-fallback risk, not active bugs.
+- **Complexity:** M — mostly mechanical per-file cleanup following the same pattern already established this session (see the four `fix(runtime)`/`refactor(runtime)`/`fix(compiler)` commits on this session's branch for the exact shape of each fix category).
 
 ### AUTH-11 — `docs/artifacts/login-desk.html` is stale after AUTH-9's baseline-compare redesign
 - **Category:** Documentation
