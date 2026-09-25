@@ -35,3 +35,13 @@ test("recordLaunch counts per staged version and clears when nothing is staged",
   assert.strictEqual(recordLaunch(dir, null), 0);
   assert.strictEqual(fs.existsSync(path.join(dir, "update-gate.json")), false);
 });
+
+test("recordLaunch disarms (never gates) rather than locking a customer out forever when the strike file can't be written", () => {
+  // A FILE (not a directory) at the data-dir path makes fs.mkdirSync/writeFileSync fail —
+  // simulates an unwritable/read-only data dir without touching real permissions.
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "update-gate-fail-"));
+  const blockedDataDir = path.join(parent, "not-a-dir");
+  fs.writeFileSync(blockedDataDir, "");
+  const strikes = recordLaunch(blockedDataDir, "1.1.0");
+  assert.strictEqual(shouldGate({ ...base, strikes }), false);
+});

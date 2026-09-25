@@ -101,13 +101,26 @@ function _daemonStatus(dataDir) {
   return { running: true, pid: rec.pid };
 }
 
+// Returns false — and removes what it just wrote — when no daemon is actually running to
+// consume it. A command file left behind for no live daemon doesn't just silently do nothing:
+// the NEXT daemon that starts (hours or days later) picks it up and fires it unexpectedly —
+// e.g. a stale run_now suddenly executing a schedule the caller had long forgotten about. This
+// used to also count a merely-existing (possibly stale/dead) daemonLockFile as "a daemon is
+// around", which is exactly the case that leaves a command stranded.
 async function _sendCommand(dataDir, cmd) {
-  const { commandsDir, daemonLockFile } = _paths(dataDir);
+  if (!_daemonStatus(dataDir).running) return false;
+  const { commandsDir } = _paths(dataDir);
   fs.mkdirSync(commandsDir, { recursive: true });
   const name = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}.cmd`;
-  fs.writeFileSync(path.join(commandsDir, name), JSON.stringify(cmd));
-  // Only meaningful when a daemon is around to consume it.
-  return _daemonStatus(dataDir).running || !!_readJsonSafe(daemonLockFile);
+  const file = path.join(commandsDir, name);
+  fs.writeFileSync(file, JSON.stringify(cmd));
+  // Re-check after the write: a daemon that died in the gap between the check above and the
+  // write would otherwise leave this file for whatever starts next.
+  if (!_daemonStatus(dataDir).running) {
+    try { fs.unlinkSync(file); } catch (_) {}
+    return false;
+  }
+  return true;
 }
 
 // ─── schedule commands ────────────────────────────────────────────────────────
@@ -268,7 +281,8 @@ async function _cmdStop() {
 
 async function _cmdPauseResume(type) {
   const dataDir = process.env.CONXA_DATA_DIR || require("./host_bridge").env().dataDir;
-  await _sendCommand(dataDir, { type });
+  const sent = await _sendCommand(dataDir, { type });
+  if (!sent) { process.stderr.write("error: scheduler is not running — start it with: runner start\n"); return 1; }
   process.stdout.write(type === "pause" ? "Scheduler paused (running jobs finish; nothing new starts).\n" : "Scheduler resumed.\n");
   return 0;
 }
@@ -278,7 +292,8 @@ async function _cmdRunNow(id) {
   const rows = store.listMeta();
   if (!rows.find((r) => r.id === id)) { process.stderr.write(`error: no such schedule: ${id}\n`); return 1; }
   const dataDir = process.env.CONXA_DATA_DIR || require("./host_bridge").env().dataDir;
-  await _sendCommand(dataDir, { type: "run_now", schedule_id: id });
+  const sent = await _sendCommand(dataDir, { type: "run_now", schedule_id: id });
+  if (!sent) { process.stderr.write("error: scheduler is not running — start it with: runner start\n"); return 1; }
   process.stdout.write(`Run requested for ${id} — watch progress with: runner status\n`);
   return 0;
 }

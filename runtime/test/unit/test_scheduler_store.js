@@ -120,3 +120,34 @@ test("writes leave no .tmp litter behind", async () => {
   const files = fs.readdirSync(path.join(dir, "scheduler", "schedules"));
   assert.ok(files.every((f) => !f.endsWith(".tmp")), `found tmp files: ${files}`);
 });
+
+test("a schedule whose inputs exist but can't decrypt (lost/rotated key) is flagged, not silently emptied", async () => {
+  const dir = tmpDataDir();
+  const writerStore = makeStore(dir);
+  await writerStore.create({ slug: "s", cron: "0 6 * * *", inputs: { api_key: "secret" } });
+
+  // A different key can never decrypt what the first one encrypted — simulates a keychain
+  // entry that changed/was lost between writing the schedule and firing it.
+  const readerStore = createStore({
+    dataDir: dir,
+    getSessionKeyFn: async () => require("crypto").randomBytes(32).toString("hex"),
+    log: () => {},
+  });
+
+  const [row] = await readerStore.list();
+  assert.strictEqual(row.inputs_decrypt_failed, true);
+  assert.deepStrictEqual(row.inputs, {});
+
+  const got = await readerStore.get(row.id);
+  assert.strictEqual(got.inputs_decrypt_failed, true);
+  assert.deepStrictEqual(got.inputs, {});
+});
+
+test("a schedule with no inputs configured never carries inputs_decrypt_failed", async () => {
+  const dir = tmpDataDir();
+  const store = makeStore(dir);
+  await store.create({ slug: "s", cron: "0 6 * * *" });
+  const [row] = await store.list();
+  assert.strictEqual(row.inputs_decrypt_failed, false);
+  assert.deepStrictEqual(row.inputs, {});
+});

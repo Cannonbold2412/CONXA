@@ -124,12 +124,15 @@ async function acquireFileLocks(hosts, holderId, opts = {}) {
     await sleep(o.pollMs);
   }
 
-  // Claim phase. If the disk betrays us halfway, undo what we wrote and report.
+  // Claim phase. If the disk betrays us halfway, undo what we wrote and report — `fsError: true`
+  // is how the caller (host_lock.js) tells this apart from real cross-process contention: this
+  // module is documented to fail OPEN on a filesystem problem (degrade to in-process-only, never
+  // refuse the run), not report it as "another process holds the lock".
   let written;
   try {
     written = _writeAll(o.locksDir, clean, holderId, () => new Date().toISOString());
   } catch (e) {
-    return { ok: false, host: "", blocker: { error: e.message } };
+    return { ok: false, fsError: true, host: "", blocker: { error: e.message } };
   }
 
   // Heartbeat: one interval refreshes every file we hold, so staleness never
