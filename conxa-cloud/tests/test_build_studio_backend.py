@@ -717,8 +717,9 @@ def test_finish_group_app_auth_saves_a_definition_that_passes_self_test(backend,
         reached_wait_url = False
         browser_open = True
 
-        async def learn_auth(self, login_url):
+        async def learn_auth(self, login_url, existing_definition):
             assert login_url == "https://example.test/login"
+            assert existing_definition is None  # this app had no prior definition (first Connect)
             return learned, ""
 
         async def stop(self):
@@ -748,6 +749,115 @@ def test_finish_group_app_auth_saves_a_definition_that_passes_self_test(backend,
     assert saved.apps[0].auth_definition == learned
 
 
+def test_finish_group_app_auth_reconnect_keeps_still_valid_definition_unchanged(backend, monkeypatch, tmp_path):
+    """AUTH-15: Reconnecting to a site whose sign-in setup hasn't changed must not rewrite its
+    auth_definition to a new (but semantically identical) object — that's what made
+    _sign_in_setup_drift wrongly demand a rebuild after a plain session refresh."""
+    b, _out = backend
+    globals_ = b.cmd_finish_group_app_auth.__globals__
+
+    from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app, set_group_app_auth_definition, get_group
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "")
+    app_id = group.apps[0].id
+    existing = {"version": 1, "probe_url": "https://example.test/login", "signed_out": {}, "signed_in": {}, "session_keys": []}
+    set_group_app_auth_definition(group.id, app_id, existing)
+    auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
+
+    class FakeSession:
+        reached_wait_url = False
+        browser_open = True
+
+        async def learn_auth(self, login_url, existing_definition):
+            assert login_url == "https://example.test/login"
+            assert existing_definition == existing
+            return existing_definition, ""  # site unchanged -> same object returned
+
+        async def stop(self):
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(
+                json.dumps({"cookies": [{"name": "session", "value": "def"}], "origins": []}),
+                encoding="utf-8",
+            )
+
+    class FakeRegistry:
+        def get(self, session_id: str):
+            return FakeSession() if session_id == "sess-1" else None
+
+        def pop(self, session_id: str):
+            return None
+
+    monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
+
+    result = b.cmd_finish_group_app_auth(
+        {"session_id": "sess-1", "group_id": group.id, "app_id": app_id},
+        "rid",
+    )
+
+    assert result["confirmed"] is True
+    assert result["auth"]["apps"][0]["detect_warning"] == ""
+    saved = get_group(group.id)
+    assert saved.apps[0].auth_definition == existing
+
+
+def test_finish_group_app_auth_hand_closed_leaves_existing_definition_untouched(backend, monkeypatch, tmp_path):
+    """A browser closed by hand (not Done) skips learning entirely — nothing was observed, so it
+    must not wipe a previously-verified definition to None (that was the other half of AUTH-15's
+    false-drift bug: any re-login that didn't go through Done also looked like a setup change)."""
+    b, _out = backend
+    globals_ = b.cmd_finish_group_app_auth.__globals__
+
+    from conxa_core.config import settings
+    from conxa_core.storage.group_store import create_group, add_app, set_group_app_auth_definition, get_group
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", "")
+
+    group = create_group("Sales")
+    group = add_app(group.id, "Example", "https://example.test/login", "https://example.test/dashboard")
+    app_id = group.apps[0].id
+    existing = {"version": 1, "probe_url": "https://example.test/login", "signed_out": {}, "signed_in": {}, "session_keys": []}
+    set_group_app_auth_definition(group.id, app_id, existing)
+    auth_path = tmp_path / "groups" / group.id / "auth" / f"{app_id}.json"
+
+    class FakeSession:
+        reached_wait_url = False
+        browser_open = False  # closed by hand -> no learn_auth attempt
+
+        async def learn_auth(self, login_url, existing_definition):
+            raise AssertionError("browser_open=False must skip learning entirely")
+
+        async def stop(self):
+            auth_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_path.write_text(
+                json.dumps({"cookies": [{"name": "session", "value": "abc"}], "origins": []}),
+                encoding="utf-8",
+            )
+
+    class FakeRegistry:
+        def get(self, session_id: str):
+            return FakeSession() if session_id == "sess-1" else None
+
+        def pop(self, session_id: str):
+            return None
+
+    monkeypatch.setitem(globals_, "_recorder_registry", FakeRegistry())
+
+    result = b.cmd_finish_group_app_auth(
+        {"session_id": "sess-1", "group_id": group.id, "app_id": app_id},
+        "rid",
+    )
+
+    assert result["confirmed"] is True
+    saved = get_group(group.id)
+    assert saved.apps[0].auth_definition == existing
+
+
 def test_finish_group_app_auth_keeps_window_open_when_self_test_fails(backend, monkeypatch, tmp_path):
     """A failed self-test is NOT an error — the window stays open (stop() never runs) so the
     user can keep signing in and click Done again, per spec: only Done ends an auth session."""
@@ -770,7 +880,7 @@ def test_finish_group_app_auth_keeps_window_open_when_self_test_fails(backend, m
         reached_wait_url = False
         browser_open = True
 
-        async def learn_auth(self, login_url):
+        async def learn_auth(self, login_url, existing_definition):
             return None, "A signed-out browser also read as signed in."
 
         async def stop(self):
@@ -815,7 +925,7 @@ def test_finish_group_app_auth_force_skips_learning_and_saves_with_no_definition
         reached_wait_url = False
         browser_open = True
 
-        async def learn_auth(self, login_url):
+        async def learn_auth(self, login_url, existing_definition):
             raise AssertionError("force=true must skip learning entirely")
 
         async def stop(self):

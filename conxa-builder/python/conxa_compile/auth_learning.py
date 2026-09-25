@@ -27,7 +27,6 @@ run at Connect time, in Studio.
 from __future__ import annotations
 
 import re
-import time
 from urllib.parse import urlsplit
 
 # ── Path templating (mirrors login_signals.js::templatePath) ───────────────────────────────────
@@ -217,7 +216,6 @@ def learn(live_obs: dict, out_obs: dict, journey_hosts: list[str] | None = None,
 
     return {
         "version": 1,
-        "learned_at": time.time(),
         "probe_url": probe_url,
         "signed_out": {
             "final_path": out_path if out_path and out_path != live_path else "",

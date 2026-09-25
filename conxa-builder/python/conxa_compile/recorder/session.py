@@ -665,7 +665,7 @@ class RecordingSession:
         except Exception:  # noqa: BLE001
             return None
 
-    def _perform_learn_auth_sync(self, login_url: str) -> tuple[dict | None, str]:
+    def _perform_learn_auth_sync(self, login_url: str, existing: dict | None = None) -> tuple[dict | None, str]:
         """Runs on the recorder's OWN thread (called from the pump loop — see the
         _learn_auth_pending check above) because it touches self._context, which only that
         thread may touch. See learn_auth() below for the public, cross-thread-safe entry point.
@@ -674,7 +674,14 @@ class RecordingSession:
         already keys off, see runtime/app/browser.js::_loginEntryUrl) three ways — LIVE (a new
         tab in the just-authenticated context), OUT (a fresh, cookie-less context) and RELOAD (a
         fresh context restored from the just-saved session) — and only returns a definition that
-        passes auth_learning.self_test. See auth_learning.py's module docstring for why."""
+        passes auth_learning.self_test. See auth_learning.py's module docstring for why.
+
+        `existing` is the app's currently-saved definition (Reconnect, not a first-time Connect).
+        If it still passes self_test against these three fresh observations, it's returned
+        UNCHANGED rather than replaced by a freshly-learned one: the site's sign-in setup hasn't
+        actually changed just because the session was refreshed, and a byte-identical definition
+        keeps the built pack's `_sign_in_setup_drift` check from firing a false "rebuild" demand
+        (AUTH-15) on plain re-logins."""
         if self._context is None or not self.browser_open:
             return None, "The login window closed before this could be confirmed."
 
@@ -701,6 +708,9 @@ class RecordingSession:
         if reload_obs is None:
             return None, "Couldn't confirm the saved session on its own."
 
+        if existing and auth_learning.self_test(existing, live_obs, out_obs, reload_obs)[0]:
+            return existing, ""  # site's setup hasn't changed — keep it byte-identical
+
         definition = auth_learning.learn(
             live_obs, out_obs, journey_hosts=list(self.journey_hosts), probe_url=login_url
         )
@@ -709,16 +719,20 @@ class RecordingSession:
             return None, reason
         return definition, ""
 
-    async def learn_auth(self, login_url: str) -> tuple[dict | None, str]:
+    async def learn_auth(self, login_url: str, existing: dict | None = None) -> tuple[dict | None, str]:
         """Cross-thread entry point for cmd_finish_group_app_auth (handlers/groups.py), called
         from the Backend's own asyncio loop while the login browser is still open — same
         request/poll bridge start()/stop() use to reach across into the recorder thread. Returns
         (definition, "") on success, or (None, human-readable reason) when the self-test failed
-        or the browser was in no state to check."""
+        or the browser was in no state to check.
+
+        `existing` is the app's currently-saved definition, passed through on a Reconnect so a
+        still-valid definition comes back unchanged instead of a freshly re-learned one — see
+        _perform_learn_auth_sync's docstring."""
         if self._context is None or not self.browser_open:
             return None, "The login window closed before this could be confirmed."
         self._learn_auth_done.clear()
-        self._learn_auth_pending = {"login_url": login_url}
+        self._learn_auth_pending = {"login_url": login_url, "existing": existing}
         while not self._learn_auth_done.is_set():
             await asyncio.sleep(0.05)
         self._learn_auth_pending = None
@@ -2318,8 +2332,9 @@ class RecordingSession:
                 # docstring for why this can only run here, on the recorder's own thread.
                 if self._learn_auth_pending is not None and not self._learn_auth_done.is_set():
                     login_url = self._learn_auth_pending.get("login_url", "")
+                    existing = self._learn_auth_pending.get("existing")
                     try:
-                        self._learn_auth_result = self._perform_learn_auth_sync(login_url)
+                        self._learn_auth_result = self._perform_learn_auth_sync(login_url, existing)
                     except Exception as exc:  # noqa: BLE001
                         self._learn_auth_result = (None, f"Couldn't learn sign-in signals: {exc}")
                     finally:

@@ -78,6 +78,27 @@ def test_learn_keeps_only_signals_that_differ_between_live_and_out():
     assert ok
 
 
+def test_learn_output_has_no_timestamp_and_is_deterministic():
+    """AUTH-15: a definition is setup, not a session — it must be a pure function of the three
+    observations. A `learned_at` field used to make every Reconnect produce a "different"
+    definition even against an identical site, which _sign_in_setup_drift then read as the
+    group's sign-in setup having changed and refused Run Test until a needless rebuild."""
+    live = _obs(
+        "https://app.acme.com/home",
+        responses=[{"method": "GET", "path": "/api/me", "status": 200}],
+        cookie_names=["_app_session"],
+    )
+    out = _obs(
+        "https://app.acme.com/login",
+        password_box=True,
+        responses=[{"method": "GET", "path": "/api/me", "status": 401}],
+        cookie_names=[],
+    )
+    definition = learn(live, out, probe_url="https://app.acme.com/login")
+    assert "learned_at" not in definition
+    assert learn(live, out, probe_url="https://app.acme.com/login") == definition
+
+
 def test_learn_drops_personal_looking_marker_names():
     live = _obs("https://app.acme.com/home", cookie_names=["_app_session"])
     out = _obs(

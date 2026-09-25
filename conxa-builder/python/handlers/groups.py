@@ -411,14 +411,17 @@ class GroupsMixin:
 
         P0 (Application Authentication Recording): while the browser is still open, this first
         tries to LEARN a structured auth definition from the just-completed sign-in (see
-        conxa_compile.auth_learning's module docstring) and self-tests it. A definition that
-        fails the self-test does NOT end the session — the login window stays open and the
+        conxa_compile.auth_learning's module docstring) and self-tests it, passing the app's
+        currently-saved definition through so a Reconnect that re-verifies as still valid keeps
+        it byte-identical instead of overwriting it with a freshly re-learned one (AUTH-15 — a
+        pure session refresh must never look like the site's sign-in setup changed). A definition
+        that fails the self-test does NOT end the session — the login window stays open and the
         renderer shows why, so the user can keep signing in and click Done again (spec §3: only
         the user's own Done ends this, never an automatic detection). Passing `force: true`
         (the renderer's "Save anyway" action) skips straight to saving the session with no
         definition, falling back to the runtime's generic detection ladder for this app.
-        A browser closed by hand (no learning possible — nothing left to observe) keeps today's
-        behavior unchanged: save the session, no definition, detect_warning as before.
+        A browser closed by hand (no learning possible — nothing left to observe) saves the
+        session and leaves any existing definition exactly as it was.
         """
         from conxa_core.storage.group_store import (
             get_group,
@@ -442,15 +445,24 @@ class GroupsMixin:
         group_before = get_group(group_id)
         app_before = next((a for a in group_before.apps if a.id == app_id), None) if group_before else None
 
+        # `definition` is only set when THIS Done actually decided something — a fresh learn, or
+        # the existing definition re-verified as still valid (see learn_auth's `existing` param
+        # and _perform_learn_auth_sync's docstring, AUTH-15). A hand-closed browser (not force)
+        # observed nothing, so it falls through with definition=None and — below — leaves
+        # app_before's definition untouched rather than wiping a verified one to None.
         definition: dict[str, Any] | None = None
+        decided = force
         learn_reason = ""
         if sess.browser_open and app_before is not None and not force:
-            definition, learn_reason = self._loop.run(sess.learn_auth(app_before.login_url))
+            definition, learn_reason = self._loop.run(
+                sess.learn_auth(app_before.login_url, app_before.auth_definition)
+            )
             if definition is None:
                 # Keep the window open — this is NOT a failure, it's "not yet". The renderer
                 # polls status normally and offers "Save anyway" (force=true) as the escape
                 # hatch for a site this generic learning can't confidently characterize.
                 return {"confirmed": False, "reason": learn_reason or "Couldn't confirm sign-in yet. Finish signing in, then click Done again."}
+            decided = True
 
         reached_success_url = bool(sess.reached_wait_url)  # read before stop() tears the session down
         self._loop.run(sess.stop())
@@ -470,9 +482,11 @@ class GroupsMixin:
             raise _CommandError("group_or_app_not_found", "No such group or app")
 
         app = next((a for a in group.apps if a.id == app_id), None)
-        warning = _detect_warning(app.success_url if app else "", reached_success_url, definition is not None)
+        has_definition = definition is not None if decided else app_before is not None and app_before.auth_definition is not None
+        warning = _detect_warning(app.success_url if app else "", reached_success_url, has_definition)
         group = update_app(group_id, app_id, detect_warning=warning) or group
-        group = set_group_app_auth_definition(group_id, app_id, definition) or group
+        if decided:
+            group = set_group_app_auth_definition(group_id, app_id, definition) or group
 
         status = group_auth_status(group)
         for wf in list_workflows(group.workspace_id):
