@@ -1000,10 +1000,20 @@ async function _handleTool(name, args, extra) {
 
       const execPath = path.join(entry.skillDir, "execution.json");
       const recPath  = path.join(entry.skillDir, "recovery.json");
-      const rawExec  = fs.existsSync(execPath) ? JSON.parse(fs.readFileSync(execPath, "utf8")) : null;
-      const rawRec   = fs.existsSync(recPath)  ? JSON.parse(fs.readFileSync(recPath,  "utf8")) : null;
-      const rawSteps = Array.isArray(rawExec) ? rawExec : (rawExec?.steps || rawExec?.execution_plan || []);
-      const enriched = enrichStepsWithRecovery(rawSteps, rawRec);
+      let rawExec, rawRec;
+      try {
+        // The compiler always writes a bare JSON array (skill_package_builder_output.py) —
+        // no object wrapper, no execution_plan key. A missing or unparseable file here used to
+        // become an EMPTY step array, which then ran and reported "Done." having done nothing —
+        // the single most misleading outcome this tool can produce. Fail loudly instead.
+        if (!fs.existsSync(execPath)) throw new Error("execution.json is missing from this skill's files");
+        rawExec = JSON.parse(fs.readFileSync(execPath, "utf8"));
+        if (!Array.isArray(rawExec)) throw new Error("execution.json is not the expected step-list shape");
+        rawRec = fs.existsSync(recPath) ? JSON.parse(fs.readFileSync(recPath, "utf8")) : null;
+      } catch (e) {
+        return err(`Skill ${run.skill}'s files are damaged (${e.message}) — sync or republish this skill.`);
+      }
+      const enriched = enrichStepsWithRecovery(rawExec, rawRec);
       // Apply agent-recovery selector overrides (Tier 3/4 closing edge). Only honoured when
       // agent recovery is enabled (ceiling ≥ 3) — in a deterministic Studio test (ceiling 2)
       // a stray override must not silently rewrite the pack under test.
