@@ -29,3 +29,10 @@ Testing a GitHub-to-Google-Drive workflow kept saying Google had signed out, eve
 **Made every workflow in a group need all of that group's apps signed in — 2026-09-25**
 Each workflow used to carry its own separate list of "apps I need", and that list could disagree with the group and let a workflow start while one app's login was already dead. Now a group works like a building with one security desk: to run any workflow inside it, every app in the group has to be signed in first. The extra list is gone, and so are the mix-ups it caused.
 — 2026-09-25
+
+**Fixed messy-looking lists in the Execute chat — 2026-09-25**
+When the assistant listed what a task needs, the lines showed up with raw dashes and brackets, like a note typed in a hurry. Now they appear as clean bullet points, and the assistant is told to write short plain lines. This makes the chat easier to read at a glance.
+
+**Fixed "rebuild the skill package" wrongly showing up after a normal reconnect — 2026-09-25**
+Yesterday's fix that tells you to rebuild when an app's sign-in setup genuinely changed had a side effect: every time you simply reconnected an app that hadn't changed at all, the system stamped a "just learned this" timestamp onto its notes and then saw that timestamp as a change — so it demanded a rebuild every single time, like a librarian re-stamping a book "new" every time it's returned and then insisting it must be re-catalogued. It now compares what it actually learned about the sign-in, not when it learned it, and keeps the existing notes untouched when a reconnect confirms nothing changed. Reconnecting an app and testing again now works without an unnecessary rebuild in between. If you're seeing this message right now, rebuild the skill package one more time to clear it out — after that, it shouldn't reappear unless the sign-in setup genuinely changes.
+— 2026-09-25
