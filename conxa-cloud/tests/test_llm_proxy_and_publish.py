@@ -235,7 +235,25 @@ def test_publish_and_sync_roundtrip():
 
     companies = client.get("/api/v1/tracking/companies")
     assert companies.status_code == 200
-    assert any(row["company"] == "Acme Test" for row in companies.json()["companies"])
+    # "company" must stay the telemetry storage key (what tracking/{key}/... was written
+    # under), not the human display name — see tracking.py::_tracking_company_rows.
+    assert any(
+        row["company"] == "wrk_local" and row["display_name"] == "Acme Test"
+        for row in companies.json()["companies"]
+    )
+
+    # Regression: a run ingested after publish must be readable back through the
+    # dashboard's run-listing path, keyed by the same "company" the row above reports —
+    # not silently dropped because that key was overwritten with the display name.
+    tracking_post = client.post(
+        f"/api/v1/tracking/wrk_local/events",
+        json={"rid": "run-1", "evts": [{"e": "wf_start", "ts": 1000}, {"e": "wf_ok", "dur": 500, "tot": 1, "rec": 0}]},
+        headers={"x-tracking-token": body["tracking"]["tracking_token"]},
+    )
+    assert tracking_post.status_code == 202, tracking_post.text
+    runs = client.get("/api/v1/tracking/wrk_local/runs")
+    assert runs.status_code == 200, runs.text
+    assert any(r["run_id"] == "run-1" for r in runs.json()["runs"])
 
 
 def test_delta_ships_only_the_skill_that_actually_changed():
@@ -712,7 +730,10 @@ def test_org_dashboard_sees_same_user_personal_publish(monkeypatch, tmp_path):
 
     companies = client.get("/api/v1/tracking/companies", headers=org_headers)
     assert companies.status_code == 200
-    assert any(row["company"] == "Personal Visible" for row in companies.json()["companies"])
+    assert any(
+        row["workspace_id"] == "personal_user_same" and row["display_name"] == "Personal Visible"
+        for row in companies.json()["companies"]
+    )
 
     runs = client.get("/api/v1/tracking/personal_user_same/runs", headers=org_headers)
     assert runs.status_code == 200

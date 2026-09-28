@@ -21,6 +21,7 @@ from conxa_core.db import db_get, db_list, db_list_kv, db_set
 from conxa_core.config import settings
 from conxa_core.storage.workflow_store import list_workflows
 from conxa_core.storage.skill_pack_store import list_skill_packs
+from conxa_core.workspace import workspace_dir_slug
 from app.services.entitlements import analytics_retention_cutoff_ms
 from app.services.manifest_signing import load_signing_key, sign_manifest
 from app.services.saas import (
@@ -338,6 +339,17 @@ def _company_run_stats(company: str, principal: Principal) -> tuple[int, float]:
 
 
 def _tracking_company_rows(principal: Principal) -> list[dict[str, Any]]:
+    """Row per workspace with production telemetry or a published pack.
+
+    ``company`` MUST stay the telemetry storage key (the slug ingest writes
+    ``tracking/{slug}/...`` under — see ``publish_routes._mint_pack_token`` and
+    ``tracking_routes._ingest_events_impl``), never a human label: every reader
+    of this function (``_visible_run_records`` here, and the frontend's
+    ``/dashboard/runs/{company}/...`` and ``/dashboard/workflows/{company}/...``
+    routes) uses it to look the run data back up. The display label is a
+    separate ``display_name`` field. Conflating the two here once made every
+    published workspace's dashboard read an empty key — see FIX.md.
+    """
     rows: dict[str, dict[str, Any]] = {}
     visible_workspace_ids = set(visible_workspace_ids_for(principal))
     display_names = {
@@ -361,7 +373,8 @@ def _tracking_company_rows(principal: Principal) -> list[dict[str, Any]]:
         workspace_id = str(record.get("workspace_id") or slug).strip()
         run_count, last_seen = _company_run_stats(slug, principal)
         rows[workspace_id] = {
-            "company": display_names.get(workspace_id) or slug,
+            "company": slug,
+            "display_name": display_names.get(workspace_id) or slug,
             "workspace_id": workspace_id,
             "run_count": run_count,
             "last_seen": last_seen or float(record.get("updated_at") or 0),
@@ -373,9 +386,11 @@ def _tracking_company_rows(principal: Principal) -> list[dict[str, Any]]:
         workspace_id = pack.workspace_id
         current = rows.get(workspace_id)
         if current is None:
-            run_count, last_seen = _company_run_stats(workspace_id, principal)
+            slug = workspace_dir_slug(workspace_id)
+            run_count, last_seen = _company_run_stats(slug, principal)
             rows[workspace_id] = {
-                "company": pack.display_name or workspace_id,
+                "company": slug,
+                "display_name": pack.display_name or workspace_id,
                 "workspace_id": workspace_id,
                 "run_count": run_count,
                 "last_seen": last_seen or float(pack.updated_at or 0),
@@ -385,7 +400,7 @@ def _tracking_company_rows(principal: Principal) -> list[dict[str, Any]]:
 
     return sorted(
         rows.values(),
-        key=lambda row: (float(row.get("last_seen") or 0), str(row.get("company") or "")),
+        key=lambda row: (float(row.get("last_seen") or 0), str(row.get("display_name") or "")),
         reverse=True,
     )
 

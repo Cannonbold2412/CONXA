@@ -2,6 +2,34 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Skills that ran fine on a customer's computer now show up on the Cloud Dashboard — 2026-09-29
+A skill could run perfectly on a customer's machine, but the Cloud Dashboard would still say "no production telemetry yet" — like a store's cash register ringing up sales correctly, but the owner's report always showing zero. The dashboard was looking up each customer's activity under their pretty display name instead of the internal ID that activity was actually filed under, so it could never find it. Now both sides use the same internal ID to file and look up activity, and the pretty name is shown separately. This affected every skill on every installed pack, not just one workflow.
+— 2026-09-29
+
+## Skill folders on a customer's computer now show the group's name, not a random code — 2026-09-29
+When a skill got installed, the folder it landed in was named after an internal tracking code (a long jumble of letters and numbers) instead of the group name someone typed in, like "Sales" or "Support". Now that folder is named after the group instead, so anyone looking at the install folder can tell what it's for at a glance. This didn't affect sign-in or anything the skill actually does — only what the folder is called.
+— 2026-09-29
+
+## Built the calmer step editing screen for real — 2026-09-29
+The design sketches from yesterday are now the actual screen people use to review and fix a recorded skill. The busy header, dense step list, and crowded step form are now calm and plain: a short question at the top of each step, quieter status dots instead of a wall of badges, and the technical controls (raw selectors, frame details, JSON) tucked behind an "Advanced" toggle instead of always being on screen. The step-check list now shows plain sentences with quick buttons like "Text appears" instead of a form full of dropdowns. Nothing that could be done before was removed — it just isn't in the way by default anymore.
+— 2026-09-29
+
+## Added a simpler design for the "click" step screen — 2026-09-28
+The screen for checking which button a step clicks had a lot of extra buttons and badges. The new sketch asks one plain question, "Is this the right button?", and gives two clear answers. It matches the other sketch and our brand colours, and is a sketch only.
+— 2026-09-28
+
+## Recoloured the simpler step editing sketch in our brand look — 2026-09-28
+The calmer step editing sketch now uses our dark charcoal and orange-clay colours instead of a generic light theme. It now looks like it belongs in the same app as the rest of the Studio. Still a sketch only.
+— 2026-09-28
+
+## Redesigned the Input variables, Workflow plan and Diagnostics windows — 2026-09-28
+These three side-panel windows were dense with tables, monospace text and technical labels, hard to scan at a glance. We redrew them as calm pop-up cards with clear headings, short explanations, and only the controls someone actually needs day to day. Diagnostics stays detailed on purpose, since it is meant for engineers, not everyday editing.
+— 2026-09-28
+
+## Sketched a much simpler version of the step editing screen — 2026-09-28
+The screen for editing a single step showed too many buttons, badges and warnings at once, like a dashboard with every light on. We drew a calmer version that keeps one main action, plain sentences, and hides the advanced options until someone asks for them. This is a design sketch only, so the real screen has not changed yet.
+— 2026-09-28
+
 ## Cleaned out outdated notes about the old compile page — 2026-09-28
 Our design notes still described a separate compile screen that no longer exists. They now describe the progress log that opens under each workflow. This keeps new teammates from looking for a page that is gone.
 — 2026-09-28
@@ -117,3 +145,8 @@ One of the sign-in diagrams would not draw and showed an error instead. A few st
 The local server would not start because it was told to listen at an address that does not exist, like mailing a letter to a house number that was never built. Using the correct "this computer" address makes it start normally. No product code changed, only the command used to launch it.
 
 — 2026-09-28
+
+**Each chat in Conxa Execute now keeps its own browser window — 2026-09-29**
+Before, starting a new chat left the previous chat's browser window sitting on screen, like a TV that stays on when you walk into another room. Now the window tucks away when you leave that chat, keeps working in the background, and comes back when you click the chat again. A new chat opens its own fresh browser the first time it runs a workflow.
+
+— 2026-09-29

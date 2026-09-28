@@ -236,13 +236,22 @@ being used, not just from the moment it was first connected. See
 `docs/TRD.md` §5.3 ("Per-workflow recording gate + session write-back").
 
 **Compiled skill-pack layout:** a WorkflowGroup's `id` also decides *where a
-skill's files live on disk* — `pack.json` carries a `skill_groups` field
-(`{skill_slug: group_id}`, distinct from the `groups` array above — `groups`
-is auth-app metadata, `skill_groups` is the path index) and each skill is
-written to `skill-packs/{company}/{group_id}/{skill_slug}/` (the sentinel
-`"_default"` when a workflow's `group_id` is empty), both in Build Studio's
-local build output and after the real runtime syncs. See `docs/TRD.md` §5.3
-and §11.1 for the full on-disk layout and delta-sync wire format.
+skill's files live on disk*, but the raw `id` (an opaque UUID) is never what
+appears in the path — `pack.json` carries a `skill_groups` field
+(`{skill_slug: group_dir}`, distinct from the `groups` array above — `groups`
+is auth-app metadata, `skill_groups` is the path index) where `group_dir` is
+the group's stable, readable slug (`{name}-{id[:8]}`, e.g. `sales-257c9ff0` —
+the same scheme `group_store.create_group` uses for its own local slug) and
+each skill is written to `skill-packs/{company}/{group_dir}/{skill_slug}/`
+(the sentinel `"_default"` when a workflow's `group_id` is empty). Build
+Studio's local build resolves this from the group's own `slug` field
+(`skill_package_builder.py`'s `groups_payload`); the cloud's release fold-in
+(`release_routes.py::_skill_dir_group`) derives the same shape from the
+`skillpack_known_groups` registry, falling back to the raw `group_id` only if
+the group's name isn't known yet. Auth resolution is untouched by this —
+each skill's own `manifest.json` still carries the raw `group_id` for
+matching against `groups[].id`. See `docs/TRD.md` §5.3 and §11.1 for the full
+on-disk layout and delta-sync wire format.
 
 Each skill's own `manifest.json` also carries `"unclaimed_hosts": [hostname, ...]` **only when non-empty** —
 hostnames the recording visited that no `GroupApp` of its group covers (`group_store.unclaimed_hosts`,
@@ -1521,6 +1530,15 @@ Stored in `kv_store` under `tracking_tokens` → `workspace_id`:
 }
 ```
 
+**`GET /api/v1/tracking/companies`** returns one row per visible workspace:
+`{"company": <telemetry storage slug>, "display_name": <human label>, "workspace_id", "run_count", "last_seen"}`.
+`company` MUST stay the same slug telemetry was written under (`tracking/{slug}/...`,
+`workspace_dir_slug(workspace_id)`) — every reader of a row (`_visible_run_records`,
+and the frontend's `/dashboard/runs/{company}/...` and `/dashboard/workflows/{company}/...`
+routes) looks the run data back up by it. Put the human-readable name only in
+`display_name`; conflating the two here once meant a published workspace's run
+records were unreachable under their display name and the dashboard showed no data.
+
 ---
 
 ## 5. API Contracts
@@ -2394,7 +2412,7 @@ Response:
 }
 ```
 
-`group` is the skill's `group_id` from `pack.json`'s `skill_groups` map (falling back to `"_default"`), telling `runtime/sync.js` which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to write into (§2.2, `docs/TRD.md` §5.3) — present on both `"update"` and `"no_change"` entries since a "no_change" skill on a company that hasn't republished since group-nesting shipped still needs its group reported so the client's next `since` computation stays correct. `_build_delta()` falls back to a company's old flat `skill-packs/{company}/{skill_slug}/` cloud-storage location if the nested one doesn't exist yet (packs published before this feature), so already-published companies keep syncing without needing to republish.
+`group` is the skill's directory slug from `pack.json`'s `skill_groups` map (falling back to `"_default"`) — see "Compiled skill-pack layout" above for how that slug is derived from the group's `id`+name — telling `runtime/sync.js` which nested `skill-packs/{company}/{group}/{skill_slug}/` directory to write into (§2.2, `docs/TRD.md` §5.3) — present on both `"update"` and `"no_change"` entries since a "no_change" skill on a company that hasn't republished since group-nesting shipped still needs its group reported so the client's next `since` computation stays correct. `_build_delta()` falls back to a company's old flat `skill-packs/{company}/{skill_slug}/` cloud-storage location if the nested one doesn't exist yet (packs published before this feature), so already-published companies keep syncing without needing to republish.
 
 Each skill's version is read from `component_versions` KV (`skill_packs:{company}:{skill}`, written at publish time), falling back to the shared `pack.json.skill_pack_version` for packs published before independent per-skill versioning existed.
 
