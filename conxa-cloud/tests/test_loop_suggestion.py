@@ -141,7 +141,10 @@ def test_absorbs_a_redundant_click_pinned_to_the_recorded_file():
     click_key = step_keys(steps)[1]
     assert s["redundant_click_key"] == click_key
     assert s["wrap_start_key"] == click_key
-    assert "leftover click" in s["why"]
+    # The click removal is its own separate Yes/No question (ReviewQuestionsDialog.tsx) — it
+    # must never be folded into the loop question's own `why`.
+    assert "leftover click" not in s["why"]
+    assert "leftover click" in s["redundant_click_why"]
 
 
 def test_does_not_absorb_when_the_click_fingerprint_lacks_the_filename():

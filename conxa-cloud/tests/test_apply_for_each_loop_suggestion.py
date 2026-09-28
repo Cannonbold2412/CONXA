@@ -231,6 +231,36 @@ def test_stale_redundant_click_key_raises():
         apply_for_each_loop_suggestion(doc, bad)
 
 
+def test_remove_redundant_click_false_keeps_it_as_an_inert_step_not_archived():
+    # The separate "remove the leftover click too?" question answered No — the click is never
+    # wrapped into the loop body either way, but here it must survive as a standalone step
+    # immediately before the loop, unarchived.
+    doc, suggestion = _document_with_redundant_click()
+    out = apply_for_each_loop_suggestion(doc, suggestion, remove_redundant_click=False)
+    steps = out["skills"][0]["steps"]
+    actions = [s["action"]["action"] if isinstance(s["action"], dict) else s["action"] for s in steps]
+    assert actions == ["navigate", "click", "for_each", "navigate", "upload_intent"]
+    assert steps[1]["intent"] == "click_the_file_link"
+    assert not out.get("editor_archived_steps")
+
+
+def test_remove_redundant_click_false_still_excludes_it_from_the_loop_body():
+    doc, suggestion = _document_with_redundant_click()
+    out = apply_for_each_loop_suggestion(doc, suggestion, remove_redundant_click=False)
+    body = out["skills"][0]["steps"][2]["for_each"]["steps"]
+    assert all(s.get("intent") != "click_the_file_link" for s in body)
+
+
+def test_remove_redundant_click_false_shifts_trailing_indices_one_less_than_removed():
+    # Removed: net shift is (end-start); kept: the click still occupies a slot, so the shift is
+    # exactly one smaller — everything after the loop lands one index later than in the
+    # remove_redundant_click=True case.
+    doc, suggestion = _document_with_redundant_click()
+    removed = apply_for_each_loop_suggestion(doc, suggestion, remove_redundant_click=True)
+    kept = apply_for_each_loop_suggestion(doc, suggestion, remove_redundant_click=False)
+    assert len(kept["skills"][0]["steps"]) == len(removed["skills"][0]["steps"]) + 1
+
+
 def _document_with_percent_encoded_filename() -> tuple[dict, dict]:
     # The exact real-world regression: "C++.gitignore" is percent-encoded by the browser as
     # "C%2B%2B.gitignore" in the recorded navigate URL.

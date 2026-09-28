@@ -460,6 +460,35 @@ class TestBranchStepSerialization:
         except ValueError as exc:
             assert str(exc) == "step_has_no_optional_hint"
 
+    def test_confirm_optional_interstitial_keep_as_step_clears_hint_only(self):
+        import sys
+
+        sys.path.insert(0, "../conxa-builder/python")
+        from conxa_compile.editor.workflow_mutations import confirm_optional_interstitial
+
+        original_action = {"action": "click"}
+        doc = {
+            "meta": {"version": 1},
+            "inputs": [],
+            "skills": [
+                {
+                    "name": "default",
+                    "steps": [
+                        {
+                            "action": dict(original_action),
+                            "target": {"primary_selector": "#accept"},
+                            "optional_hint": {"kind": "try_dismiss", "container_signal": ".cookie-banner"},
+                        }
+                    ],
+                }
+            ],
+        }
+        result = confirm_optional_interstitial(doc, 0, keep_as_step=True)
+        step = result["skills"][0]["steps"][0]
+        assert step["optional_hint"] is None
+        assert step["action"] == original_action
+        assert "branch" not in step
+
 
 # ─────────────────────────────────────────────────
 # skill_package.json structure (integration-level)
