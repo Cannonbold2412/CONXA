@@ -197,6 +197,16 @@ New in the 2026-07 redesign (Phase 1) — previously the only way to reach a com
 **Outputs:** Patched skill document.  
 **User goal:** Verify each step is correct and parameterize inputs.
 
+**Step Editor Redesign (2026-09-29) — the "one plain question per step" pass.** Built from the design boards in `docs/artifacts/step-editor-redesign/`. Several things below are now stale in ways worth flagging up front rather than line-editing every paragraph:
+- `CompileHealthBanner.tsx` was **deleted**. Its status/min-confidence/required-runtime now live in the page header's subtitle (with a "Recompile to refresh" link straight to the workflow's group page when `compile_health.status === 'stale'`, since a recompile discards Human Edits and that confirm already lives there); its "N steps below threshold" jump-chips became a quiet warn dot on the matching row in `WorkflowStepItem.tsx`; its "Details" button is now Diagnostics, reached via the header's **More** menu.
+- The header's Tools rail (Suggestions / Input variables / Workflow plan / Diagnostics, each an always-visible segmented button) collapsed to: **Suggestions** as its own button (it carries a live count) plus a **More** popover holding the other three — quieter, and the AI-usage-credits badge moved inside that same popover instead of sitting in the toolbar.
+- Alignment pass (2026-09-29, board in `docs/artifacts/human-edit-page-polish/`): that toolbar (Suggestions / undo-redo / More / Approve) now sits in AppChrome's single 64px header row after the title via `PageHeader`'s `inlineActions` prop, instead of a second strip below it. Step rows truncate their label to one line (full text on hover) with badges on one wrapping row underneath. The wizard's Element phase stacks copy → full-width screenshot → one action row (box size · Draw a new box · View recording screenshots · Yes, continue), and every step layout uses a 32px side padding.
+- `HowClaudeSeesThisPanel.tsx` — already dead code per the 2026-07-10 note below (confirmed still unmounted, then deleted 2026-09-29 along with four other unimported components: `ValidationEditor.tsx`, `ConfidenceBanner.tsx`, `ActionBadge.tsx`, `StatusDot.tsx`).
+- `InlineRetargetFlow.tsx` now opens every step layout with a `StepEditorHeading`: a "Step N · <type>" eyebrow plus a plain-language question ("What should this step do?", "Is this the right element?", "Will this keep finding the right element?", "How do we know this <verb> worked?" for the wizard's three phases). The 3-phase wizard's stepper is a local numbered-circle `WizardStepper` (brand-filled current phase), not the old label-below-icon `BuildPipelineStepper` (which is now unused outside this file's history — nothing else referenced it).
+- `StepConfigForm.tsx`'s old "Action: X" card is gone — its Intent field is now a bare "Description" label (no card chrome), and Navigate's "URL" field is now "Page address". The raw selector list, selector-channel (CSS/ARIA/Text/XPath) card, frame-context card, anchors card and `ElementFingerprintCard` all moved behind a single closed-by-default "Advanced" `Collapsible` — nothing was removed, it's just out of the way until opened. The non-wizard step layouts (navigate/scroll/upload, if_present) wrap `RecoveryAnchorsCard` in its own closed-by-default "Recovery hints" disclosure the same way.
+- `components/validation/AssertionEditor.tsx`'s check rows now show a hollow status circle + plain description + mono `type: "target"` + a **Blocks step** pill (replacing the old numbered-square + checkbox pattern) and an × remove button. The old single "+ Add check" button is now four one-tap quick-add chips (Text appears / Text disappears / Page address changes / Element state changes) plus a **More check types** popover for the rest of `ASSERTION_TYPE_GROUPS`. A newly-added check now defaults to `required: true` ("blocks step") instead of `false`, matching the redesign's framing that an added check is meant to actually verify something.
+- `WorkflowHeader.tsx`'s left pane header is now a plain "STEPS" eyebrow + a brand text "+ Add step" button (no bordered button chrome); `TabDivider.tsx` now reads "New tab · host" instead of "Tab N — host".
+
 **Components:**
 - `WorkflowViewer.tsx` — step list with action/intent display; each row also renders a `BranchSummaryBadge` and safety badges (`allow_forced_action`/hover-chain — 2026-07-10) via `StepBadges`, and an indented collapsible `BranchSubList.tsx` under any `if_present` step, previewing its nested body (clicking a nested row selects the parent step and focuses that nested index — `editorStore.focusedBranchIndex`). **Tab-boundary dividers (2026-08-15, multi-tab recording):** `workflowViewer/TabDivider.tsx` renders a labeled rule ("Tab 2 — example.com") wherever consecutive steps' `StepEditorDTO.tab.id` differs, so a workflow that opens a new tab mid-recording reads as visibly crossing tabs instead of looking like one continuous page. Backend-only otherwise: `tab_open`/`tab_switch` markers already had labels in `describe.py`, unchanged.
 - `InlineRetargetFlow.tsx` — center pane: embeds the re-target wizard and `StepConfigForm.tsx` together (retired the standalone `StepEditorPanel.tsx`). Branch steps (`if_present`/`try_dismiss`/`wait_for_one_of`) skip the wizard entirely — their bbox-driven model doesn't fit a candidate list or option set — and render `StepConfigForm` plus, for `if_present` only, `components/branch/BranchBodyEditor.tsx` (2026-07-10).
@@ -328,6 +338,8 @@ Compile/Re-compile opens a log panel under the workflow's row on the Group Page 
 
 **Release system (2026-08-19):** new pure-logic module `lib/releaseState.ts` (dependency-free, tested by `test/releaseState.test.mjs`) drives every derived UI state — candidate readiness, the publish button's compound gate, the idle/publishing/success/failure states, release badges (`stable`/`superseded`/`pending`/`failed`), and rollback eligibility. New components under `components/release/`: `DiffPanel` (the deterministic "what will change" summary + progressive-disclosure technical detail), `ReleaseHistoryTable` (with inline `RollbackDialog` — an explicit confirm showing current stable, target, and effect, gated to only render for a valid rollback target), `DeploymentPanel`, `ReleaseAuditLog`. `fetchSkillPackVersions()`'s response gained `current_stable`; new calls: `previewRelease()`, `fetchReleaseDetail()`, `fetchReleaseDiff()`, `rollbackRelease()`, `fetchDeployments()`, `fetchReleaseEvents()`.
 
+**Two-step layout (2026-09-29):** the middle pane is now **1 Run the test → 2 Release details**. Step 1 is an amber card that embeds the same `WorkflowTestRow` used on the Group Page (inputs dialog, auth gate, cancel), so the test runs without leaving Publish; it needs the full Workflow record, fetched with `fetchWorkflow()` only while the test hasn't passed. When the test passes (`['skill-pack']` is invalidated on completion) it collapses to a green "Test passed" row and unlocks step 2. While locked, the form is disabled and the footer reads "Locked until the test passes"; Publish turns the brand color only when `canPublish` is true. The skill list uses shape+color glyphs (check = test passed, dashed circle = not passed — test status only, not published status), and "Publishing does not deploy" is a three-node flow strip (Publish from Studio → Ready for Release → Admin releases in Conxa Cloud). Mockup: `docs/artifacts/publish-skill-package-redesign/`.
+
 **Publishing progress is honest, not animated.** The publish transaction is one opaque cloud call from the Studio's point of view — `stageChecklist()` only marks a checklist item done once a real `stage` event (`validated`/`uploading`/`published`/`failed`) has actually been observed from the backend, never guessing intermediate cloud-side progress it can't see (persist artifact / create release / move channel / write audit all happen server-side inside the single "uploading" step).
 
 **Version history:** `fetchSkillPackVersions()` → `GET /api/v1/workflows/{installer_version}/skill-packs/versions` (workspace derived from Clerk session) — the version/release-comment/publishing-limit surface that moved here from Build Installer, per the original design brief. Republishing an already-used version number is rejected with `skill_pack_version_exists` (409); republishing a byte-identical artifact under a *new* version number is rejected with `skill_pack_artifact_unchanged` (409) rather than silently minting a no-op release.
@@ -365,14 +377,18 @@ Replaces `SkillPackagesPage.tsx` (2026-07, Phase 1), reusing its `PanelChrome`/`
 
 ### 2.13 Settings Page (`SettingsPage.tsx`)
 
-**Purpose:** Configure Build Studio (cloud API URL, auth, proxy settings).  
-**Inputs:** Form fields.  
-**Outputs:** Updated environment config.  
-**User goal:** Point Studio at a different cloud API (dev/staging).
+**Purpose:** Show the signed-in account, workspace usage, and app/version info; sign out; check for app updates.  
+**Layout:** Left section nav (Account, Usage, About; scrolls to the section) beside a content column capped at `max-w-3xl`. The nav is hidden below `md`.  
+**Sections:**
+- **Account** — initials avatar, name, email, organisation, Sign out.
+- **Usage** — 2×2 grid of meters (seats, machines, compile credits, AI usage credits) with the used count large; metered meters also show a thin usage bar, unlimited ones do not.
+- **About** — product, description, version, and software update (check / update now / download progress), plus Terms and Privacy links.
+
+**Inputs:** None (read-only, plus Sign out and update actions).  
+**User goal:** Confirm who is signed in, see what has been used, and keep the app current.
 
 **UX issues:**
-- Settings are not persisted across restarts without env var changes.
-- No schema validation for API URL.
+- The section nav highlights on click only (no scroll-spy).
 
 ---
 
@@ -391,23 +407,26 @@ positioning and no price at all. Two changes: the hero now leads with the busine
 four rungs, and `PricingTable` is mounted on the page itself. Twelve sections became ten — `Problem` +
 `WhyAiNeedsIt` were one argument told twice, as were `OldVsNew` + `Outcomes`.
 
-**Section order (`src/components/marketing/sections/`, plus `hero/Hero.tsx`):**
+**Homepage v2 (2026-09-29).** The homepage was rebuilt so each section has its own visual world instead of one repeated card template. Design source: `docs/artifacts/homepage-v2/`. Components live in `src/components/marketing/home/` (plus the untouched `sections/DemoStory.tsx`); animation is CSS-only (`.hm-*` keyframes in `src/index.css`) with one `prefers-reduced-motion` block that stops them.
+
+**Section order (`app/(marketing)/page.tsx`):**
 
 | # | id | Answers | Component |
 |---|----|---------|-----------|
-| 1 | — | What outcome do I get? | `hero/Hero.tsx` (live chat + browser simulation, plus the four-rung ladder strip) |
-| 2 | `demo` | What does using it look like? | `DemoStory.tsx` (click-to-play YouTube embed) |
-| 3 | `the-gap` | Why is this hard, and why does AI need it? | `TheGap.tsx` + `diagrams/PathVsGuesswork.tsx` (merges the former `Problem` and `WhyAiNeedsIt`) |
-| 4 | `how-it-works` | How does it work? | `HowItWorks.tsx` (sticky scroll-scrub ≥1024px, stacked below / reduced motion) |
-| 5 | `examples` | Does it work on my software, and what is it worth? | `Examples.tsx` (six named processes with the department that buys each, plus the dashboard's ROI arithmetic) |
-| 6 | `reliability` | Will it still work in six months? | `Reliability.tsx` (merges the former `OldVsNew` and `Outcomes`) |
-| 7 | `comparison` | Why not use X instead? | `Comparison.tsx` (competitor matrix, mirrors `docs/PRD.md` §10) |
-| 8 | `security` | Where does it run, and can I trust it? | `Trust.tsx` (merges the former `Architecture` and `Security`; keeps the `security` id the nav and footer link to) |
-| 9 | `pricing` | What does it cost? | `PricingTable.tsx` with `compact` |
-| 10 | `faq` | Everything else pre-demo | `Faq.tsx` (native `<details>`) |
-| 11 | `cta` | What now? | `FinalCta.tsx` |
+| 1 | — | What is this, in one line? | `home/HomeHero.tsx` (headline, "Book a demo" / "Read the docs", animated cursor trace across three app windows) |
+| 2 | `demo` | What does using it look like? | `sections/DemoStory.tsx` (click-to-play YouTube embed, unchanged) |
+| 3 | — | Why do the alternatives fail? | `home/Problem.tsx` (light band: scripts / integrations / guessing agents) |
+| 4 | `how-it-works` | How does it work? | `home/Steps.tsx` (Record / Compile / Publish / Run, each with a drawn mockup) |
+| 5 | — | What happens when the screen changes? | `home/SelfRepair.tsx` (full-cyan band, before/after redesign + clue ladder) |
+| 6 | `examples` | Does it work on my software? | `home/Processes.tsx` (process names with app chains) |
+| 7 | `security` | Where does it run, can I trust it? | `home/LocalFirst.tsx` (machine / cloud diagram) |
+| 8 | `pricing` | What does it cost? | `home/HomePricing.tsx` (rows; reads `STATIC_PLANS` / `TIER_CTA` exported from `sections/PricingTable.tsx`) |
+| 9 | `faq` | Everything else pre-demo | `home/HomeFaq.tsx` (native `<details>`) |
+| 10 | — | What now? | `home/HomeCta.tsx` |
 
-**Competitor matrix (`comparison`, added 2026-08-12 by request).** `DESIGN.md` §6 lists dense
+`/pricing` still uses the original `PricingTable`, `Faq` and `FinalCta`. The homepage no longer uses the competitor matrix, the telemetry visuals or the product screenshots described below; the paragraphs are kept as history and for the copy constraints, which still apply. The "any agent" wording (MCP-compatible agents, including Claude) is intentional.
+
+**Competitor matrix (`comparison`, added 2026-08-12 by request; removed from the homepage 2026-09-29).** `DESIGN.md` §6 lists dense
 feature-matrix tables as a Don't — the legacy-RPA anti-reference. This section is a deliberate,
 requested exception, kept narrow to avoid what that rule guards against: six capability columns, not
 twenty, and every row carries a **"Beats us at:" concession** taken from `docs/PRD.md` §10. Keep both
@@ -426,7 +445,7 @@ containing block to the `relative` `<section>`, escape the scroller at their sta
 the entire page on mobile; and the first column narrows below `sm` so a phone shows more than one data
 column. A visible "scroll sideways" hint appears below `lg`.
 
-**Telemetry visuals (`reliability`):** this section reuses the **real dashboard viz components** rather
+**Telemetry visuals (`reliability`, removed from the homepage 2026-09-29):** this section reuses the **real dashboard viz components** rather
 than drawing marketing approximations of them — `viz/ExecutionFlow.tsx` for a run whose certificate-upload
 step self-heals at Tier A, and `viz/TierLadder.tsx` for where recovery finishes. It replaces three
 hand-drawn static SVGs (`MaintenanceChart` / `LockMark` / `CostChart`) that used to live in `Outcomes.tsx`.

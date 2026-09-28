@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Diagnostics</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;background:#1a1a1a;color:#e8e6e3}
+*{scrollbar-width:thin;scrollbar-color:#3a3a3a transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:8px;border:2px solid #1a1a1a}
+*::-webkit-scrollbar-thumb:hover{background:#5a5a5a}
+
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; position: relative; background: #14141388; display: flex; align-items: flex-start; justify-content: center; padding-top: 64px; overflow: hidden">
+<div style="width: 760px; max-height: 780px; box-sizing: border-box; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 16px; box-shadow: 0 24px 64px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden">
+<div style="display: flex; align-items: flex-start; gap: 14px; padding: 24px 28px 20px; border-bottom: 1px solid #2e2e2e">
+<div style="width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px; background: rgba(217,119,87,0.14); display: flex; align-items: center; justify-content: center; color: #d97757">
+<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+</div>
+<div style="flex-grow: 1">
+<h2 style="margin: 0; font-size: 17px; font-weight: 600">Diagnostics</h2>
+<p style="margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: #8e8e8e">Technical detail for support and engineering, not day-to-day editing: compile telemetry and the integrity hashes behind the selected step.</p>
+</div>
+<button type="button" aria-label="Close" style="width: 28px; height: 28px; flex-shrink: 0; border: 0; border-radius: 8px; background: transparent; color: #8e8e8e; cursor: pointer; display: flex; align-items: center; justify-content: center">
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
+</button>
+</div>
+<div style="padding: 24px 28px; display: flex; flex-direction: column; gap: 22px; overflow-y: auto">
+<div>
+<div style="font-size: 13px; font-weight: 600; color: #8e8e8e; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 6px">Compile report</div>
+<div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid #2e2e2e; font-size: 13px"><span style="color: #8e8e8e">Status</span><span style="color: #e8e6e3; "><span style="color:#fbbf24">stale</span></span></div><div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid #2e2e2e; font-size: 13px"><span style="color: #8e8e8e">Steps total</span><span style="color: #e8e6e3; ">12</span></div><div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid #2e2e2e; font-size: 13px"><span style="color: #8e8e8e">Min. confidence</span><span style="color: #e8e6e3; ">95%</span></div><div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid #2e2e2e; font-size: 13px"><span style="color: #8e8e8e">Steps with warnings</span><span style="color: #e8e6e3; ">0</span></div><div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid #2e2e2e; font-size: 13px"><span style="color: #8e8e8e">Compiler policy version</span><span style="color: #e8e6e3; font-family: ui-monospace, monospace;">1.0.0</span></div><div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid #2e2e2e; font-size: 13px"><span style="color: #8e8e8e">Required runtime</span><span style="color: #e8e6e3; font-family: ui-monospace, monospace;">&gt;=1.0.0</span></div><div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 0; border-bottom: 1px solid #2e2e2e; font-size: 13px"><span style="color: #8e8e8e">Structural fingerprint</span><span style="color: #e8e6e3; ">present</span></div></div>
+<div>
+<div style="font-size: 13px; font-weight: 600; color: #8e8e8e; text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 8px">LLM router stats</div>
+<div style="padding: 12px 14px; border-radius: 10px; background: #141413; border: 1px solid #2e2e2e; font-family: ui-monospace, monospace; font-size: 13px; color: #e8e6e3">{ "provider": "cloud_proxy" }</div>
+</div>
+<div>
+<div style="display: flex; align-items: center; gap: 8px; padding-bottom: 8px"><span style="font-size: 13px; font-weight: 600; color: #8e8e8e; text-transform: uppercase; letter-spacing: 0.05em">Selected step’s identity hashes</span><span style="padding: 2px 8px; border-radius: 999px; background: #2e2e2e; font-size: 11px; color: #8e8e8e">STEP #7</span></div>
+<div style="display: flex; flex-direction: column; gap: 4px"><span style="font-size: 12px; color: #8e8e8e">Stable hash</span><span style="font-size: 12px; font-family: ui-monospace, monospace; color: #e8e6e3; word-break: break-all">53d5c359b0984dc83331813b21ebe955e2f0f7d4d40b25946c803589a41f406a</span></div>
+</div>
+</div>
+<div style="display: flex; align-items: center; justify-content: flex-end; padding: 16px 28px; border-top: 1px solid #2e2e2e">
+<button type="button" style="height: 38px; padding: 0 16px; border: 1px solid #3a3a3a; border-radius: 8px; background: transparent; font-size: 13px; color: #e8e6e3; cursor: pointer">Close</button>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{{"$preview":{{"width":1440,"height":900}}}}'>
+class Component extends DCLogic {{
+renderVals() {{ return {{}}; }}
+}}
+</script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Repeat step</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;background:#1a1a1a;color:#e8e6e3}
+*{scrollbar-width:thin;scrollbar-color:#3a3a3a transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:8px;border:2px solid #1a1a1a}
+*::-webkit-scrollbar-thumb:hover{background:#5a5a5a}
+
+button,input{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; display: flex; background: #1a1a1a; color: #e8e6e3; font-family: Inter, system-ui, sans-serif; overflow: hidden">
+
+<!-- Nav -->
+<nav aria-label="Main" style="width: 208px; flex-shrink: 0; box-sizing: border-box; padding: 28px 16px; display: flex; flex-direction: column; gap: 4px; border-right: 1px solid #2e2e2e; background: #1e1e1e">
+<div style="padding: 0 12px 28px; font-family: Inter, system-ui, sans-serif; font-size: 18px; font-weight: 600">Conxa</div>
+<a href="#" style="padding: 9px 12px; border-radius: 8px; font-size: 14px; color: #e8e6e3; background: rgba(217,119,87,0.12); text-decoration: none; font-weight: 500">Workflows</a>
+<a href="#" style="padding: 9px 12px; border-radius: 8px; font-size: 14px; color: #8e8e8e; text-decoration: none">Human Edit</a>
+<a href="#" style="padding: 9px 12px; border-radius: 8px; font-size: 14px; color: #8e8e8e; text-decoration: none">Publish</a>
+<a href="#" style="padding: 9px 12px; border-radius: 8px; font-size: 14px; color: #8e8e8e; text-decoration: none">Installer</a>
+<div style="flex-grow: 1"></div>
+<a href="#" style="padding: 9px 12px; border-radius: 8px; font-size: 14px; color: #8e8e8e; text-decoration: none">Settings</a>
+</nav>
+
+<!-- Main -->
+<main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+
+<header style="display: flex; align-items: center; gap: 16px; padding: 24px 40px 20px; border-bottom: 1px solid #2e2e2e">
+<button type="button" aria-label="Back to workflows" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 1px solid #3a3a3a; border-radius: 999px; background: transparent; cursor: pointer; color: #e8e6e3">
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
+</button>
+<div style="flex-grow: 1; min-width: 0">
+<h1 style="margin: 0; font-family: Inter, system-ui, sans-serif; font-weight: 600; font-size: 24px; letter-spacing: -0.01em">Github to Drive file handoff</h1>
+<div style="margin-top: 4px; font-size: 14px; color: #8e8e8e">6 steps · needs 95% confidence · <a href="#" style="color: #d97757; text-decoration: none; font-weight: 500">Recompile to refresh</a></div>
+</div>
+<a href="#" style="font-size: 14px; color: #e8e6e3; text-decoration: none; padding: 10px 12px">Suggestions <span style="color: #8e8e8e">8</span></a>
+<button type="button" aria-label="Undo" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: #8e8e8e; cursor: pointer">
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h6a3.5 3.5 0 1 1 0 7H8"/><path d="M4 8 7 5M4 8l3 3"/></svg>
+</button>
+<button type="button" aria-label="Redo" style="width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: #3a3a3a; cursor: pointer">
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8H6a3.5 3.5 0 1 0 0 7h2"/><path d="M12 8 9 5M12 8l-3 3"/></svg>
+</button>
+<div style="position: relative">
+<button type="button" style="height: 40px; padding: 0 14px; border: 1px solid #3a3a3a; border-radius: 10px; background: #252525; font-size: 14px; color: #e8e6e3; cursor: pointer; display: flex; align-items: center; gap: 6px">More
+<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
+</button>
+<div role="menu" aria-label="More" style="position: absolute; top: 46px; right: 0; width: 220px; box-sizing: border-box; padding: 6px; border: 1px solid #3a3a3a; border-radius: 12px; background: #252525; display: flex; flex-direction: column; gap: 1px; box-shadow: 0 12px 32px rgba(0,0,0,0.4); z-index: 10">
+<a href="#" style="padding: 9px 10px; border-radius: 8px; font-size: 14px; color: #e8e6e3; text-decoration: none">Input variables</a>
+<a href="#" style="padding: 9px 10px; border-radius: 8px; font-size: 14px; color: #e8e6e3; text-decoration: none">Workflow plan</a>
+<a href="#" style="padding: 9px 10px; border-radius: 8px; font-size: 14px; color: #e8e6e3; text-decoration: none">Diagnostics</a>
+<div style="height: 1px; background: #3a3a3a; margin: 4px 2px"></div>
+<div style="padding: 9px 10px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: #8e8e8e">AI usage credits <span style="color: #e8e6e3">Unlimited</span></div>
+</div>
+</div>
+<button type="button" style="height: 40px; padding: 0 22px; border: 0; border-radius: 10px; background: #d97757; color: #1a1a1a; font-size: 14px; font-weight: 600; cursor: pointer">Approve</button>
+</header>
+
+<div style="flex-grow: 1; min-height: 0; display: flex">
+
+<!-- Steps -->
+<section aria-label="Steps" style="width: 360px; flex-shrink: 0; box-sizing: border-box; padding: 28px 24px; border-right: 1px solid #2e2e2e; display: flex; flex-direction: column; gap: 4px; overflow: hidden">
+<div style="display: flex; align-items: center; justify-content: space-between; padding: 0 12px 12px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #8e8e8e">Steps</h2>
+<button type="button" style="border: 0; background: transparent; font-size: 14px; color: #d97757; font-weight: 500; cursor: pointer; padding: 4px 0">+ Add step</button>
+</div>
+<a href="#" style="display: flex; gap: 12px; padding: 12px; border-radius: 12px; text-decoration: none; color: #e8e6e3">
+<span style="width: 24px; font-size: 14px; color: #8e8e8e">1</span>
+<span style="font-size: 15px; line-height: 1.4">Go to github.com/github/gitignore</span>
+</a>
+<a href="#" style="display: flex; gap: 12px; padding: 12px; border-radius: 12px; text-decoration: none; color: #e8e6e3">
+<span style="width: 24px; font-size: 14px; color: #8e8e8e">2</span>
+<span style="font-size: 15px; line-height: 1.4">Scroll the page</span>
+</a>
+<a href="#" style="display: flex; gap: 12px; padding: 12px; border-radius: 12px; background: #252525; border: 1px solid #d97757; text-decoration: none; color: #e8e6e3">
+<span style="width: 24px; font-size: 14px; color: #d97757;font-weight:600">3</span>
+<span style="font-size: 15px; line-height: 1.4">For each file, repeat 4 steps<br><span style="font-size: 13px; color: #8e8e8e">Uses your “files” input</span></span>
+</a>
+<div style="margin: 4px 0 4px 24px; padding-left: 12px; border-left: 1px solid #3a3a3a; display: flex; flex-direction: column; gap: 2px">
+<div style="font-size: 13px; color: #8e8e8e; padding: 5px 8px">1. Go to the file’s GitHub page</div>
+<div style="font-size: 13px; color: #8e8e8e; padding: 5px 8px">2. Scroll the page</div>
+<div style="font-size: 13px; color: #8e8e8e; padding: 5px 8px">3. Click download</div>
+<div style="font-size: 13px; color: #8e8e8e; padding: 5px 8px">4. Wait for the download</div>
+</div>
+<div style="display: flex; align-items: center; gap: 12px; padding: 14px 12px 10px; font-size: 13px; color: #8e8e8e">
+<span style="flex-grow: 1; height: 1px; background: #2e2e2e"></span>
+<span>New tab · drive.google.com</span>
+<span style="flex-grow: 1; height: 1px; background: #2e2e2e"></span>
+</div>
+<a href="#" style="display: flex; gap: 12px; padding: 12px; border-radius: 12px; text-decoration: none; color: #e8e6e3">
+<span style="width: 24px; font-size: 14px; color: #8e8e8e">4</span>
+<span style="font-size: 15px; line-height: 1.4">Open the recorded tab</span>
+</a>
+<a href="#" style="display: flex; gap: 12px; padding: 12px; border-radius: 12px; text-decoration: none; color: #e8e6e3">
+<span style="width: 24px; font-size: 14px; color: #8e8e8e">5</span>
+<span style="font-size: 15px; line-height: 1.4">Go to drive.google.com</span>
+</a>
+<a href="#" style="display: flex; gap: 12px; padding: 12px; border-radius: 12px; text-decoration: none; color: #e8e6e3">
+<span style="width: 24px; font-size: 14px; color: #8e8e8e">6</span>
+<span style="font-size: 15px; line-height: 1.4">Click “New”</span>
+</a>
+</section>
+
+<!-- Editor -->
+<section aria-label="Edit step" style="flex-grow: 1; min-width: 0; box-sizing: border-box; padding: 36px 56px; display: flex; flex-direction: column; gap: 28px; overflow-y: auto">
+
+<div>
+<div style="font-size: 13px; color: #8e8e8e">Step 3 · Repeat for each item</div>
+<h2 style="margin: 6px 0 0; font-family: Inter, system-ui, sans-serif; font-weight: 600; font-size: 24px; letter-spacing: -0.01em">Download every file in the list</h2>
+</div>
+
+<div style="max-width: 680px; display: flex; flex-direction: column; gap: 8px">
+<label for="desc" style="font-size: 14px; font-weight: 500">Description</label>
+<input id="desc" type="text" value="Download the raw version of each selected file" style="height: 46px; box-sizing: border-box; padding: 0 14px; border: 1px solid #3a3a3a; border-radius: 10px; background: #252525; font-size: 15px; color: #e8e6e3">
+</div>
+
+<div style="max-width: 680px; display: flex; flex-direction: column; gap: 8px">
+<label for="src" style="font-size: 14px; font-weight: 500">Repeats once per</label>
+<div style="height: 46px; box-sizing: border-box; padding: 0 14px; border: 1px solid #3a3a3a; border-radius: 10px; background: #1e1e1e; display: flex; align-items: center; gap: 8px; font-size: 15px; color: #e8e6e3">item in <span style="padding: 2px 8px; border-radius: 6px; background: rgba(217,119,87,0.14); color: #d97757; font-size: 13px; font-family: ui-monospace, monospace">files</span> · up to 50 times</div>
+</div>
+
+<div style="max-width: 680px; padding-top: 28px; border-top: 1px solid #2e2e2e; display: flex; flex-direction: column; gap: 12px">
+<h3 style="margin: 0; font-size: 16px; font-weight: 600">Check that it worked</h3>
+<p style="margin: 0; font-size: 14px; line-height: 1.55; color: #8e8e8e">This step finishes the instant it starts, with nothing confirming the download began. Add a check that must pass.</p>
+<div><button type="button" style="height: 38px; padding: 0 16px; border: 1px solid #3a3a3a; border-radius: 10px; background: transparent; font-size: 14px; font-weight: 500; color: #e8e6e3; cursor: pointer">+ Add check</button></div>
+</div>
+
+<div style="max-width: 680px; padding-top: 28px; border-top: 1px solid #2e2e2e; display: flex; flex-direction: column; gap: 12px">
+<h3 style="margin: 0; font-size: 16px; font-weight: 600">What runs each time</h3>
+<p style="margin: 0; font-size: 14px; color: #8e8e8e">4 steps, once per file. Click one to open it.</p>
+<div style="display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #3a3a3a; border-radius: 10px">
+<div style="width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; border-radius: 999px; border: 1.5px solid #d97757; display: flex; align-items: center; justify-content: center"></div>
+<div>
+<div style="font-size: 14px; color: #e8e6e3">Go to the file’s GitHub page</div>
+<div style="font-size: 13px; color: #8e8e8e; margin-top: 2px">https://github.com/…/{{file_id}}</div>
+</div>
+</div>
+<div style="display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #3a3a3a; border-radius: 10px">
+<div style="width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; border-radius: 999px; border: 1.5px solid #3a3a3a; display: flex; align-items: center; justify-content: center"></div>
+<div>
+<div style="font-size: 14px; color: #e8e6e3">Scroll the page</div>
+<div style="font-size: 13px; color: #8e8e8e; margin-top: 2px">navigate</div>
+</div>
+</div>
+<div style="display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #3a3a3a; border-radius: 10px">
+<div style="width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; border-radius: 999px; border: 1.5px solid #3a3a3a; display: flex; align-items: center; justify-content: center"></div>
+<div>
+<div style="font-size: 14px; color: #e8e6e3">Click download</div>
+<div style="font-size: 13px; color: #8e8e8e; margin-top: 2px">data-testid="download-raw-button"</div>
+</div>
+</div>
+<div style="display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #3a3a3a; border-radius: 10px">
+<div style="width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; border-radius: 999px; border: 1.5px solid #3a3a3a; display: flex; align-items: center; justify-content: center"></div>
+<div>
+<div style="font-size: 14px; color: #e8e6e3">Wait for the download</div>
+<div style="font-size: 13px; color: #8e8e8e; margin-top: 2px">recorded download</div>
+</div>
+</div>
+</div>
+
+<div style="max-width: 680px; display: flex; align-items: center; justify-content: flex-end; padding-top: 28px; border-top: 1px solid #2e2e2e">
+<button type="button" style="height: 42px; padding: 0 22px; border: 0; border-radius: 10px; background: #d97757; color: #1a1a1a; font-size: 14px; font-weight: 600; cursor: pointer">Save step</button>
+</div>
+
+</section>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

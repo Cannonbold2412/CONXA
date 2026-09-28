@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>After — redesigned top bar</title>
+<script src="./support.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  body{margin:0;font-family:'Inter',system-ui,sans-serif;background:#0a0c0f}
+  .ico{width:16px;height:16px;flex-shrink:0}
+</style>
+</helmet>
+
+<div style="width:1440px;height:380px;box-sizing:border-box;overflow:hidden;background:#0a0c0f;color:#e8e6e3;display:flex;flex-direction:column;border:1px solid rgba(255,255,255,0.08);border-radius:10px;position:relative">
+
+  <!-- window title bar -->
+  <div style="height:30px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 10px 0 14px;background:#101215;border-bottom:1px solid rgba(255,255,255,0.08)">
+    <span style="font-size:12px;font-weight:500;color:#8e8e8e">Conxa Build Studio</span>
+    <div style="display:flex;align-items:center;gap:14px;color:#6b6b6b">
+      <div style="width:11px;height:1.4px;background:currentColor"></div>
+      <div style="width:10px;height:10px;border:1.4px solid currentColor"></div>
+      <svg class="ico" style="width:11px;height:11px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+    </div>
+  </div>
+
+  <div style="display:flex;flex:1;min-height:0">
+    <!-- sidebar (unchanged — not part of this pass) -->
+    <div style="width:216px;flex-shrink:0;background:#1e1e1e;border-right:1px solid rgba(255,255,255,0.08);display:flex;flex-direction:column">
+      <div style="height:64px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,0.08)">
+        <span style="width:36px;height:36px;border-radius:8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="#e8e6e3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.84l8.57 3.9a2 2 0 0 0 1.66 0l8.57-3.9a1 1 0 0 0 0-1.84Z"/><path d="m22 12.34-8.57 3.9a2 2 0 0 1-1.66 0L3.2 12.34"/><path d="m22 17.34-8.57 3.9a2 2 0 0 1-1.66 0L3.2 17.34"/></svg>
+        </span>
+        <div style="min-width:0">
+          <p style="margin:0;font-size:14px;font-weight:600;color:#fff;white-space:nowrap">Conxa</p>
+          <p style="margin:0;font-size:12px;color:#8e8e8e;white-space:nowrap">Build Studio</p>
+        </div>
+        <svg class="ico" style="margin-left:auto;color:#8e8e8e" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+      </div>
+      <div style="padding:14px 12px">
+        <p style="margin:0 0 6px;padding:0 12px;font-size:11px;font-weight:500;color:#8e8e8e">Operate</p>
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:8px;background:rgba(217,119,87,0.12);border:1px solid rgba(217,119,87,0.35);color:#fff;font-size:14px">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg>
+          Workflows
+        </div>
+      </div>
+    </div>
+
+    <!-- main column -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column">
+
+      <!-- one merged header: title/description on the left, meters + refresh + primary action on the right -->
+      <div style="height:88px;flex-shrink:0;display:flex;align-items:center;gap:20px;padding:0 24px;border-bottom:1px solid rgba(255,255,255,0.08);background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent)">
+
+        <div style="min-width:0">
+          <h1 style="margin:0;font-size:22px;font-weight:700;color:#fff;letter-spacing:-0.01em">Workflows</h1>
+          <p style="margin:4px 0 0;font-size:12.5px;color:#8e8e8e">Organize your automations by business group — each one owns its own logins.</p>
+        </div>
+
+        <div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-shrink:0">
+
+          <!-- meter pill: compile credits -->
+          <div style="height:38px;display:flex;align-items:center;gap:9px;padding:0 12px 0 8px;border-radius:8px;border:1px solid rgba(255,255,255,0.09);background:#1e1e1e">
+            <span style="position:relative;width:22px;height:22px;border-radius:999px;background:rgba(74,222,128,0.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+              <svg style="width:12px;height:12px;color:#4ade80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            </span>
+            <span style="display:flex;flex-direction:column;line-height:1.15">
+              <span style="font-size:10.5px;font-weight:500;color:#8e8e8e">Compile credits</span>
+              <span style="font-size:12.5px;font-weight:600;color:#e8e6e3">Unlimited</span>
+            </span>
+          </div>
+
+          <!-- meter pill: AI usage credits -->
+          <div style="height:38px;display:flex;align-items:center;gap:9px;padding:0 12px 0 8px;border-radius:8px;border:1px solid rgba(255,255,255,0.09);background:#1e1e1e">
+            <span style="position:relative;width:22px;height:22px;border-radius:999px;background:rgba(74,222,128,0.12);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+              <svg style="width:12px;height:12px;color:#4ade80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+            </span>
+            <span style="display:flex;flex-direction:column;line-height:1.15">
+              <span style="font-size:10.5px;font-weight:500;color:#8e8e8e">AI usage credits</span>
+              <span style="font-size:12.5px;font-weight:600;color:#e8e6e3">Unlimited</span>
+            </span>
+          </div>
+
+          <div style="width:1px;height:26px;background:rgba(255,255,255,0.1);flex-shrink:0"></div>
+
+          <!-- refresh, icon-only ghost -->
+          <button style="width:34px;height:34px;flex-shrink:0;border-radius:8px;border:1px solid transparent;background:transparent;color:#8e8e8e;display:flex;align-items:center;justify-content:center;cursor:pointer">
+            <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+          </button>
+
+          <!-- primary action -->
+          <button style="height:36px;flex-shrink:0;display:flex;align-items:center;gap:7px;padding:0 15px;border:none;border-radius:10px;background:#d97757;color:#1a1a1a;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">
+            <svg class="ico" style="width:14px;height:14px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+            New Group
+          </button>
+        </div>
+      </div>
+
+      <!-- body preview -->
+      <div style="flex:1;min-height:0;padding:24px;display:flex;gap:16px">
+        <div style="width:220px;height:40px;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;padding:0 14px;font-size:13px;color:#8e8e8e">18 workflows</div>
+        <div style="width:200px;height:40px;border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;padding:0 14px;font-size:13px;color:#8e8e8e">1 workflow</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":380}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Publish Skill Package</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#1a1a1a;font-family:Inter,system-ui,sans-serif;color:#e8e6e3}
+button{font-family:inherit}
+</style>
+</helmet>
+<div style="width: 1440px; height: 810px; box-sizing: border-box; display: flex; flex-direction: column; background: #1a1a1a; color: #e8e6e3; font-family: Inter, system-ui, sans-serif; overflow: hidden">
+
+  <!-- title bar -->
+  <div style="height: 44px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 0 16px; background: #1e1e1e; border-bottom: 1px solid #2c2c2c; font-size: 13px; font-weight: 500">
+    <div style="width: 16px; height: 16px; border-radius: 4px; background: {{accent}}"></div>
+    <span>Conxa Build Studio</span>
+  </div>
+
+  <div style="flex-grow: 1; min-height: 0; display: flex">
+
+    <!-- sidebar -->
+    <div style="width: 216px; flex-shrink: 0; box-sizing: border-box; padding: 16px 12px; display: flex; flex-direction: column; background: #1e1e1e; border-right: 1px solid #2c2c2c">
+      <div style="display: flex; align-items: center; gap: 10px; padding: 4px 8px 20px">
+        <div style="width: 32px; height: 32px; border-radius: 8px; background: #252525; border: 1px solid #333; display: flex; align-items: center; justify-content: center">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#e8e6e3" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>
+        </div>
+        <div style="display: flex; flex-direction: column; line-height: 1.25">
+          <span style="font-size: 14px; font-weight: 600">Conxa</span>
+          <span style="font-size: 12px; color: #8e8e8e">Build Studio</span>
+        </div>
+      </div>
+      <div style="font-size: 11px; font-weight: 500; color: #8e8e8e; padding: 0 8px 8px; letter-spacing: 0.04em; text-transform: uppercase">Operate</div>
+      <div style="display: flex; flex-direction: column; gap: 2px">
+        <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; font-size: 14px; color: #b9b7b4; text-decoration: none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h3M4 12h3M4 18h3M11 6h9M11 12h9M11 18h9"/></svg>
+          Workflows
+        </a>
+        <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; font-size: 14px; color: #b9b7b4; text-decoration: none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/></svg>
+          Human Edit
+        </a>
+        <a href="#" aria-current="page" style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; font-size: 14px; font-weight: 500; color: #e8e6e3; background: {{accentSoft}}; text-decoration: none; position: relative">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="{{accent}}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.5-7.97A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9"/><path d="m12 12 0 8M9 15l3-3 3 3"/></svg>
+          Publish Skill Package
+        </a>
+        <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; font-size: 14px; color: #b9b7b4; text-decoration: none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>
+          Build Installer
+        </a>
+      </div>
+      <div style="flex-grow: 1"></div>
+      <a href="#" style="display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 8px; font-size: 14px; color: #b9b7b4; text-decoration: none; border-top: 1px solid #2c2c2c; margin-top: 8px; padding-top: 16px">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14 3h-4l-.6 2.7a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2L10 21h4l.6-2.7a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z"/></svg>
+        Settings
+      </a>
+    </div>
+
+    <!-- main -->
+    <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+
+      <!-- page header -->
+      <div style="height: 68px; flex-shrink: 0; box-sizing: border-box; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #2c2c2c">
+        <div style="display: flex; flex-direction: column; gap: 2px">
+          <h1 style="margin: 0; font-size: 20px; font-weight: 600; line-height: 1.25">Publish Skill Package</h1>
+          <span style="font-size: 13px; color: #8e8e8e">Release a versioned skill update to customers who already have Conxa installed.</span>
+        </div>
+        <button type="button" aria-label="Refresh skills" style="width: 36px; height: 36px; border-radius: 10px; border: 1px solid #333; background: #1a1a1a; color: #e8e6e3; display: flex; align-items: center; justify-content: center; cursor: pointer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.5-4M4 4v4h4M4 13a8 8 0 0 0 14.5 4M20 20v-4h-4"/></svg>
+        </button>
+      </div>
+
+      <div style="flex-grow: 1; min-height: 0; box-sizing: border-box; padding: 20px 24px; display: flex; gap: 20px">
+
+        <!-- skills column -->
+        <div style="width: 264px; flex-shrink: 0; display: flex; flex-direction: column; background: #252525; border: 1px solid #2f2f2f; border-radius: 10px; overflow: hidden">
+          <div style="padding: 14px 14px 10px; display: flex; flex-direction: column; gap: 10px">
+            <div style="display: flex; align-items: baseline; justify-content: space-between">
+              <span style="font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: #8e8e8e">Skills</span>
+              <span style="font-size: 12px; color: #8e8e8e">{{skillCount}}</span>
+            </div>
+            <label style="display: flex; align-items: center; gap: 8px; height: 34px; box-sizing: border-box; padding: 0 10px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #8e8e8e">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input type="text" placeholder="Filter skills" aria-label="Filter skills" style="flex-grow: 1; min-width: 0; background: transparent; border: 0; outline: 0; color: #e8e6e3; font: inherit; font-size: 13px">
+            </label>
+          </div>
+          <div style="flex-grow: 1; min-height: 0; overflow: hidden; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 2px">
+            <sc-for list="{{skills}}" as="s" hint-placeholder-count="8">
+              <a href="#" style="{{s.rowStyle}}">
+                <sc-if value="{{s.published}}" hint-placeholder-val="{{ true }}">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-label="Published" style="flex-shrink: 0"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></svg>
+                </sc-if>
+                <sc-if value="{{s.pending}}" hint-placeholder-val="{{ false }}">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-label="Unpublished changes" style="flex-shrink: 0"><circle cx="12" cy="12" r="9" stroke-dasharray="3.5 3"/><circle cx="12" cy="12" r="2" fill="#fbbf24" stroke="none"/></svg>
+                </sc-if>
+                <span style="flex-grow: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{s.name}}</span>
+              </a>
+            </sc-for>
+          </div>
+          <div style="padding: 10px 14px; border-top: 1px solid #2f2f2f; display: flex; gap: 14px; font-size: 12px; color: #8e8e8e">
+            <span style="display: flex; align-items: center; gap: 6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4ade80" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></svg>Published</span>
+            <span style="display: flex; align-items: center; gap: 6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-dasharray="3.5 3"/></svg>Not yet released</span>
+          </div>
+        </div>
+
+        <!-- center column -->
+        <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+
+          <!-- skill header -->
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; background: #252525; border: 1px solid #2f2f2f; border-radius: 10px">
+            <div style="min-width: 0; display: flex; flex-direction: column; gap: 6px">
+              <h2 style="margin: 0; font-size: 20px; font-weight: 600; line-height: 1.25">Github to Drive File Handoff</h2>
+              <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #8e8e8e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">C:\Users\Lenovo\.conxa-build-studio-dev\output\skill_package\wrk_local-plugin</span>
+            </div>
+            <div style="flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 4px">
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid #3a3a3a; font-size: 12px; font-weight: 500; color: #e8e6e3">First release</span>
+              <span style="font-size: 12px; color: #8e8e8e">Starts a new version history at v1.0.0</span>
+            </div>
+          </div>
+
+          <!-- step 1: test -->
+          <div style="display: flex; align-items: center; gap: 16px; padding: 16px 20px; background: rgba(251,191,36,0.07); border: 1px solid rgba(251,191,36,0.4); border-radius: 10px">
+            <div style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 999px; background: #fbbf24; color: #1a1a1a; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center">1</div>
+            <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+              <span style="font-size: 15px; font-weight: 600; color: #fbbf24">Run the test first</span>
+              <span style="font-size: 13px; color: #c9c7c4; line-height: 1.45">Github to Drive File Handoff has to pass its test before it can be published.</span>
+            </div>
+            <button type="button" style="flex-shrink: 0; display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border: 0; border-radius: 10px; background: {{accent}}; color: #1a1a1a; font-size: 13px; font-weight: 600; cursor: pointer">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l12-7.5-12-7.5Z"/></svg>
+              Run test
+            </button>
+          </div>
+
+          <!-- step 2: release details -->
+          <div style="display: flex; flex-direction: column; gap: 16px; padding: 18px 20px 16px; background: #252525; border: 1px solid #2f2f2f; border-radius: 10px">
+            <div style="display: flex; align-items: center; gap: 12px">
+              <div style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 999px; border: 1px solid #4a4a4a; color: #8e8e8e; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center">2</div>
+              <span style="font-size: 15px; font-weight: 600">Release details</span>
+            </div>
+            <div style="display: flex; gap: 20px">
+              <div style="width: 200px; flex-shrink: 0; display: flex; flex-direction: column; gap: 6px">
+                <label for="ver" style="font-size: 13px; font-weight: 500">Version</label>
+                <input id="ver" type="text" value="1.0.0" disabled style="height: 40px; box-sizing: border-box; padding: 0 12px; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #8e8e8e; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px">
+                <span style="font-size: 12px; color: #8e8e8e">Like 1.2.3 or 1.2.3-beta.1</span>
+              </div>
+              <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+                <label for="notes" style="font-size: 13px; font-weight: 500">Release notes</label>
+                <textarea id="notes" disabled placeholder="Describe what changed in this release…" style="height: 84px; box-sizing: border-box; padding: 10px 12px; resize: none; background: #1a1a1a; border: 1px solid #333; border-radius: 8px; color: #e8e6e3; font-family: inherit; font-size: 14px; line-height: 1.45"></textarea>
+                <span style="align-self: flex-end; font-size: 12px; color: #8e8e8e">0 / 2000</span>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-top: 14px; border-top: 1px solid #2f2f2f">
+              <span style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #8e8e8e">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+                Locked until the test passes
+              </span>
+              <button type="button" disabled style="display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px; border: 1px solid #333; border-radius: 10px; background: #1f1f1f; color: #6f6f6f; font-size: 13px; font-weight: 600; cursor: not-allowed">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 15c-1 1-1.5 4-1.5 4s3-.5 4-1.5M14 4c3-1 6-1 6-1s0 3-1 6l-6 6-4-4 5-7ZM9 13l-3-1 2-3 3 1"/></svg>
+                Publish
+              </button>
+            </div>
+          </div>
+
+          <!-- what happens next -->
+          <div style="padding: 16px 20px; border: 1px dashed #3a3a3a; border-radius: 10px; display: flex; flex-direction: column; gap: 12px">
+            <div style="display: flex; align-items: baseline; gap: 10px">
+              <span style="font-size: 14px; font-weight: 600">Publishing does not deploy</span>
+              <span style="font-size: 13px; color: #8e8e8e">The release is immutable and waits for a Cloud admin.</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; font-size: 13px">
+              <span style="padding: 4px 10px; border-radius: 6px; background: #252525; border: 1px solid #333">Publish from Studio</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8e8e8e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              <span style="padding: 4px 10px; border-radius: 6px; background: #252525; border: 1px solid #333">Ready for Release</span>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8e8e8e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+              <span style="padding: 4px 10px; border-radius: 6px; background: #252525; border: 1px solid #333">Admin releases in Conxa Cloud</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- log column -->
+        <div style="width: 300px; flex-shrink: 0; display: flex; flex-direction: column; background: #161616; border: 1px solid #2f2f2f; border-radius: 10px; overflow: hidden">
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #2a2a2a">
+            <span style="font-size: 11px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: #8e8e8e">Publish log</span>
+            <span style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #8e8e8e"><span style="width: 6px; height: 6px; border-radius: 999px; background: #5a5a5a"></span>Idle</span>
+          </div>
+          <div style="flex-grow: 1; padding: 14px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; line-height: 1.6; color: #8e8e8e">
+            Logs stream here once publishing starts.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#d97757","options":["#d97757","#4f9cf9","#4ade80","#a78bfa"]},"$preview":{"width":1440,"height":810}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const accent = this.props.accent ?? '#d97757';
+    const hex = accent.replace('#', '');
+    const n = parseInt(hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex, 16);
+    const soft = (a) => `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+    const base = 'display: flex; align-items: center; gap: 10px; height: 36px; box-sizing: border-box; padding: 0 10px; border-radius: 8px; font-size: 13px; text-decoration: none; border: 1px solid transparent;';
+    const rows = [
+      ['Github to Drive File Handoff', 'pending', true],
+      ['WF-4', 'pending'],
+      ['One-WorkFlow-Runbook', 'published'],
+      ['WF-1', 'published'],
+      ['mega-workflow', 'published'],
+      ['workflow-g', 'published'],
+      ['WF-5-S-A', 'published'],
+      ['WF-5-L-A', 'published'],
+      ['WF-2-S-J', 'published'],
+      ['WF-2-S-E', 'published'],
+      ['WF-2-S-F', 'published'],
+      ['WF-2-S-B', 'published'],
+    ];
+    return {
+      accent,
+      accentSoft: soft(0.14),
+      skillCount: '19 skills',
+      skills: rows.map(([name, status, sel]) => ({
+        name,
+        published: status === 'published',
+        pending: status === 'pending',
+        rowStyle: base + (sel
+          ? `background: ${soft(0.14)}; border-color: ${soft(0.45)}; color: #e8e6e3; font-weight: 600;`
+          : 'color: #c9c7c4;'),
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>

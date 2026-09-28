@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Human Edit — review step</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#141414;font-family:Inter,system-ui,sans-serif;color:#e8e6e3}
+a{color:#e8e6e3}a:hover{color:#ffffff}
+button{font-family:inherit;cursor:pointer}
+.ico{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.rail-btn{width:40px;height:40px;border-radius:10px;border:0;background:transparent;color:#8e8e8e;display:flex;align-items:center;justify-content:center}
+.btn{height:36px;padding:0 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:#1a1a1a;color:#e8e6e3;font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:8px}
+.ghost{border-color:transparent;background:transparent;color:#b5b3b0}
+.step{display:flex;gap:12px;align-items:flex-start;padding:10px 12px;border-radius:8px;border:1px solid transparent}
+.num{width:22px;height:22px;border-radius:6px;background:#2c2c2c;color:#b5b3b0;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.verb{font-size:11px;font-weight:500;color:#8e8e8e}
+.what{font-size:13px;color:#e8e6e3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:12px}
+.st{font-size:11px;width:16px;text-align:center;flex-shrink:0;margin-top:3px}
+.kbd{font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,0.14);color:#8e8e8e}
+.meta-k{font-size:12px;color:#8e8e8e}
+.meta-v{font-size:13px;color:#e8e6e3}
+.d-item{height:26px;display:flex;align-items:center;gap:10px;padding:0 12px;font-size:12px;color:#3c4043}
+.d-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+.d-row{height:36px;display:flex;align-items:center;gap:12px;border-bottom:1px solid #eceff1;font-size:12px;color:#3c4043}
+</style>
+</helmet>
+
+<div style="width: 1440px; height: 900px; display: flex; background: #1a1a1a; overflow: hidden">
+
+  <!-- App rail -->
+  <nav aria-label="Studio" style="width: 64px; background: #1e1e1e; border-right: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 6px">
+    <div style="width: 36px; height: 36px; border-radius: 10px; background: #252525; border: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center; margin-bottom: 14px">
+      <svg class="ico" viewBox="0 0 24 24" style="color: #d97757"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>
+    </div>
+    <button class="rail-btn" aria-label="Workflows"><svg class="ico" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg></button>
+    <button class="rail-btn" aria-label="Human Edit" aria-current="page" style="background: #2a2a2a; color: #e8e6e3"><svg class="ico" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></svg></button>
+    <button class="rail-btn" aria-label="Publish Skill Package"><svg class="ico" viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4"/><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg></button>
+    <button class="rail-btn" aria-label="Build Installer"><svg class="ico" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg></button>
+    <div style="flex-grow: 1"></div>
+    <button class="rail-btn" aria-label="Settings"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg></button>
+  </nav>
+
+  <div style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0">
+
+    <!-- One-row header -->
+    <header style="height: 64px; flex-shrink: 0; display: flex; align-items: center; gap: 14px; padding: 0 20px 0 12px; border-bottom: 1px solid rgba(255,255,255,0.08)">
+      <button class="rail-btn" aria-label="Back to workflows"><svg class="ico" viewBox="0 0 24 24"><path d="M19 12H5m0 0 6-6m-6 6 6 6"/></svg></button>
+      <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+        <h1 style="margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3">Github to Drive File Handoff</h1>
+        <div style="font-size: 12px; color: #8e8e8e">8 steps · needs 95% confidence to approve</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-left: 10px; padding: 4px 4px 4px 10px; border-radius: 10px; background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.22)">
+        <span style="font-size: 12px; color: #fbbf24">▲ Out of date since your last edit</span>
+        <button class="btn" style="height: 28px; padding: 0 10px; font-size: 12px; background: transparent; border-color: rgba(251,191,36,0.35); color: #fcd34d">
+          <svg class="ico" viewBox="0 0 24 24" style="width: 14px; height: 14px"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 11V5m0 6h-6"/></svg>Recompile
+        </button>
+      </div>
+      <div style="flex-grow: 1"></div>
+      <div style="display: flex; align-items: center; gap: 10px; margin-right: 6px">
+        <div style="width: 96px; height: 4px; border-radius: 2px; background: #2c2c2c; overflow: hidden"><div style="width: 75%; height: 4px; background: #4ade80"></div></div>
+        <span style="font-size: 12px; color: #b5b3b0">6 of 8 checked</span>
+      </div>
+      <button class="btn ghost"><svg class="ico" viewBox="0 0 24 24" style="color: #fbbf24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3Z"/></svg>Suggestions <span style="font-size: 11px; padding: 1px 6px; border-radius: 6px; background: #2c2c2c; color: #e8e6e3">8</span></button>
+      <div style="display: flex; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; overflow: hidden">
+        <button class="rail-btn" aria-label="Undo" style="width: 36px; height: 34px; border-radius: 0"><svg class="ico" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+        <button class="rail-btn" aria-label="Redo" style="width: 36px; height: 34px; border-radius: 0; border-left: 1px solid rgba(255,255,255,0.12)"><svg class="ico" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+      </div>
+      <button class="btn">More<svg class="ico" viewBox="0 0 24 24" style="width: 14px; height: 14px"><path d="m6 9 6 6 6-6"/></svg></button>
+      <button class="btn" style="border-color: rgba(255,255,255,0.18)"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>Approve workflow</button>
+    </header>
+
+    <div style="flex-grow: 1; display: flex; min-height: 0">
+
+      <!-- Steps list -->
+      <aside aria-label="Steps" style="width: 344px; flex-shrink: 0; background: #1e1e1e; border-right: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column">
+        <div style="height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 20px">
+          <span style="font-size: 13px; font-weight: 600">Steps</span>
+          <button class="btn ghost" style="height: 30px; padding: 0 10px; font-size: 12px"><svg class="ico" viewBox="0 0 24 24" style="width: 14px; height: 14px"><path d="M12 5v14M5 12h14"/></svg>Add step</button>
+        </div>
+
+        <div style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px; padding: 0 10px; overflow: hidden">
+          <div class="step"><div class="num">1</div><div style="flex-grow: 1; min-width: 0"><div class="verb">Go to</div><div class="what mono">github.com/github/gitignore</div></div><span class="st" style="color: #4ade80" aria-label="Checked">●</span></div>
+          <div class="step"><div class="num">2</div><div style="flex-grow: 1; min-width: 0"><div class="verb">Scroll</div><div class="what">The page</div></div><span class="st" style="color: #4ade80" aria-label="Checked">●</span></div>
+          <div class="step"><div class="num">3</div><div style="flex-grow: 1; min-width: 0"><div class="verb">Repeat for each row</div><div class="what">Process each item in <span class="mono" style="color: #b5b3b0">files</span></div>
+            <div style="margin-top: 6px; display: flex; align-items: center; gap: 6px; font-size: 12px; color: #8e8e8e"><svg class="ico" viewBox="0 0 24 24" style="width: 13px; height: 13px"><path d="m9 18 6-6-6-6"/></svg>4 steps inside the loop</div>
+          </div><span class="st" style="color: #4ade80" aria-label="Checked">●</span></div>
+
+          <div style="display: flex; align-items: center; gap: 10px; padding: 10px 12px 6px">
+            <div style="height: 1px; flex-grow: 1; background: rgba(255,255,255,0.08)"></div>
+            <span style="font-size: 11px; color: #8e8e8e">New tab · <span class="mono" style="font-size: 11px">drive.google.com</span></span>
+            <div style="height: 1px; flex-grow: 1; background: rgba(255,255,255,0.08)"></div>
+          </div>
+
+          <div class="step"><div class="num">4</div><div style="flex-grow: 1; min-width: 0"><div class="verb">Switch tab</div><div class="what">Recorded tab opens</div></div><span class="st" style="color: #4ade80" aria-label="Checked">●</span></div>
+          <div class="step"><div class="num">5</div><div style="flex-grow: 1; min-width: 0"><div class="verb">Go to</div><div class="what mono">drive.google.com/drive</div></div><span class="st" style="color: #4ade80" aria-label="Checked">●</span></div>
+          <div class="step"><div class="num">6</div><div style="flex-grow: 1; min-width: 0"><div class="verb">Click</div><div class="what">“New” button</div></div><span class="st" style="color: #4ade80" aria-label="Checked">●</span></div>
+          <div class="step" aria-current="step" style="background: rgba(217,119,87,0.12); border-color: rgba(217,119,87,0.4)"><div class="num" style="background: #d97757; color: #1a1a1a">7</div><div style="flex-grow: 1; min-width: 0"><div class="verb" style="color: #e0a58f">Click · reviewing</div><div class="what">“File upload” in the New menu</div></div><span class="st" style="color: #fbbf24" aria-label="Needs review">▲</span></div>
+          <div class="step"><div class="num">8</div><div style="flex-grow: 1; min-width: 0"><div class="verb">[Step 8 action]</div><div class="what" style="color: #8e8e8e">[Step 8 target]</div></div><span class="st" style="color: #fbbf24" aria-label="Needs review">▲</span></div>
+        </div>
+
+        <div style="margin: 10px; padding: 12px 14px; border-radius: 8px; background: #252525; border: 1px solid rgba(255,255,255,0.08); display: flex; gap: 10px">
+          <svg class="ico" viewBox="0 0 24 24" style="color: #8e8e8e; width: 16px; height: 16px; margin-top: 1px"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div style="font-size: 12px; line-height: 1.5; color: #b5b3b0">4 steps were recorded without an element outline. They'll still be found by their text and role.</div>
+        </div>
+      </aside>
+
+      <!-- Review pane -->
+      <main style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column">
+        <div style="flex-grow: 1; padding: 28px 40px 0; display: flex; flex-direction: column; gap: 22px; min-height: 0">
+
+          <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px">
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <div style="font-size: 12px; color: #8e8e8e">Step 7 of 8 · Click</div>
+              <h2 style="margin: 0; font-size: 24px; font-weight: 600; line-height: 1.25">Is this the right element?</h2>
+              <p style="margin: 0; font-size: 14px; color: #b5b3b0">Conxa will click <span style="color: #e8e6e3">“File upload”</span> inside Google Drive's New menu.</p>
+            </div>
+            <ol aria-label="Review stages" style="margin: 0; padding: 0; list-style: none; display: flex; align-items: center; gap: 10px; font-size: 12px">
+              <li style="display: flex; align-items: center; gap: 8px; padding: 6px 12px 6px 6px; border-radius: 999px; background: #252525; border: 1px solid rgba(255,255,255,0.14); color: #e8e6e3; font-weight: 500"><span style="width: 20px; height: 20px; border-radius: 999px; background: #e8e6e3; color: #1a1a1a; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600">1</span>Element</li>
+              <li style="width: 16px; height: 1px; background: rgba(255,255,255,0.14)"></li>
+              <li style="display: flex; align-items: center; gap: 8px; color: #8e8e8e"><span style="width: 20px; height: 20px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: center; font-size: 11px">2</span>Selectors</li>
+              <li style="width: 16px; height: 1px; background: rgba(255,255,255,0.14)"></li>
+              <li style="display: flex; align-items: center; gap: 8px; color: #8e8e8e"><span style="width: 20px; height: 20px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: center; font-size: 11px">3</span>Check</li>
+            </ol>
+          </div>
+
+          <div style="flex-grow: 1; display: flex; gap: 24px; min-height: 0">
+
+            <!-- Screenshot (mocked recording frame) -->
+            <figure style="margin: 0; flex-grow: 1; min-width: 0; display: flex; flex-direction: column; border-radius: 10px; background: #252525; border: 1px solid rgba(255,255,255,0.08); overflow: hidden">
+              <div style="height: 40px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 16px; border-bottom: 1px solid rgba(255,255,255,0.08)">
+                <figcaption style="font-size: 12px; color: #8e8e8e">Recorded screen · <span class="mono" style="font-size: 11px">drive.google.com</span></figcaption>
+                <div style="display: flex; gap: 2px">
+                  <button class="rail-btn" aria-label="Zoom to element" style="width: 30px; height: 30px"><svg class="ico" viewBox="0 0 24 24" style="width: 16px; height: 16px"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M11 8v6M8 11h6"/></svg></button>
+                  <button class="rail-btn" aria-label="Full screen" style="width: 30px; height: 30px"><svg class="ico" viewBox="0 0 24 24" style="width: 16px; height: 16px"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+                </div>
+              </div>
+              <div style="flex-grow: 1; padding: 18px; display: flex; align-items: center; justify-content: center; background: #202020">
+                <div style="width: 100%; height: 100%; border-radius: 8px; background: #ffffff; overflow: hidden; display: flex; flex-direction: column">
+                  <div style="height: 48px; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid #eceff1">
+                    <div style="display: flex; align-items: center; gap: 8px; font-size: 15px; color: #3c4043; width: 170px"><div style="width: 20px; height: 18px; border-radius: 3px; background: #9aa0a6"></div>Drive</div>
+                    <div style="flex-grow: 1; max-width: 460px; height: 32px; border-radius: 16px; background: #eef1f6; display: flex; align-items: center; padding: 0 14px; font-size: 12px; color: #5f6368">Search in Drive</div>
+                  </div>
+                  <div style="flex-grow: 1; display: flex; position: relative">
+                    <div style="width: 186px; padding: 14px 0; border-right: 1px solid #eceff1"></div>
+                    <div style="flex-grow: 1; padding: 16px 20px; display: flex; flex-direction: column">
+                      <div style="font-size: 16px; color: #3c4043; margin-bottom: 14px">Welcome to Drive</div>
+                      <div style="font-size: 11px; color: #5f6368; margin-bottom: 6px">Suggested files</div>
+                      <div class="d-row"><div class="d-dot" style="background: #9aa0a6"></div>ZIP.gitignore<span style="margin-left: auto; color: #80868b">You created · Sep 20</span></div>
+                      <div class="d-row"><div class="d-dot" style="background: #9aa0a6"></div>AR.gitignore<span style="margin-left: auto; color: #80868b">You created · Sep 20</span></div>
+                      <div class="d-row"><div class="d-dot" style="background: #9aa0a6"></div>ChefCookbook.gitignore<span style="margin-left: auto; color: #80868b">You created · Sep 20</span></div>
+                      <div class="d-row"><div class="d-dot" style="background: #9aa0a6"></div>Ballerina.gitignore<span style="margin-left: auto; color: #80868b">You created · Sep 14</span></div>
+                      <div class="d-row"><div class="d-dot" style="background: #9aa0a6"></div>C++.gitignore<span style="margin-left: auto; color: #80868b">You uploaded · Sep 13</span></div>
+                      <div class="d-row"><div class="d-dot" style="background: #9aa0a6"></div>Angular.gitignore<span style="margin-left: auto; color: #80868b">You uploaded · Sep 11</span></div>
+                    </div>
+
+                    <!-- Open New menu -->
+                    <div style="position: absolute; left: 12px; top: 8px; width: 250px; padding: 6px 0; border-radius: 8px; background: #ffffff; border: 1px solid #dadce0">
+                      <div class="d-item"><div class="d-dot" style="background: #9aa0a6"></div>New folder</div>
+                      <div style="height: 1px; background: #eceff1; margin: 4px 0"></div>
+                      <div class="d-item" style="position: relative; background: rgba(217,119,87,0.1); outline: 2px solid #d97757; outline-offset: -2px; color: #202124; font-weight: 500"><div class="d-dot" style="background: #9aa0a6"></div>File upload
+                        <span style="position: absolute; left: calc(100% + 10px); top: 1px; white-space: nowrap; padding: 3px 8px; border-radius: 6px; background: #d97757; color: #1a1a1a; font-size: 11px; font-weight: 600">Target · 320 × 32</span>
+                      </div>
+                      <div class="d-item"><div class="d-dot" style="background: #9aa0a6"></div>Folder upload</div>
+                      <div style="height: 1px; background: #eceff1; margin: 4px 0"></div>
+                      <div class="d-item"><div class="d-dot" style="background: #4285f4"></div>Google Docs</div>
+                      <div class="d-item"><div class="d-dot" style="background: #34a853"></div>Google Sheets</div>
+                      <div class="d-item"><div class="d-dot" style="background: #fbbc04"></div>Google Slides</div>
+                      <div class="d-item"><div class="d-dot" style="background: #9aa0a6"></div>More</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </figure>
+
+            <!-- Decision panel -->
+            <section aria-label="Decision" style="width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 16px">
+              <div style="padding: 16px; border-radius: 10px; background: #252525; border: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 12px">
+                <div style="font-size: 13px; font-weight: 600">What Conxa recorded</div>
+                <div style="display: grid; grid-template-columns: 84px minmax(0, 1fr); row-gap: 10px; align-items: baseline">
+                  <span class="meta-k">Text</span><span class="meta-v">File upload</span>
+                  <span class="meta-k">Kind</span><span class="meta-v">Menu item</span>
+                  <span class="meta-k">Inside</span><span class="meta-v">“New” menu</span>
+                  <span class="meta-k">Size</span><span class="meta-v mono">320 × 32 px</span>
+                </div>
+              </div>
+
+              <div style="display: flex; flex-direction: column; gap: 8px">
+                <button class="btn" style="height: 44px; justify-content: space-between; background: #d97757; border-color: #d97757; color: #1a1a1a; font-size: 14px; font-weight: 600; padding: 0 14px">
+                  <span style="display: flex; align-items: center; gap: 8px"><svg class="ico" viewBox="0 0 24 24"><path d="m5 12 5 5L19 7"/></svg>Yes, this is right</span>
+                  <span class="kbd" style="border-color: rgba(26,26,26,0.3); color: #1a1a1a">Enter</span>
+                </button>
+                <button class="btn" style="height: 44px; justify-content: space-between; font-size: 14px; padding: 0 14px">
+                  <span style="display: flex; align-items: center; gap: 8px"><svg class="ico" viewBox="0 0 24 24"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/></svg>Draw a new box</span>
+                  <span class="kbd">D</span>
+                </button>
+              </div>
+
+              <p style="margin: 0; font-size: 12px; line-height: 1.5; color: #8e8e8e">Wrong element highlighted? Draw a box around the right one and Conxa will re-learn how to find it.</p>
+
+              <a href="#" style="display: flex; align-items: center; gap: 8px; font-size: 13px; text-decoration: none; color: #b5b3b0"><svg class="ico" viewBox="0 0 24 24" style="width: 16px; height: 16px"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 15 5-4 4 3 3-2 6 4"/></svg>Compare with 5 recording screenshots<svg class="ico" viewBox="0 0 24 24" style="width: 14px; height: 14px"><path d="m9 18 6-6-6-6"/></svg></a>
+            </section>
+          </div>
+        </div>
+
+        <!-- Step navigation -->
+        <footer style="height: 64px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 40px; margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.08)">
+          <button class="btn ghost"><svg class="ico" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>Step 6</button>
+          <button class="btn ghost"><svg class="ico" viewBox="0 0 24 24" style="color: #d97757"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2 2M16 16l2 2M6 18l2-2M16 8l2-2"/></svg>Ask for help with this step</button>
+          <button class="btn ghost">Step 8<svg class="ico" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg></button>
+        </footer>
+      </main>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

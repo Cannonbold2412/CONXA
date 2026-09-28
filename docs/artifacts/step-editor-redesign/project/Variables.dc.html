@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Input variables</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;background:#1a1a1a;color:#e8e6e3}
+*{scrollbar-width:thin;scrollbar-color:#3a3a3a transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#3a3a3a;border-radius:8px;border:2px solid #1a1a1a}
+*::-webkit-scrollbar-thumb:hover{background:#5a5a5a}
+
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; position: relative; background: #14141388; display: flex; align-items: flex-start; justify-content: center; padding-top: 64px; overflow: hidden">
+<div style="width: 760px; max-height: 780px; box-sizing: border-box; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 16px; box-shadow: 0 24px 64px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden">
+<div style="display: flex; align-items: flex-start; gap: 14px; padding: 24px 28px 20px; border-bottom: 1px solid #2e2e2e">
+<div style="width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px; background: rgba(217,119,87,0.14); display: flex; align-items: center; justify-content: center; color: #d97757">
+<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+</div>
+<div style="flex-grow: 1">
+<h2 style="margin: 0; font-size: 17px; font-weight: 600">Input variables</h2>
+<p style="margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: #8e8e8e">Turn fixed values into inputs your customers fill in each run.</p>
+</div>
+<button type="button" aria-label="Close" style="width: 28px; height: 28px; flex-shrink: 0; border: 0; border-radius: 8px; background: transparent; color: #8e8e8e; cursor: pointer; display: flex; align-items: center; justify-content: center">
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 3l10 10M13 3L3 13"/></svg>
+</button>
+</div>
+<div style="padding: 24px 28px; display: flex; flex-direction: column; gap: 20px; overflow-y: auto">
+
+<div style="display: flex; flex-direction: column; gap: 10px">
+<div style="font-size: 13px; font-weight: 600; color: #8e8e8e; text-transform: uppercase; letter-spacing: 0.05em">Used in your steps</div>
+<div style="display: flex; gap: 8px; flex-wrap: wrap"><span style="padding: 4px 10px; border-radius: 999px; background: rgba(217,119,87,0.12); color: #d97757; font-size: 13px; font-family: ui-monospace, monospace">downloaded_files_dir</span><span style="padding: 4px 10px; border-radius: 999px; background: rgba(217,119,87,0.12); color: #d97757; font-size: 13px; font-family: ui-monospace, monospace">file_id</span></div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 10px; padding-top: 20px; border-top: 1px solid #2e2e2e">
+<div style="display: flex; align-items: center; justify-content: space-between">
+<div style="font-size: 13px; font-weight: 600; color: #8e8e8e; text-transform: uppercase; letter-spacing: 0.05em">Variables</div>
+<button type="button" style="border: 0; background: transparent; font-size: 13px; color: #d97757; font-weight: 500; cursor: pointer">+ New variable</button>
+</div>
+
+<div style="padding: 16px; border: 1px solid #3a3a3a; border-radius: 12px; display: flex; flex-direction: column; gap: 12px">
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+<div style="display: flex; align-items: center; gap: 10px">
+<span style="font-size: 15px; font-family: ui-monospace, monospace; color: #e8e6e3">files</span>
+<span style="font-size: 13px; color: #8e8e8e">Files</span>
+</div>
+<span style="font-size: 12px; color: #fbbf24">Not used in any step</span>
+</div>
+<div style="display: flex; gap: 20px; font-size: 13px; color: #8e8e8e">
+<span>Type <span style="color: #e8e6e3">Text</span></span>
+<span>Default <span style="color: #e8e6e3">none</span></span>
+<span>Optional <span style="color: #e8e6e3">No</span></span>
+<span>Sensitive <span style="color: #e8e6e3">No</span></span>
+</div>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 10px; padding-top: 20px; border-top: 1px solid #2e2e2e">
+<div style="font-size: 15px; font-weight: 600">Turn a recorded value into a variable</div>
+<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #8e8e8e">Replaces a literal value inside typed step values only, selectors are left untouched.</p>
+<div style="display: flex; gap: 12px; align-items: center">
+<input type="text" value="conxa-db" style="flex-grow: 1; height: 42px; box-sizing: border-box; padding: 0 12px; border: 1px solid #3a3a3a; border-radius: 8px; background: #252525; font-size: 14px; color: #e8e6e3">
+<span style="color: #5a5a5a; font-size: 13px">to</span>
+<input type="text" value="db_name" style="flex-grow: 1; height: 42px; box-sizing: border-box; padding: 0 12px; border: 1px solid #3a3a3a; border-radius: 8px; background: #252525; font-size: 14px; color: #d97757; font-family: ui-monospace, monospace">
+</div>
+<div><button type="button" style="height: 38px; padding: 0 16px; border: 1px solid #3a3a3a; border-radius: 8px; background: transparent; font-size: 13px; color: #e8e6e3; cursor: pointer">Replace everywhere</button></div>
+</div>
+
+</div>
+<div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 28px; border-top: 1px solid #2e2e2e">
+<span style="font-size: 13px; color: #8e8e8e">All changes saved</span>
+<button type="button" style="height: 40px; padding: 0 20px; border: 0; border-radius: 10px; background: #d97757; color: #1a1a1a; font-size: 14px; font-weight: 600; cursor: pointer">Save variables</button>
+</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{{"$preview":{{"width":1440,"height":900}}}}'>
+class Component extends DCLogic {{
+renderVals() {{ return {{}}; }}
+}}
+</script>
+</body>
+</html>

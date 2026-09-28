@@ -454,6 +454,8 @@ Opportunity," even if "Update Opportunity" is failing its tests. Full
 mechanism in `docs/TRD.md` §5.5; API contracts in `docs/Backend-Schema.md`
 §5.1d.
 
+If the selected skill hasn't passed its test, the Publish page offers **Run test** inline (step 1) — the same test runner as the Group Page — and keeps the release form locked until it passes.
+
 ```mermaid
 flowchart TD
     A[Skill package built; user visits Publish, picks a skill] --> A2["Studio previews: proposed version, diff vs. THIS skill's current stable, artifact hash"]
