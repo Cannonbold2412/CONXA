@@ -736,8 +736,8 @@ optional_hint: dict | None   # {"kind": "try_dismiss", "container_signal": "<sel
 
 - **Set by:** `build.py` carries `RecordedEvent.optionality == "stochastic"`'s `branch_hint` onto
   the compiled step unchanged.
-- **Surfaced by:** `StepEditorDTO.optional_hint` (same shape), read-only — Human Edit renders a
-  "treat as optional?" affordance when present.
+- **Surfaced by:** `StepEditorDTO.optional_hint` (same shape), read-only — Human Edit's
+  `ReviewQuestionsDialog` asks an "Optional popup?" question when present.
 - **Consumed by (compile time):** the second opinion's `suggest_optional` kind (§3.9) — converts
   the step and clears the hint before the package is ever written.
 - **Consumed by (review time):** `POST confirm_optional_interstitial` (`skill_id`, `step_index`),

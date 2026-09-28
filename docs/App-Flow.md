@@ -282,7 +282,7 @@ flowchart TD
     E --> T[Re-target element wizard] --> T1[Phase 1: draw region] --> T2[cmd_retarget_preview: candidates + validation diff] --> T3[Phase 3: Validation — review/edit the enforced post-condition] --> T4[cmd_retarget_apply → bbox + target + identity_bundle + validation, one undo entry]
     E --> U1[Add/remove/reorder if_present body step] --> U2[cmd_insert_branch_step / cmd_delete_branch_step / cmd_reorder_branch_steps]
     E --> U3[Edit nested branch-body step field] --> U4[cmd_patch_step with path='branch.steps N ']
-    E --> U5["Confirm 'treat as optional?' suggestion"] --> U6[cmd_confirm_optional_interstitial → step becomes try_dismiss branch]
+    E --> U5["Answer 'Optional popup?' in the review-questions dialog"] --> U6[cmd_confirm_optional_interstitial → step becomes try_dismiss branch]
     E --> V[Sign off workflow] --> W[cmd_sign_off_workflow → signed_off=true, edited_at=now]
     W --> Z[Auto-invoke skill_package_builder.build_skill_package, only_workflow_id=this workflow — see §7] --> AA[Return built=true; only this workflow's skill built — a sibling workflow that isn't compiled/edited yet is never required or touched]
 ```
@@ -331,8 +331,9 @@ sandbox answerer provides, because nothing but a person can do what a hand-over 
 **"Treat as optional?" suggestion (recording-next-steps.md Priority 2, 2026-07-10):** the recorder
 now observes (never probes) whether a step's target sat inside what looked like an optional
 interstitial — a dialog or cookie/consent banner — during recording, and flags it advisory-only;
-the step still compiles and executes as a normal required step regardless. When flagged, the step
-row in Human Edit shows a small "treat as optional?" badge (`WorkflowStepItem.tsx`). Confirming it
+the step still compiles and executes as a normal required step regardless. When flagged, Human Edit
+asks an unskippable "Optional popup?" question in `ReviewQuestionsDialog.tsx` (the same dialog that
+asks the for-each loop questions). Answering Yes
 calls `cmd_confirm_optional_interstitial`, which rewrites the step into a real `try_dismiss` branch
 (candidates seeded from the step's own recorded selector plus the recorder's observed container) —
 the same executor path `try_dismiss` steps already use (§10.7 of `docs/TRD.md`). This is the only
@@ -639,11 +640,11 @@ sequenceDiagram
     RT->>RT: load execution.json + recovery.json
     RT->>RT: load storageState from cache/sessions/, validate against protected_url
     alt session missing or expired
-        RT->>Browser: open ONE Chromium; a sign-in tab per missing app (valid apps untouched)
+        RT->>Browser: open ONE Chromium, a sign-in tab per missing app (valid apps untouched)
         RT-->>Claude: returns at once: "Authentication required — sign in to <apps>" + run_id
         User->>Browser: signs in (SSO / MFA / CAPTCHA — take as long as needed)
-        Browser-->>RT: detected automatically; tab closes; session saved
-        Note over RT,Claude: the workflow then starts BY ITSELF in the same Chromium —<br/>Claude does not run it again; it polls get_execution_status(run_id)<br/>for the result. Closed tab / failed sign-in is reported by name, and can be retried.
+        Browser-->>RT: detected automatically, tab closes, session saved
+        Note over RT,Claude: the workflow then starts BY ITSELF in the same Chromium —<br/>Claude does not run it again, it polls get_execution_status(run_id)<br/>for the result. Closed tab / failed sign-in is reported by name, and can be retried.
     else session valid
         RT->>Browser: launch Chromium (headed by default)
         loop For each step

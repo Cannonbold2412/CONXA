@@ -15,9 +15,9 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | MCP — MCP | 1 | MCP-4 |
 | TEST — Testing & Cleanup | 1 | TEST-6 |
 | REC — Recorder | 1 | REC-STALE-1 |
-| AUTH — Authentication | 16 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 18, 19, 20, 21 |
+| AUTH — Authentication | 17 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15, 18, 19, 20, 21 |
 | DEAD — Tech debt | 1 | DEAD-1 |
-| **Total** | **86** | |
+| **Total** | **87** | |
 
 ---
 
@@ -1401,7 +1401,7 @@ question — that compile produced inputs named `sports` and `react_select_3_lis
 dropdown's enum is also frozen from the recording (picking a different State still offers the
 recorded State's cities). None of these block a run; all deserve their own item.
 
-## AUTH — Authentication (14 done)
+## AUTH — Authentication (17 done)
 
 ### AUTH-1 — Warn at pre-flight when a workflow visits a host that has no sign-in app configured
 **Resolved:** 2026-09-21
@@ -1466,6 +1466,12 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Category:** Execution & Recovery / Authentication
 - **Description:** Found 2026-09-24 debugging Test Skill on a Github→Google Drive workflow. Two real bugs on the way to this were found and fixed first: (1) `group_store.apps_for_workflow` matched by exact hostname instead of site (AUTH-5's cross-host matching had the same class of bug at the Studio layer), and (2) both apps had empty `success_url` in this repo's own test data. After both, Google validated reliably but GitHub still failed 4/4 times despite a genuinely valid, non-expired stored session — narrowed to the runtime's host-based detection itself, not a data/config problem.
 - **Complexity:** M (turned out to be a design-level fix, not a two-line patch).
+
+### AUTH-11 — `docs/artifacts/login-desk.html` is stale after AUTH-9's baseline-compare redesign
+**Resolved:** 2026-09-26
+- **Resolution:** Rewrote the artifact's "journey" material to match `docs/TRD.md` §5.3.5: the host-list section is now "signed-out baseline + landed lookout", the `journey` lane/column/cast card/flow node/simulator copy became "Landed", and the cast gained the mid-flow latch. Also corrected the pause sign (OTP-shaped only), the judge's ask rules and baseline fallback, the human override (Done button / `login-done`, with 25 s only logging), the success address (navigation hint only), and the shipped decision log and "Signed in as". Republished to the live artifact.
+- **Category:** Documentation
+- **Complexity:** M
 
 ### AUTH-13 — Learned per-app authentication: Build Studio observes how sign-in actually works instead of the runtime guessing
 **Resolved:** 2026-09-25

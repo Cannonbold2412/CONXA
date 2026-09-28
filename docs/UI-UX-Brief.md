@@ -136,7 +136,7 @@ The production source of truth is:
   - **Record** — enabled once the group is fully authenticated and the workflow has no recording yet; opens `RecordWorkflowDialog` inline
   - **Compile** — enabled once a recording exists; navigates to `CompileProgress`. Once a skill already exists, the same node instead opens a "Recompile?" confirm (uses the Human Edit pool) before navigating with `?mode=recompile`. While another workflow is compiling the click is refused with a toast, since only one compile is tracked at a time (§2.8)
   - **Human Edit** — enabled once a skill exists; navigates to `/edit/:skillId?from=/groups/:groupId`. Renamed from "Review" on 2026-08-15 so the rail, the sidebar and the usage card all use one word for the same thing
-  - **Test** — enabled once a skill exists, the shared skill package has been built, and the workflow isn't stale (edited since the last build); toggles an inline panel under the row that mounts `WorkflowTestRow` wholesale (same input dialog, group-auth gate, live log, and pass/fail badge as Test Skill's own list)
+  - **Test** — enabled once a skill exists, the shared skill package has been built, and the workflow isn't stale (edited since the last build); toggles an inline panel under the row that mounts `WorkflowTestRow` wholesale (same input dialog, group-auth gate, live log, and pass/fail badge as before — this is now the *only* place a workflow is tested, see §2.10 note below)
   - **Ready to Package** — enabled once the workflow's stage is `ready`; navigates to Publish Skill Package
 
 **Components:** `GroupPage`, `GroupAuthWizard` (now with row-level edit/remove), `AddAppDialog`, `NewWorkflowDialog` (group-scoped), `WorkflowStageRail`, `RecordWorkflowDialog`, `DeleteWorkflowButton`, `WorkflowTestRow` (reused inline), `InspectorPage`, `UsageCards`.
@@ -231,7 +231,9 @@ Nothing persists until Apply (on the confirm route), which calls `cmd_retarget_a
 
 All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, the Tools `<aside>`) share one gradient-fill depth treatment (`linear-gradient(180deg,rgba(17,24,39,0.9),rgba(7,10,16,0.95))` + `ring-1 ring-inset ring-white/[0.03]`) applied inline rather than via the reusable `components/ui/panel-chrome.tsx` `PanelChrome` component, because these are flush grid columns against the pane resizer, not floating/inset panels — `PanelChrome`'s rounded corners + outer shadow are reserved for panels with margin around them (e.g. `StepConfigForm.tsx`'s cards use `PanelChrome`-equivalent styling via a shared `PANEL_CARD_CLASS`). Status colors (`--status-ok/warn/error`, `globals.css`) replace what were previously hardcoded emerald/amber/red/sky classes in `BuildPipelineStepper.tsx`, `RetargetPhaseSelectors.tsx`'s uniqueness badges, and `SuggestionsPanel.tsx`'s severity badges — surfaced as `Badge`'s new `success`/`warning` variants (`destructive` already existed) and a new `Button` `brand` variant, both in `components/ui/`.
 
-**Sign-off behavior (revised 2026-07):** **Approve** (renamed from "Finish editing," redesign doc §12 Phase 3) awaits `sign_off_workflow` and surfaces failure as a toast instead of silently swallowing it. If signing off completes the workspace's build gate — every workflow compiled and signed off — `cmd_sign_off_workflow` auto-builds the shared skill package (no separate Build Skill Package page visit) and the editor navigates straight to Test Skill; otherwise it reports how many other workflows are still pending.
+**Sign-off behavior (revised 2026-09):** **Approve** (renamed from "Finish editing," redesign doc §12 Phase 3) awaits `sign_off_workflow` and surfaces failure as a toast instead of silently swallowing it. If signing off completes the workspace's build gate — every workflow compiled and signed off — `cmd_sign_off_workflow` auto-builds the shared skill package (no separate Build Skill Package page visit); either way the editor navigates to the workflow's own group page (`GroupPage.tsx`), where its row's **Test** toggle is the way to run it — there is no standalone Test Skill page anymore (see §2.10).
+
+**Compile → Human Edit is now a direct hop.** `CompileProgress.tsx` no longer waits for a "Review steps →" click once a compile finishes — it navigates straight into Human Edit (`history.replace`, so Back from the editor doesn't return to a finished compile screen). The moment Human Edit opens, a mandatory `ReviewQuestionsDialog` (one Yes/No question at a time, no close button, Esc and outside-click both no-op) walks the reviewer through every compiler-detected "generalize to a loop" suggestion and every recorder-flagged optional-popup hint still pending on this skill, before the editor becomes interactive. Answering everything makes the dialog disappear on its own (it recomputes its pending list from the live workflow after each answer); a workflow with nothing pending never shows it. A recompile regenerates fresh hints/suggestions, which is what "answered once per compile" comes from — there's no separate persisted "already asked" flag.
 
 **Two-tier contextual help (`InfoHint` + `Tooltip`):** Every "i" affordance is a themed click-to-open popover (`components/ui/info-hint.tsx`) showing a plain-language **summary** for non-technical users plus an expandable **"Technical details"** section for power users. Help copy is centralized in `lib/editorHelp.tsx`. Short icon-button labels use a themed `Tooltip` (`components/ui/tooltip.tsx`) instead of native `title=`. Both build on Radix (`components/ui/popover.tsx`) and animate via the `.anim-pop` CSS layer in `globals.css`, degrading to instant under `prefers-reduced-motion`. The clay brand accent is the `--brand*` token set in `globals.css`.
 
@@ -296,16 +298,15 @@ All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, 
 
 ---
 
-### 2.10 Test Skill (`TestSkillPage.tsx`)
+### 2.10 Testing a workflow (no standalone page — `GroupPage.tsx`)
 
 **Purpose:** Run a compiled workflow against the local runtime for validation.
-**Inputs:** No selector — the page is workspace-scoped, fetching every workflow (`fetchWorkflows()`) and the shared skill pack (`fetchSkillPack()`) in parallel; test inputs per workflow row.
+**Where:** There is no dedicated Test Skill page (`TestSkillPage.tsx`, `WorkflowTestList`, and `workflowTestSummary()` were removed 2026-09-27, together with the `/test` route and sidebar entry). Testing happens from a workflow's own row on its group page: the row's **Test** toggle (§2.4/§2.5's group-page workflow row) mounts `WorkflowTestRow` inline — same input dialog, group-auth gate (`RunGateDialog`), live log, and pass/fail badge the old page offered, just scoped to one workflow instead of listing the whole workspace.
+**Inputs:** Test inputs for that one workflow, entered inline.
 **Outputs:** Pass/fail result, runtime output text.
-**User goal:** Confirm the workflow works end-to-end before shipping to customers.
+**User goal:** Confirm the workflow works end-to-end before shipping to customers — reached immediately after approving it in Human Edit, with no intermediate stop.
 
-Renamed from `TestPluginPage.tsx` in the 2026-08-12 Plugin→Workflow/SkillPack refactor, dropping the per-automation selector entirely in favor of listing every workflow in the workspace at once via `WorkflowTestList` (renamed from `PluginWorkflowTests.tsx`); `workflowTestSummary()` now takes the full `Workflow[]` list directly instead of a single automation's nested workflows.
-
-**Cancel + elapsed time (EXEC-35, 2026-09-04):** each running test's "Testing…" label now shows live elapsed time, and a Cancel button appears beside it — calls the runtime's `cancel_execution` MCP tool (via a new `cancel_test_workflow` backend command that tracks the run's `run_id`) so a stuck or unwanted test returns to idle in a few seconds instead of only ever ending via the runtime's own 900s subprocess timeout.
+**Cancel + elapsed time (EXEC-35, 2026-09-04):** each running test's "Testing…" label shows live elapsed time, and a Cancel button appears beside it — calls the runtime's `cancel_execution` MCP tool (via a `cancel_test_workflow` backend command that tracks the run's `run_id`) so a stuck or unwanted test returns to idle in a few seconds instead of only ever ending via the runtime's own 900s subprocess timeout.
 
 **UX issues:**
 - Runtime must be installed locally for testing — there's no inline message when it's not found (just `runtime_not_found` error code).
@@ -639,14 +640,17 @@ next time that email signs into Conxa Execute. The old "Copy link" action and th
 
 ### Build Studio
 
-One button per stage of the Workflows -> Human Edit -> Test Skill -> Publish
-Skill Package -> Build Installer flow (2026-08 Workflow Groups redesign),
-replacing the earlier Record-centric sidebar (Record/Dashboard/Plugins/etc).
-The Workflows page (a grid of Workflow Groups) is the primary landing page
-and entry point for all recording/editing. **Compile has no sidebar entry or
-standalone page** — it lives only on the `WorkflowStageRail` on each workflow's
-row on its group's page. **There is no per-workflow detail page** (removed
-2026-08-13) — every action a workflow needs lives on its group's page.
+One button per stage of the Workflows -> Human Edit -> Publish Skill Package ->
+Build Installer flow (2026-08 Workflow Groups redesign), replacing the earlier
+Record-centric sidebar (Record/Dashboard/Plugins/etc). The Workflows page (a
+grid of Workflow Groups) is the primary landing page and entry point for all
+recording/editing. **Compile has no sidebar entry or standalone page** — it
+lives only on the `WorkflowStageRail` on each workflow's row on its group's
+page. **There is no per-workflow detail page** (removed 2026-08-13) — every
+action a workflow needs lives on its group's page. **There is no Test Skill
+sidebar entry or standalone page either** (removed 2026-09-27) — testing is
+a workflow row's **Test** toggle on its group page (§2.10), reached
+immediately after Human Edit's Approve with no intermediate stop.
 
 ```
 AppChrome (layout)
@@ -659,8 +663,9 @@ AppChrome (layout)
 │   │       └── /compile/[sessionId] (CompileProgress — live compile drill-in,
 │   │           reached from a workflow row's Compile/Recompile rail node)
 │   ├── Human Edit (HumanEditListPage.tsx — compiled workflows, needs-review-first,
-│   │   → /edit/[skillId] HumanEditPage.tsx, the per-skill editor — see §2.7)
-│   ├── Test Skill (TestSkillPage.tsx — test workflows, gated by RunGateDialog)
+│   │   → /edit/[skillId] HumanEditPage.tsx, the per-skill editor — see §2.7 — opens
+│   │       a mandatory ReviewQuestionsDialog first if the skill has pending loop/
+│   │       optional-popup questions; Approve returns to the workflow's group page)
 │   ├── Publish Skill Package (PublishPage.tsx — primary release action: workspace-scoped)
 │   ├── Build Installer (BuildInstallerPage.tsx — secondary/optional, requires a published release)
 │   └── Settings

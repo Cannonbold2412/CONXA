@@ -2,6 +2,33 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Removed a leftover button that did the same job as the new review popup — 2026-09-28
+When a recording flagged a possible optional pop-up, the new review popup asked about it — but the old "treat as optional?" button next to the step was still there too, so the same question had two doors. The old button is gone, so there's one clear place to answer. The popup's list of question types is also now a simple list, so adding a new kind of question means adding one line instead of editing the popup itself.
+
+## The loop review popup can now ask a genuine follow-up question, and so can anything else — 2026-09-27
+The "turn this into a loop?" question and its separate "remove the leftover click too?" question needed to work as two questions for one decision, saved together in one step. The first version wired that up in a way that only worked for this one pair of questions. It's rebuilt so any future review question that needs a follow-up question can define its own small yes/no chain, and the popup itself just asks whatever it's given — no special-case code needed for the next one.
+
+## The loop-question fix from earlier today is now built the reusable way — 2026-09-27
+Fixing the wrong-description bug earlier today (see the entry below) worked, but it was wired up in a way that only helped that one question. It's now split into three small, general-purpose pieces any future "explain this in plain English for the reviewer" feature can reuse, instead of every one of them having to solve the same problem from scratch.
+
+## The "turn this into a loop?" question no longer describes the wrong action — 2026-09-27
+The AI-rewritten version of this question was sometimes describing a completely different action than what the recording actually does — for example saying a file gets deleted when it's really being downloaded and then uploaded somewhere else. This happened because the AI was only told a filename and a yes/no flag, with no idea what the recording actually does, so it guessed. It's now told exactly what the real steps are — which one gets the file, which one re-uploads it, and which one is a leftover click being cleaned up — so its description matches the recording instead of inventing one.
+
+## The "turn this into a loop?" question now reads like a person wrote it — 2026-09-27
+When the tool noticed a recording downloaded and re-uploaded one specific file, it asked to generalize that into a repeatable step using wording that sounded like a bug report — file names in quotes, technical asides in parentheses. It now asks the AI to rephrase that same question into one or two plain, friendly sentences before showing it to you. If the AI is unavailable for any reason, it quietly falls back to the older, plainer wording instead of failing — you always get an answer, just sometimes a slightly less polished one.
+
+## Reviewing a recording now flows straight through, with no stops you can click past — 2026-09-27
+After a recording finished compiling, someone had to click a button to move on, then click past two separate suggestion pop-ups if the tool wanted to double-check something, then land on a separate "Test Skill" screen at the end. Now the moment compiling finishes, you're taken straight into the review screen. If the tool has any yes/no questions for you — like "should this become a repeating loop?" or "is this a popup that doesn't always show up?" — it asks them right away, one at a time, in a pop-up you must answer before you can do anything else; there's no way to close it without answering. Once you approve the review, you land directly on the workflow's own page, where testing it is right there — the separate Test Skill screen is gone.
+
+## Turning down a "was this an optional popup?" question no longer gets forgotten — 2026-09-27
+Behind the scenes, saying "no, don't treat this as optional" to one of the new mandatory questions is now remembered the same durable way as every other change made while reviewing a recording, so it won't quietly ask again after the question was already answered.
+
+## The sign-in design page now matches how sign-in really works — 2026-09-26
+The page that explains how Conxa knows a customer has finished signing in was still describing an older idea, where we kept a list of well-known sign-in sites. That list is gone from the real product, so the page was teaching something untrue. It now explains the current approach: compare against a real signed-out page, and watch whether the tab still looks like a login. The buttons, diagrams and demo scenarios were updated to match.
+
+## The cost guide now shows where AI spending moves after the first month — 2026-09-26
+The cost guide said that once a company finished building, our AI costs would be small. In fact the spending just moves: the first month is mostly building, and every month after is mostly people chatting with the AI and fixing steps. We added what that costs on each plan and flagged that the top plan could earn less than we aimed for if its allowance is used heavily.
+
 ## The chat now tells you when your workflow finishes after sign-in — 2026-09-25
 When a workflow had to wait for you to sign in, the chat said "still waiting" and then went quiet, even after the workflow finished successfully. Now the app keeps watching in the background and the chat posts the outcome by itself, like a delivery notification arriving once the parcel is dropped off. The History list also updates to show the real result instead of staying on "waiting".
 
@@ -68,3 +95,13 @@ The cloud service crashed on launch because it was missing one of the two databa
 **Rewrote the main technical reference so it describes how things work today — 2026-09-25**
 The engineering handbook had grown to nearly five times the length it needed, because every change was added as a new paragraph on top of the old ones instead of replacing them. Readers had to wade through several outdated versions of the same explanation to find the current one, like a recipe card covered in crossed-out edits. It is now rewritten to describe only how the product works today, at well under half its old length, with related topics grouped together. Every other document and note that pointed to a page inside it was updated so those links still land in the right place.
 — 2026-09-25
+
+**Fixed a broken diagram in the app-flow guide — 2026-09-26**
+One of the sign-in diagrams would not draw and showed an error instead. A few stray punctuation marks were cutting its sentences in half, like a full stop in the middle of a text message that makes the phone send it early. They are now plain commas, so the diagram shows correctly for anyone reading the guide.
+
+— 2026-09-26
+
+**Fixed the local server refusing to start — 2026-09-28**
+The local server would not start because it was told to listen at an address that does not exist, like mailing a letter to a house number that was never built. Using the correct "this computer" address makes it start normally. No product code changed, only the command used to launch it.
+
+— 2026-09-28

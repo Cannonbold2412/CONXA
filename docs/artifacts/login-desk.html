@@ -18,7 +18,7 @@
   --bad-soft: #fbe6e4;
   --warn: #8a5a00;
   --warn-soft: #fbf0d9;
-  --s-journey: #2a78d6;
+  --s-landed: #2a78d6;
   --s-pw: #eb6834;
   --s-tickets: #1baf7a;
   --s-judge: #4a3aa7;
@@ -33,14 +33,14 @@
     --bg: #11161b; --surface: #182028; --ink: #e8edf2; --ink-2: #aab6c2; --muted: #85919d;
     --line: #2a3540; --accent: #7fb0ec; --accent-soft: #1b2c42;
     --good: #5cc98a; --good-soft: #15291e; --bad: #f08a82; --bad-soft: #33191a; --warn: #e8b85c; --warn-soft: #2e2512;
-    --s-journey: #3987e5; --s-pw: #d95926; --s-tickets: #199e70; --s-judge: #9085e9; --s-time: #008300; --s-prove: #d55181;
+    --s-landed: #3987e5; --s-pw: #d95926; --s-tickets: #199e70; --s-judge: #9085e9; --s-time: #008300; --s-prove: #d55181;
   }
 }
 :root[data-theme="dark"] {
   --bg: #11161b; --surface: #182028; --ink: #e8edf2; --ink-2: #aab6c2; --muted: #85919d;
   --line: #2a3540; --accent: #7fb0ec; --accent-soft: #1b2c42;
   --good: #5cc98a; --good-soft: #15291e; --bad: #f08a82; --bad-soft: #33191a; --warn: #e8b85c; --warn-soft: #2e2512;
-  --s-journey: #3987e5; --s-pw: #d95926; --s-tickets: #199e70; --s-judge: #9085e9; --s-time: #008300; --s-prove: #d55181;
+  --s-landed: #3987e5; --s-pw: #d95926; --s-tickets: #199e70; --s-judge: #9085e9; --s-time: #008300; --s-prove: #d55181;
 }
 
 * { box-sizing: border-box; }
@@ -301,33 +301,36 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
 
 <section aria-labelledby="journey">
   <span class="eyebrow">Finding the app without being told</span>
-  <h2 id="journey">Follow the journey, skip the sign-in services</h2>
-  <p>We record every website the login tab visits. Well-known sign-in services (Google, Microsoft, Okta, Auth0, Apple, GitHub's sign-in pages) never count as "arrived". The <strong>first stop after the login page and those services</strong> is the app, even if it's a completely different website from the login address.</p>
+  <h2 id="journey">Compare against a real signed-out page, not a list of sites</h2>
+  <p>Before the window opens, Conxa loads the login address in a throwaway tab with no cookies: a genuine <strong>signed-out baseline</strong>. It also notes the names of the tickets the browser already holds. Nothing is matched against a list of known sign-in services (Google, Microsoft, Okta…), so an app that <em>is</em> its own sign-in host, or a provider nobody listed, behaves the same as any other. The <strong>landed</strong> lookout simply asks, of the login tab right now: does this still look like a login?</p>
   <figure>
     <div class="scroll">
-      <svg viewBox="0 0 900 190" role="img" aria-label="Login journey: login.acme.com, then accounts.google.com which is a known sign-in service and is skipped, then app.acme-cloud.io which is the first stop after, so it's the app. It is remembered for pre-run checks.">
+      <svg viewBox="0 0 900 200" role="img" aria-label="Before the window opens: a throwaway tab with no cookies records what the login address shows when signed out, plus the names of existing tickets. During the sign-in the tab passes through accounts.google.com, which still looks like a login so landed stays quiet, then reaches app.acme-cloud.io, which does not look like a login, so landed fires. The landing address is remembered for next time.">
         <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
-        <rect class="box-new" x="20" y="40" width="220" height="56" rx="8"/>
-        <text class="t-host" x="130" y="64" text-anchor="middle">login.acme.com</text>
-        <text class="t-sm" x="130" y="83" text-anchor="middle">the address we're given</text>
-        <line class="edge" x1="240" y1="68" x2="328" y2="68" marker-end="url(#a3)"/>
-        <text class="t-lbl" x="284" y="58" text-anchor="middle">"Sign in</text>
-        <text class="t-lbl" x="284" y="88" text-anchor="middle">with Google"</text>
-        <rect class="box-soft" x="330" y="40" width="240" height="56" rx="8"/>
-        <text class="t-host" x="450" y="64" text-anchor="middle">accounts.google.com</text>
-        <text class="t-sm" x="450" y="83" text-anchor="middle">known sign-in service: skipped</text>
-        <line class="edge" x1="570" y1="68" x2="658" y2="68" marker-end="url(#a3)"/>
-        <text class="t-lbl" x="614" y="58" text-anchor="middle">approved</text>
-        <rect class="box-save" x="660" y="40" width="220" height="56" rx="8"/>
-        <text class="t-host" x="770" y="64" text-anchor="middle">app.acme-cloud.io</text>
-        <text class="t-sm" x="770" y="83" text-anchor="middle">first stop after: the app</text>
-        <line class="edge" x1="770" y1="96" x2="770" y2="138" marker-end="url(#a3)"/>
-        <text class="t-lbl" x="780" y="122">remembered</text>
-        <rect class="box" x="600" y="140" width="280" height="40" rx="8"/>
-        <text class="t" x="740" y="165" text-anchor="middle">Saved with the login for next time</text>
+        <rect class="box-new" x="20" y="40" width="220" height="70" rx="8"/>
+        <text class="t" x="130" y="62" text-anchor="middle">Signed-out baseline</text>
+        <text class="t-host" x="130" y="80" text-anchor="middle">login.acme.com</text>
+        <text class="t-sm" x="130" y="98" text-anchor="middle">fresh tab, no cookies</text>
+        <line class="edge" x1="240" y1="75" x2="328" y2="75" marker-end="url(#a3)"/>
+        <text class="t-lbl" x="284" y="65" text-anchor="middle">"Sign in</text>
+        <text class="t-lbl" x="284" y="95" text-anchor="middle">with Google"</text>
+        <rect class="box-soft" x="330" y="40" width="240" height="70" rx="8"/>
+        <text class="t-host" x="450" y="66" text-anchor="middle">accounts.google.com</text>
+        <text class="t-sm" x="450" y="86" text-anchor="middle">still looks like a login:</text>
+        <text class="t-sm" x="450" y="100" text-anchor="middle">landed stays quiet</text>
+        <line class="edge" x1="570" y1="75" x2="658" y2="75" marker-end="url(#a3)"/>
+        <text class="t-lbl" x="614" y="65" text-anchor="middle">approved</text>
+        <rect class="box-save" x="660" y="40" width="220" height="70" rx="8"/>
+        <text class="t-host" x="770" y="66" text-anchor="middle">app.acme-cloud.io</text>
+        <text class="t-sm" x="770" y="86" text-anchor="middle">no longer looks like a login:</text>
+        <text class="t-sm" x="770" y="100" text-anchor="middle">landed fires</text>
+        <line class="edge" x1="770" y1="110" x2="770" y2="148" marker-end="url(#a3)"/>
+        <text class="t-lbl" x="780" y="134">remembered</text>
+        <rect class="box" x="600" y="150" width="280" height="40" rx="8"/>
+        <text class="t" x="740" y="175" text-anchor="middle">Landing address kept for next time</text>
       </svg>
     </div>
-    <figcaption>The target address is learned from the customer's first real sign-in instead of being typed in.</figcaption>
+    <figcaption>The baseline is taken before the window opens, so a fast sign-in can't race it. Landed is a level check on the tab, not a hop-counting rule, and the same baseline later checks an old login before each run.</figcaption>
   </figure>
 </section>
 
@@ -339,19 +342,23 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
     <div class="role">
       <span class="tag">Lookouts · "something happened"</span>
       <ul>
-        <li><span class="dot" style="background:var(--s-journey)"></span><strong>Journey</strong>: left the login page and the sign-in services</li>
+        <li><span class="dot" style="background:var(--s-landed)"></span><strong>Landed</strong>: the login tab no longer looks like a login</li>
         <li><span class="dot" style="background:var(--s-pw)"></span><strong>Password box</strong>: was on screen, now gone from every tab and frame</li>
-        <li><span class="dot" style="background:var(--s-tickets)"></span><strong>Tickets</strong>: new login cookies, or a new token in the page's memory</li>
+        <li><span class="dot" style="background:var(--s-tickets)"></span><strong>Tickets</strong>: the set of cookies or page-memory keys changed from the "before" list (names and counts only)</li>
       </ul>
       <p class="muted">All three work on any website, in any language, from day one.</p>
     </div>
     <div class="role">
       <span class="tag">Pause sign · "not finished yet"</span>
-      <p>Spots screens that mean the sign-in is still going: a short box for a texted code, "choose an account", "approve on your phone", "trust this device?", a CAPTCHA. It reads how the page is built, not its words. While it's up, <strong>lookouts don't count</strong>.</p>
+      <p>Spots the one mid-sign-in screen with an unmistakable shape: a row of single-character boxes, or a field marked as a one-time code (a texted code). It reads how the page is built, not its words. While it's up, <strong>lookouts don't count</strong>. Other in-between screens (account chooser, "approve on your phone") are covered by the mid-flow latch below.</p>
+    </div>
+    <div class="role">
+      <span class="tag">Mid-flow latch · "still signing in"</span>
+      <p>Notes each of this login's tabs as it first appears, and latches once one changes while still on a sign-in page (email, then password, then an account chooser). While latched, the judge isn't asked. A login tab nobody touched never blocks, so a sign-in finished in another tab is still found.</p>
     </div>
     <div class="role">
       <span class="tag"><span class="dot" style="background:var(--s-judge)"></span>Judge · "is this person logged in?"</span>
-      <p>Asks for the login address again in the background, with the window's tickets, and compares it with the "before" snapshot. Only asks when a lookout raises a hand, so the site doesn't get suspicious.</p>
+      <p>Asks for the login address again in a throwaway tab and compares it with the "before" snapshot. Only asks when a new lookout has fired, or the tabs moved to a different page, and never mid-flow, so the site doesn't get suspicious. If the address is unchanged, it falls back to the baseline compare, which can only ever say <em>yes</em>.</p>
     </div>
     <div class="role">
       <span class="tag"><span class="dot" style="background:var(--s-time)"></span>Timekeeper · "is it calm?"</span>
@@ -359,11 +366,11 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
     </div>
     <div class="role">
       <span class="tag"><span class="dot" style="background:var(--s-prove)"></span>Prover · "does the save work?"</span>
-      <p>Right after saving, tries the saved login in a fresh background check. If it doesn't work, the customer is told <em>now</em>, not on their next run.</p>
+      <p>Right after saving, tries the saved login in a fresh background check. If it doesn't work, the customer is told <em>now</em>, not on their next run. A best-effort "Signed in as ___" is read from the page too.</p>
     </div>
     <div class="role">
       <span class="tag">The customer · last resort</span>
-      <p>If the signals are still unclear after about 25 seconds, Conxa Execute's own panel shows an <strong>"I'm done signing in"</strong> button. It's never injected into the website, and nobody gets stuck.</p>
+      <p>Pressing <strong>Done</strong> (Conxa Execute's per-tab button, or the <span class="mono">login-done</span> command) saves at once, at any time. It's never injected into the website, and nobody gets stuck. After about 25 seconds of unclear signals the desk only writes an "inconclusive" line to its log.</p>
     </div>
   </div>
 </section>
@@ -413,7 +420,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
         <text class="t-lbl" x="579" y="139" text-anchor="middle">leaves</text>
         <rect class="box" x="610" y="122" width="180" height="50" rx="8"/>
         <text class="t" x="700" y="144" text-anchor="middle">Left the login site</text>
-        <text class="t-sm" x="700" y="161" text-anchor="middle">a simpler version of "journey"</text>
+        <text class="t-sm" x="700" y="161" text-anchor="middle">a simpler cousin of "landed"</text>
         <line class="edge" x1="790" y1="147" x2="808" y2="147" marker-end="url(#a5)"/>
         <rect class="box-save" x="810" y="122" width="90" height="50" rx="8"/>
         <text class="t" x="855" y="151" text-anchor="middle">Saved</text>
@@ -447,7 +454,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       <thead><tr><th>What's typed in</th><th>Required?</th><th>What runtime does with it</th></tr></thead>
       <tbody>
         <tr><td>Login address</td><td>Yes</td><td>The one thing every customer's runtime is given. Everything on this page works from this alone.</td></tr>
-        <tr><td>Success address</td><td>No — optional</td><td>If present, it's one extra early hint (feeds the journey lookout). If blank, wrong, or unreachable, nothing breaks — runtime never depends on it.</td></tr>
+        <tr><td>Success address</td><td>No — optional</td><td>If present, it's only a navigation hint for where to open. If blank, wrong, or unreachable, nothing breaks — sign-in detection never depends on it.</td></tr>
       </tbody>
     </table>
   </div>
@@ -473,7 +480,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
         <line class="edge" x1="460" y1="60" x2="498" y2="60" marker-end="url(#a6)"/>
         <rect class="box-new" x="500" y="30" width="260" height="60" rx="8"/>
         <text class="t" x="630" y="52" text-anchor="middle">Five-part detection</text>
-        <text class="t-sm" x="630" y="69" text-anchor="middle">journey · password box · tickets</text>
+        <text class="t-sm" x="630" y="69" text-anchor="middle">landed · password box · tickets</text>
         <text class="t-sm" x="630" y="83" text-anchor="middle">judge · timekeeper · prove</text>
         <line class="edge" x1="760" y1="60" x2="798" y2="60" marker-end="url(#a6)"/>
         <text class="t-lbl" x="779" y="50" text-anchor="middle">detailed ↓</text>
@@ -485,11 +492,11 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
   </figure>
   <p>In detail, moment by moment:</p>
   <ol class="story" style="list-style:none">
-    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>1</span><span>Runtime quietly loads the login address in the background — the "before" snapshot. If it already bounces to somewhere that isn't a login form, an old saved login still works: it saves at once and the customer barely sees a window.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>1</span><span>Runtime quietly loads the login address in a throwaway tab — the "before" snapshot — and notes the ticket names already there. If it already bounces to somewhere that isn't a login form, an old saved login still works: it saves at once and the customer barely sees a window.</span></li>
     <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>2</span><span>Otherwise it opens a real, visible window at the login address, and the customer signs in exactly as they would anywhere else.</span></li>
     <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>3</span><span>The pause sign watches for a mid-sign-in screen (a texted code, "choose an account"). While it's up, nothing below counts yet.</span></li>
-    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>4</span><span>The three lookouts — journey, password box, tickets — watch for any sign the sign-in finished, on any website the sign-in leads to, not just the one typed in during recording.</span></li>
-    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>5</span><span>The judge asks the login address again in the background and compares it with step 1's snapshot. This is the one check that doesn't need a target address at all.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>4</span><span>The three lookouts — landed, password box, tickets — watch for any sign the sign-in finished, on any website the sign-in leads to, not just the one typed in during recording.</span></li>
+    <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>5</span><span>The judge asks the login address again and compares it with step 1's snapshot. This is the one check that doesn't need a target address at all. The customer can also press Done at any point.</span></li>
     <li style="grid-template-columns:24px 1fr;display:grid;gap:10px;padding:6px 10px;"><span>6</span><span>The timekeeper waits for the tickets to stop changing, the prover checks the save actually works, and only then does the window close on its own.</span></li>
   </ol>
   <p class="muted">The full mechanism, with every branch and backup rule, is diagrammed next.</p>
@@ -498,21 +505,21 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
 <section aria-labelledby="flow">
   <span class="eyebrow">The mechanism</span>
   <h2 id="flow">How it all fits together</h2>
-  <p>Follow the arrows from the top. The only ways into "Save" are "the website said yes", "two lookouts agree and the website can't tell", or "the customer pressed I'm done". And every save is proven before the window closes.</p>
+  <p>Follow the arrows from the top. The only ways into "Save" are "the website said yes", "two lookouts agree and the website can't tell", or "the customer pressed Done". And every save is proven before the window closes.</p>
   <figure>
     <div class="scroll">
-      <svg viewBox="0 0 900 580" role="img" aria-label="Flow: window opens and the judge takes a before snapshot of the login address. If it already bounces, the old login still works: save at once. Otherwise lookouts watch, paused while a mid sign-in screen shows. Any lookout sends it to the judge. No returns to watching. Yes goes to the timekeeper, then save and prove. If proof works, close; if not, warn the customer now. If the judge can't tell, two lookouts agreeing for 10 seconds goes to the timekeeper; otherwise after 25 seconds the customer gets an I'm done button.">
+      <svg viewBox="0 0 900 580" role="img" aria-label="Flow: window opens and the judge takes a before snapshot of the login address. If it already bounces, the old login still works: save at once. Otherwise lookouts watch, paused while a code box shows or the sign-in is mid-flow. A new lookout sends it to the judge. No returns to watching. Yes goes to the timekeeper, then save and prove. If proof works, close; if not, warn the customer now. If the judge can't tell, two lookouts agreeing for 10 seconds goes to the timekeeper; otherwise the customer can press Done at any time.">
         <defs>
           <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
           <marker id="a4m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#85919d"/></marker>
         </defs>
         <!-- top row -->
         <rect class="box" x="20" y="40" width="150" height="50" rx="8"/>
-        <text class="t" x="95" y="70" text-anchor="middle">Window opens</text>
+        <text class="t" x="95" y="70" text-anchor="middle">Before opening</text>
         <line class="edge" x1="170" y1="65" x2="208" y2="65" marker-end="url(#a4)"/>
         <rect x="210" y="40" width="180" height="50" rx="8" style="fill:var(--surface);stroke:var(--s-judge)" stroke-width="2"/>
         <text class="t" x="300" y="62" text-anchor="middle">"Before" snapshot</text>
-        <text class="t-sm" x="300" y="79" text-anchor="middle">GET /login</text>
+        <text class="t-sm" x="300" y="79" text-anchor="middle">GET /login + ticket names</text>
         <line class="edge" x1="390" y1="65" x2="408" y2="65" marker-end="url(#a4)"/>
         <polygon class="box" points="410,65 470,31 530,65 470,99"/>
         <text class="t" x="470" y="62" text-anchor="middle">Already</text>
@@ -525,20 +532,20 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
 
         <!-- pause sign -->
         <rect class="box-warn" x="100" y="176" width="200" height="60" rx="8"/>
-        <text class="t" x="200" y="200" text-anchor="middle">Pause sign</text>
-        <text class="t-sm" x="200" y="219" text-anchor="middle">code box, account picker…</text>
+        <text class="t" x="200" y="200" text-anchor="middle">Pause sign / mid-flow</text>
+        <text class="t-sm" x="200" y="219" text-anchor="middle">code box, still on sign-in pages</text>
         <line class="edge-dash" x1="300" y1="206" x2="358" y2="206" marker-end="url(#a4m)"/>
         <text class="t-lbl" x="329" y="198" text-anchor="middle">pauses</text>
 
         <!-- lookouts -->
         <rect class="box-new" x="360" y="158" width="220" height="100" rx="8"/>
         <text class="t" x="470" y="180" text-anchor="middle">Lookouts watch</text>
-        <circle cx="386" cy="200" r="5" style="fill:var(--s-journey)"/><text class="t-sm" x="398" y="204">Journey</text>
+        <circle cx="386" cy="200" r="5" style="fill:var(--s-landed)"/><text class="t-sm" x="398" y="204">Landed</text>
         <circle cx="386" cy="220" r="5" style="fill:var(--s-pw)"/><text class="t-sm" x="398" y="224">Password box gone</text>
-        <circle cx="386" cy="240" r="5" style="fill:var(--s-tickets)"/><text class="t-sm" x="398" y="244">New tickets</text>
+        <circle cx="386" cy="240" r="5" style="fill:var(--s-tickets)"/><text class="t-sm" x="398" y="244">New tickets (vs. baseline)</text>
 
         <line class="edge" x1="470" y1="258" x2="470" y2="286" marker-end="url(#a4)"/>
-        <text class="t-lbl" x="480" y="276">any one</text>
+        <text class="t-lbl" x="480" y="276">any new one</text>
 
         <!-- judge -->
         <polygon points="390,340 470,288 550,340 470,392" style="fill:var(--surface);stroke:var(--s-judge)" stroke-width="2"/>
@@ -581,15 +588,15 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
         <path class="edge" d="M570 440 H585 V380 H640 V367" marker-end="url(#a4)"/>
         <text class="t-lbl" x="590" y="398">yes</text>
         <line class="edge-dash" x1="470" y1="480" x2="470" y2="516" marker-end="url(#a4m)"/>
-        <text class="t-lbl" x="480" y="502">no, 25 s pass</text>
+        <text class="t-lbl" x="480" y="502">no</text>
         <rect class="box-warn" x="330" y="518" width="280" height="44" rx="8"/>
-        <text class="t" x="470" y="545" text-anchor="middle">Show "I'm done signing in" button</text>
+        <text class="t" x="470" y="545" text-anchor="middle">Wait for the customer's Done</text>
         <path class="edge" d="M585 518 V440"/>
-        <text class="t-lbl" x="592" y="508">clicked</text>
-        <text class="t-sm" x="20" y="560">The 10-minute limit still applies throughout.</text>
+        <text class="t-lbl" x="592" y="508">Done pressed (any time)</text>
+        <text class="t-sm" x="20" y="560">The 10-minute limit still applies. At 25 s unclear, a log line is written.</text>
       </svg>
     </div>
-    <figcaption>Three doors into "Save": the website said yes, two lookouts agree when the website can't tell, or the customer said so. Every save is then proven.</figcaption>
+    <figcaption>Three doors into "Save": the website said yes, two lookouts agree when the website can't tell, or the customer pressed Done. Every save is then proven.</figcaption>
   </figure>
 </section>
 
@@ -640,7 +647,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
   <div class="ladder">
     <div class="rung best"><span class="lvl">Best</span><span>The website bounces us off its login page: yes.</span></div>
     <div class="rung ok"><span class="lvl">Good enough</span><span>The website can't tell, but two or more lookouts have agreed for 10 seconds.</span></div>
-    <div class="rung human"><span class="lvl">Ask a human</span><span>Still unclear after 25 seconds: the customer presses "I'm done signing in".</span></div>
+    <div class="rung human"><span class="lvl">Ask a human</span><span>Still unclear: the customer presses Done, any time. (At 25 s the desk just logs it as inconclusive.)</span></div>
     <div class="rung no"><span class="lvl">Never enough</span><span>One lookout alone, or anything while the pause sign is up.</span></div>
   </div>
 
@@ -649,15 +656,15 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
     <fieldset>
       <legend>Which lookouts raised their hand?</legend>
       <div class="checks">
-        <label><input type="checkbox" id="c-journey" checked> Journey</label>
+        <label><input type="checkbox" id="c-journey" checked> Landed</label>
         <label><input type="checkbox" id="c-pw" checked> Password box gone</label>
         <label><input type="checkbox" id="c-tickets"> New tickets</label>
       </div>
     </fieldset>
     <fieldset>
-      <legend>Is a "not finished yet" screen showing?</legend>
+      <legend>Is a "not finished yet" screen showing (or the sign-in still mid-flow)?</legend>
       <div class="checks">
-        <label><input type="checkbox" id="c-pause"> Yes: code box, account picker, "approve on phone"…</label>
+        <label><input type="checkbox" id="c-pause"> Yes: code box, or mid-flow on sign-in pages…</label>
       </div>
     </fieldset>
     <fieldset>
@@ -679,10 +686,10 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
     <table class="plain">
       <thead><tr><th>Situation</th><th>What goes wrong</th><th>What handles it</th></tr></thead>
       <tbody>
-        <tr><td>Login through Google / Microsoft</td><td>The customer ends up on a different website</td><td>Journey skips known sign-in services</td></tr>
-        <tr><td>Separate sign-in site (<span class="mono">login.acme.com</span> → <span class="mono">app.acme-cloud.io</span>)</td><td>Different website at the end</td><td>Journey: first stop after the login page</td></tr>
+        <tr><td>Login through Google / Microsoft</td><td>The customer ends up on a different website</td><td>Landed stays quiet while the tab still looks like a login; no list of services</td></tr>
+        <tr><td>Separate sign-in site (<span class="mono">login.acme.com</span> → <span class="mono">app.acme-cloud.io</span>)</td><td>Different website at the end</td><td>Landed fires at the first page that doesn't look like a login, and it's remembered</td></tr>
         <tr><td>Email first, password on the next screen</td><td>No password box on the first screen</td><td>The password-box watch only counts once a box has appeared</td></tr>
-        <tr><td>Texted code, authenticator, "approve on phone"</td><td>Looks finished too early</td><td>Pause sign, and the judge says "not yet"</td></tr>
+        <tr><td>Texted code, authenticator, "approve on phone"</td><td>Looks finished too early</td><td>Pause sign for code boxes, mid-flow latch for the rest, and the judge says "not yet"</td></tr>
         <tr><td>"Choose your workspace" after login</td><td>Logged in, but not at the app yet</td><td>The judge already says yes, so it's fine to save</td></tr>
         <tr><td>Login in a pop-up window</td><td>The main tab's address never changes</td><td>Watch every tab this login opened; password box gone</td></tr>
         <tr><td>Old login still works</td><td>A pointless window opens</td><td>"Before" snapshot already bounces: save at once</td></tr>
@@ -692,7 +699,8 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
         <tr><td>"Check your email for a link"</td><td>The link opens in their normal browser, not ours</td><td>Pause sign, plus a hint: paste the link into this window</td></tr>
         <tr><td>Non-English website</td><td>Word-based checks fail</td><td>Every signal reads structure and redirects, never words</td></tr>
         <tr><td>Bot protection / "browser not secure"</td><td>Sign-in blocked</td><td>Not a detection problem. Logged so it's not mistaken for "gave up"</td></tr>
-        <tr><td>Signed in to the wrong account</td><td>Can't be detected automatically</td><td>Later: show "Signed in as ___" when the page shows a name</td></tr>
+        <tr><td>Signed in to the wrong account</td><td>Can't be detected automatically</td><td>Best-effort "Signed in as ___" when the page shows a name</td></tr>
+        <tr><td>Started in the login tab, finished in another</td><td>The login tab never changes</td><td>Tickets and password box still fire; otherwise the customer presses Done or closes the login tab</td></tr>
       </tbody>
     </table>
   </div>
@@ -705,7 +713,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
     <div><h3>Secrets stay on the machine</h3><p>We only ever note ticket <em>names</em> and page shapes. Ticket values and passwords are never logged or sent anywhere.</p></div>
     <div><h3>Gentle with the website</h3><p>The judge asks only when a lookout fires, never on a timer, so the site's bot protection isn't provoked.</p></div>
     <div><h3>Only this login's tabs</h3><p>In Conxa Execute, lookouts watch only the tabs this login opened, never another app's login happening at the same time.</p></div>
-    <div><h3>We never touch the website</h3><p>The "I'm done" button lives in Conxa's own panel. Nothing is injected into the site's page.</p></div>
+    <div><h3>We never touch the website</h3><p>The Done button lives in Conxa's own panel. Nothing is injected into the site's page.</p></div>
   </div>
 </section>
 
@@ -718,7 +726,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       <h3>Everything that needs only the login address</h3>
       <ul>
         <li>The judge: before/after login-page check</li>
-        <li>Journey tracking with the sign-in services list</li>
+        <li>Signed-out baseline and the "landed" lookout (no host lists)</li>
         <li>Password-box watch across tabs and frames</li>
         <li>Ticket watch: cookies and page memory</li>
         <li>Pause sign for mid-sign-in screens</li>
@@ -731,9 +739,9 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       <span class="pill later">Phase 2 · polish</span>
       <h3>For the sites that still misbehave</h3>
       <ul>
-        <li>"I'm done signing in" button in Conxa Execute</li>
-        <li>A log of which signal decided (never any values), to tune on real logins</li>
-        <li>"Signed in as ___" confirmation</li>
+        <li>Done button in Conxa Execute, and a <span class="mono">login-done</span> command</li>
+        <li>A log of which signal decided (never any values), to tune on real logins. It has no reader yet</li>
+        <li>"Signed in as ___" confirmation (best-effort)</li>
         <li>Optional per-site fingerprint from the Build Studio, only if Phase 1 falls short</li>
       </ul>
     </div>
@@ -752,7 +760,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
 <script>
 (() => {
   const LANES = [
-    { id: "journey", name: "Journey",      color: "var(--s-journey)" },
+    { id: "journey", name: "Landed",      color: "var(--s-landed)" },
     { id: "pw",      name: "Password box", color: "var(--s-pw)" },
     { id: "tickets", name: "Tickets",      color: "var(--s-tickets)" },
     { id: "judge",   name: "Judge",        color: "var(--s-judge)" },
@@ -769,7 +777,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       actions: [{ t: 3, label: "Password submitted" }],
       events: [SNAP, PWSEEN,
         { lane: "tickets", t: 3.2, kind: "fire", text: "A new login ticket appeared." },
-        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page for app.acme.com." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "The login tab is on app.acme.com and no longer looks like a login." },
         { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone." },
         { lane: "judge", t: 3.6, kind: "yes", text: "Asked for /login again: bounced to /dashboard. Yes." },
         { lane: "time", t: 4.1, kind: "calm", text: "Nothing changed since the last look." },
@@ -785,10 +793,10 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       blurb: "The login address sends the customer to Google, then back to an app on a different website.",
       actions: [{ t: 2, label: "Clicked \"Sign in with Google\"" }, { t: 6, label: "Approved on Google" }],
       events: [SNAP,
-        { lane: "journey", t: 2.2, kind: "seen", text: "Now on accounts.google.com, a known sign-in service. Doesn't count." },
+        { lane: "journey", t: 2.2, kind: "seen", text: "Now on accounts.google.com: still shaped like a login, so landed stays quiet." },
         { lane: "pw", t: 2.6, kind: "seen", text: "Google's password box is on screen." },
         { lane: "tickets", t: 6.2, kind: "fire", text: "New login ticket for app.acme-cloud.io." },
-        { lane: "journey", t: 6.4, kind: "fire", text: "First stop after Google: app.acme-cloud.io. That's the app, and it's remembered." },
+        { lane: "journey", t: 6.4, kind: "fire", text: "Back on app.acme-cloud.io, which no longer looks like a login. Landed fires, and the address is remembered." },
         { lane: "pw", t: 6.5, kind: "fire", text: "No password box on any tab." },
         { lane: "judge", t: 6.6, kind: "yes", text: "Asked for the login address again: bounced into the app. Yes." },
         { lane: "time", t: 7.1, kind: "calm", text: "Nothing changed since the last look." },
@@ -797,7 +805,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
         { lane: "today", t: 7.9, kind: "save", ok: true, text: "Today: once the address stopped looking like a sign-in page, saved at 7.9 s." },
       ],
       today: ["ok", "Saved at 7.9 s. Works."],
-      fresh: ["ok", "Found the app on its own, confirmed, proven, closed at 7.9 s."],
+      fresh: ["ok", "Google's pages never counted as arrived. Confirmed, proven, closed at 7.9 s."],
     },
     {
       id: "code", name: "Texted code",
@@ -806,7 +814,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       pause: [{ from: 3.5, to: 10, label: "Pause sign: code box showing" }],
       events: [SNAP, PWSEEN,
         { lane: "tickets", t: 3.2, kind: "fire", text: "A ticket appeared, but only a half-login one." },
-        { lane: "journey", t: 3.4, kind: "fire", text: "Moved to /verify on the app's website." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "Moved to /verify, which no longer looks like a login (but the code box is up)." },
         { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone (a code box replaced it)." },
         { lane: "today", t: 4.9, kind: "save", ok: false, text: "Today: saved at 4.9 s, before the code. Half a login." },
         { lane: "tickets", t: 10.2, kind: "fire", text: "The real login ticket appeared." },
@@ -837,7 +845,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       actions: [{ t: 3, label: "Password submitted" }, { t: 5.4, label: "Site writes its last piece" }],
       events: [SNAP, PWSEEN,
         { lane: "tickets", t: 3.2, kind: "fire", text: "A new login ticket appeared." },
-        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "The login tab no longer looks like a login." },
         { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone." },
         { lane: "judge", t: 3.6, kind: "yes", text: "Asked for /login again: bounced. Yes." },
         { lane: "time", t: 4.1, kind: "change", text: "Tickets still changing: wait." },
@@ -858,7 +866,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       actions: [{ t: 3, label: "Password submitted" }, { t: 13.5, label: "Two lookouts agreed for 10 s" }],
       events: [SNAP, PWSEEN,
         { lane: "tickets", t: 3.2, kind: "fire", text: "A new login ticket appeared." },
-        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "The login tab no longer looks like a login." },
         { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone. Three lookouts agree." },
         { lane: "judge", t: 3.6, kind: "no", text: "Asked for /login again: same login form. This site can't tell us." },
         { lane: "today", t: 4.9, kind: "save", ok: true, text: "Today: saved at 4.9 s. Works here." },
@@ -874,7 +882,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
       blurb: "The site keeps the login in page memory that's wiped when the tab closes, so it can't be saved.",
       actions: [{ t: 3, label: "Password submitted" }, { t: 13.5, label: "Two lookouts agreed for 10 s" }],
       events: [SNAP, PWSEEN,
-        { lane: "journey", t: 3.4, kind: "fire", text: "Left the login page." },
+        { lane: "journey", t: 3.4, kind: "fire", text: "The login tab no longer looks like a login." },
         { lane: "pw", t: 3.5, kind: "fire", text: "The password box is gone." },
         { lane: "tickets", t: 3.6, kind: "fire", text: "A new token in the page's memory." },
         { lane: "judge", t: 3.7, kind: "no", text: "Can't tell: the background check can't carry page memory." },
@@ -1049,7 +1057,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
 
   // coverage grid: ● right, ◐ partly, ○ fooled/blind, · not involved
   const COLS = [
-    { id: "journey", name: "Journey", color: "var(--s-journey)" },
+    { id: "journey", name: "Landed", color: "var(--s-landed)" },
     { id: "pw", name: "Password box", color: "var(--s-pw)" },
     { id: "tickets", name: "Tickets", color: "var(--s-tickets)" },
     { id: "pause", name: "Pause sign", color: "var(--warn)" },
@@ -1061,9 +1069,9 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
   const WORD = { y: "gets it right", p: "partly", n: "fooled or blind", x: "not involved" };
   const ROWS = [
     ["Plain login page", "yyyxyxy", "ok", "ok", {}],
-    ["Google / Microsoft sign-in", "yyyxyxy", "ok", "ok", { journey: "Skips accounts.google.com and finds the app on its own." }],
+    ["Google / Microsoft sign-in", "yyyxyxy", "ok", "ok", { journey: "Quiet on Google's pages (still login-shaped), fires once back on the app." }],
     ["Email first, password next", "pyyxyxy", "ok", "ok", { journey: "Both screens look like login, so it only helps at the end.", pw: "Only starts counting once the password box appears." }],
-    ["Pop-up login box", "nyyxyxy", "bad", "ok", { journey: "The address never changes, so it sees nothing.", pw: "The pop-up's password box disappears: caught." }],
+    ["Pop-up login box", "nyyxyxy", "bad", "ok", { journey: "The login tab itself never changes, so it sees nothing.", pw: "The pop-up's password box disappears: caught." }],
     ["Texted code", "nnpyyxy", "bad", "ok", { journey: "Fooled: the code page is on the app's own site.", pw: "Fooled: the password box is gone, but a code box replaced it.", tickets: "Sees a ticket, but only a half-login one.", pause: "Spots the code box and holds everyone back.", judge: "Says \"not yet\" until the code is in." }],
     ["Already signed in", "xxxxyxy", "ok", "ok", { judge: "The \"before\" snapshot already bounces: saved at once." }],
     ["Late pass", "yyyxyyy", "bad", "ok", { time: "Waits until the tickets stop changing." }],
@@ -1105,7 +1113,7 @@ table.plain { border-collapse: collapse; width: 100%; font-size: .95rem; backgro
     else if (j === "yes") { cls = "good"; head = "Logged in: save, then prove"; body = "The website bounced us off its login page. The timekeeper waits for calm, saves, and the prover checks the save works."; }
     else if (j === "no") { cls = "bad"; head = "False alarm: keep watching"; body = `${n} lookout${n > 1 ? "s" : ""} raised a hand, but the website still shows its login form. Nothing closes.`; }
     else if (n >= 2) { cls = "good"; head = "Trust the lookouts: save, then prove"; body = `The website can't tell, but ${n} lookouts have agreed for 10 seconds. Save, and let the prover double-check.`; }
-    else { cls = "wait"; head = "Not enough: keep waiting"; body = "The website can't tell and only one lookout fired. After 25 seconds the customer gets the \"I'm done\" button."; }
+    else { cls = "wait"; head = "Not enough: keep waiting"; body = "The website can't tell and only one lookout fired. The customer can press Done."; }
     verdict.className = "verdict " + cls;
     verdict.innerHTML = `<strong>${head}</strong>${body}`;
   }
