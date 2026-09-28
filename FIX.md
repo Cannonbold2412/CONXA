@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Cleaned out outdated notes about the old compile page — 2026-09-28
+Our design notes still described a separate compile screen that no longer exists. They now describe the progress log that opens under each workflow. This keeps new teammates from looking for a page that is gone.
+— 2026-09-28
+
 ## Reopening a finished compile no longer throws you into the editor — 2026-09-28
 Clicking a workflow's card after its compile finished used to jump straight to the editor instead of showing the log. Now the card just shows the log, and you only get taken to the editor automatically the moment a compile you were watching completes.
 — 2026-09-28
