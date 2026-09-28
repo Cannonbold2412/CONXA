@@ -231,12 +231,13 @@ class WorkflowEditorMixin:
 
         skill_id = _safe_id(payload.get("skill_id"), "skill_id")
         step_index = int(payload.get("step_index") or 0)
+        keep_as_step = bool(payload.get("keep_as_step"))
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         self._push_undo(skill_id, copy.deepcopy(doc))
         try:
-            doc = confirm_optional_interstitial(doc, step_index)
+            doc = confirm_optional_interstitial(doc, step_index, keep_as_step=keep_as_step)
         except ValueError as exc:
             raise _CommandError(str(exc), f"Could not confirm optional interstitial: {exc}") from exc
         write_skill(skill_id, doc)

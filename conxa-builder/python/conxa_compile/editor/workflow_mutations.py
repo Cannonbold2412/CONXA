@@ -199,14 +199,20 @@ def reorder_branch_steps(document: dict[str, Any], step_index: int, new_order: l
     return _save_branch_body_steps(document, step_index, reordered)
 
 
-def confirm_optional_interstitial(document: dict[str, Any], step_index: int) -> dict[str, Any]:
-    """Human-gated conversion of a recorder-flagged optional interstitial (recording-next-steps.md
-    Priority 2; SkillStep.optional_hint) into a real try_dismiss branch step.
+def confirm_optional_interstitial(
+    document: dict[str, Any], step_index: int, keep_as_step: bool = False
+) -> dict[str, Any]:
+    """Human-gated resolution of a recorder-flagged optional interstitial (recording-next-steps.md
+    Priority 2; SkillStep.optional_hint).
 
     This is the review-time half of the conversion. The compiler's second-opinion pass
     (compiler/second_opinion.py) converts the hints it is confident about at compile time; this
     handles the ones it left alone, when a reviewer decides the step really is optional. Both
     call build_try_dismiss_from_hint so the two paths cannot produce different branch shapes.
+
+    keep_as_step=True is the reviewer's "No" answer (mandatory Human Edit review questions): the
+    hint is cleared without converting the step, so it never resurfaces as a pending question,
+    but the step's action/branch are left exactly as compiled.
     """
     doc = dict(document)
     skills = list(doc.get("skills") or [])
@@ -221,18 +227,18 @@ def confirm_optional_interstitial(document: dict[str, Any], step_index: int) -> 
     if not hint:
         raise ValueError("step_has_no_optional_hint")
 
-    target = step.get("target") if isinstance(step.get("target"), dict) else {}
-    built = build_try_dismiss_from_hint(
-        str(target.get("primary_selector") or ""),
-        str(hint.get("container_signal") or ""),
-    )
-
-    action = dict(step.get("action") if isinstance(step.get("action"), dict) else {})
-    action["action"] = "try_dismiss"
-    step["action"] = action
-    step["intent"] = built["intent"]
-    step["branch"] = built["branch"]
-    step["recovery"] = built["recovery"]
+    if not keep_as_step:
+        target = step.get("target") if isinstance(step.get("target"), dict) else {}
+        built = build_try_dismiss_from_hint(
+            str(target.get("primary_selector") or ""),
+            str(hint.get("container_signal") or ""),
+        )
+        action = dict(step.get("action") if isinstance(step.get("action"), dict) else {})
+        action["action"] = "try_dismiss"
+        step["action"] = action
+        step["intent"] = built["intent"]
+        step["branch"] = built["branch"]
+        step["recovery"] = built["recovery"]
     step["optional_hint"] = None  # consumed by this confirmation
 
     steps[step_index] = step
@@ -417,7 +423,9 @@ def insert_step_after(document: dict[str, Any], action_kind: str, insert_after: 
     return doc
 
 
-def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[str, Any]) -> dict[str, Any]:
+def apply_for_each_loop_suggestion(
+    document: dict[str, Any], suggestion: dict[str, Any], *, remove_redundant_click: bool = True
+) -> dict[str, Any]:
     """Apply a `compiler/loop_suggestion.py` finding: wrap the steps between (and including) a
     navigate whose URL names one recorded file and its matching `download_observed` into a new
     `for_each` step driven by a runtime input, then rebind the later upload step to the whole
@@ -432,6 +440,14 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
 
     Re-resolves every step_key at apply time (never trusts a stale index) — the same staleness
     discipline `copilot_proposals.py::resolve_step_index` established for chat-driven proposals.
+
+    `remove_redundant_click` is the reviewer's answer to the SEPARATE "remove this leftover
+    click too?" question Human Edit asks only when `suggestion["redundant_click_key"]` is set —
+    the loop question itself never implies an answer to it (ReviewQuestionsDialog.tsx asks them
+    as two distinct popups). The click is never wrapped into the loop body either way (a
+    hardcoded click on one fixed filename would fire on every iteration only to have the
+    per-item navigate override it) — the only choice is whether it's archived (default) or left
+    in place as an inert standalone step immediately before the new loop.
     """
     doc = dict(document)
     skills = list(doc.get("skills") or [])
@@ -459,6 +475,7 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
         redundant_index = key_to_index.get(str(redundant_click_key))
         if redundant_index is None or redundant_index != start or start == end:
             raise ValueError("suggestion_stale")
+    keep_click = redundant_index is not None and not remove_redundant_click
     body_start = start + 1 if redundant_index is not None else start
 
     template_literal = str(suggestion.get("template_literal") or "")
@@ -480,7 +497,7 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
         raise ValueError("suggestion_stale")
 
     archived_click: dict[str, Any] | None = None
-    if redundant_index is not None:
+    if redundant_index is not None and not keep_click:
         archived_click = {
             "step_key": str(redundant_click_key),
             "step": copy.deepcopy(steps[redundant_index]),
@@ -537,7 +554,8 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
     }
 
     original_len = len(steps)
-    new_steps = steps[:start] + [wrapper] + steps[end + 1:]
+    kept_click_step = [steps[start]] if keep_click else []
+    new_steps = steps[:start] + kept_click_step + [wrapper] + steps[end + 1:]
     block["steps"] = new_steps
     skills[0] = block
     doc["skills"] = skills
@@ -568,10 +586,16 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
     _validate_skill_inputs(inputs)
     doc["inputs"] = inputs
 
-    # Old index `start` becomes the new for_each step; start+1..end are merged into it (no
-    # single new index to point at — dropped, same as a delete); everything after `end` shifts
-    # down by the number of steps the wrap collapsed away. Advisory-only per-step data, same
-    # "gone is honest, misattributed is not" reasoning as delete_step_at above.
+    # Old index `start` is the click when one was absorbed (redundant_index == start),
+    # otherwise the first body step. Either way it maps to `start` unchanged: with no click,
+    # `start` becomes the new for_each step's own slot; with a kept click, the click itself
+    # stays at `start` (unmoved) and the wrapper is the one that lands at start+1 instead.
+    # start+1..end are merged into the wrapper (no single new index to point at — dropped,
+    # same as a delete); everything after `end` shifts down by however many steps the wrap
+    # actually collapsed away — one fewer than the remove-click case when the click was kept,
+    # since it's still occupying a slot rather than having been dropped. Advisory-only per-step
+    # data, same "gone is honest, misattributed is not" reasoning as delete_step_at above.
+    collapsed = (end - start - 1) if keep_click else (end - start)
     old_to_new = {}
     for i in range(original_len):
         if i < start:
@@ -581,7 +605,7 @@ def apply_for_each_loop_suggestion(document: dict[str, Any], suggestion: dict[st
         elif i <= end:
             old_to_new[i] = None
         else:
-            old_to_new[i] = i - (end - start)
+            old_to_new[i] = i - collapsed
     doc = _remap_intent_graph_indices(doc, old_to_new)
     _invalidate_compile_report(doc)
 

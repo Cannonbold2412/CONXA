@@ -459,7 +459,12 @@ class CopilotMixin:
         One atomic mutation (`apply_for_each_loop_suggestion`), not a composition of several
         cmd_* calls like `_accept_overlay_branch_proposal` — the wrap, the body rewrite, the
         upload rebind, and the new input all land in a single document write, so this is one
-        undo entry, not several."""
+        undo entry, not several.
+
+        `remove_redundant_click` (default true) answers the SEPARATE "remove this leftover
+        click too?" popup Human Edit only asks when the suggestion has a
+        `redundant_click_key` — a distinct Yes/No from accepting the loop itself
+        (ReviewQuestionsDialog.tsx)."""
         import copy
         from conxa_core.storage.json_store import read_skill, write_skill
         from conxa_compile.editor.workflow_mutations import apply_for_each_loop_suggestion
@@ -468,12 +473,13 @@ class CopilotMixin:
         suggestion = payload.get("suggestion")
         if not isinstance(suggestion, dict):
             raise _CommandError("invalid_input", "suggestion is required")
+        remove_redundant_click = bool(payload.get("remove_redundant_click", True))
         doc = read_skill(skill_id)
         if doc is None:
             raise _CommandError("skill_not_found", f"No skill {skill_id}")
         self._push_undo(skill_id, copy.deepcopy(doc))
         try:
-            doc = apply_for_each_loop_suggestion(doc, suggestion)
+            doc = apply_for_each_loop_suggestion(doc, suggestion, remove_redundant_click=remove_redundant_click)
         except ValueError as exc:
             raise _CommandError(str(exc), f"Could not apply this suggestion: {exc}") from exc
         write_skill(skill_id, doc)
