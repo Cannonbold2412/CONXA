@@ -13,7 +13,7 @@ import { GlowButton } from '../primitives/GlowButton'
  * round-trip. If plan limits or prices change on the backend, update this
  * table to match.
  */
-const STATIC_PLANS: Plan[] = [
+export const STATIC_PLANS: Plan[] = [
   {
     tier: 'free',
     name: 'Free',
@@ -96,7 +96,7 @@ const TIER_RUNG: Record<string, string> = {
   enterprise: 'Ship it under your own brand',
 }
 
-const TIER_CTA: Record<string, { label: string; href: string }> = {
+export const TIER_CTA: Record<string, { label: string; href: string }> = {
   free: { label: 'Start for free', href: '/sign-up' },
   starter: { label: 'Start on Starter', href: '/sign-up' },
   pro: { label: 'Start on Pro', href: '/sign-up' },

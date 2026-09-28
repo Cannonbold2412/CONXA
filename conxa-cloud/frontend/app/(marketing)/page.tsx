@@ -1,15 +1,14 @@
 import type { Metadata } from 'next'
-import { Hero } from '@/components/marketing/hero/Hero'
 import { DemoStory } from '@/components/marketing/sections/DemoStory'
-import { TheGap } from '@/components/marketing/sections/TheGap'
-import { HowItWorks } from '@/components/marketing/sections/HowItWorks'
-import { Examples } from '@/components/marketing/sections/Examples'
-import { Reliability } from '@/components/marketing/sections/Reliability'
-import { Comparison } from '@/components/marketing/sections/Comparison'
-import { Trust } from '@/components/marketing/sections/Trust'
-import { PricingTable } from '@/components/marketing/sections/PricingTable'
-import { Faq } from '@/components/marketing/sections/Faq'
-import { FinalCta } from '@/components/marketing/sections/FinalCta'
+import { HomeHero } from '@/components/marketing/home/HomeHero'
+import { Problem } from '@/components/marketing/home/Problem'
+import { Steps } from '@/components/marketing/home/Steps'
+import { SelfRepair } from '@/components/marketing/home/SelfRepair'
+import { Processes } from '@/components/marketing/home/Processes'
+import { LocalFirst } from '@/components/marketing/home/LocalFirst'
+import { HomePricing } from '@/components/marketing/home/HomePricing'
+import { HomeFaq } from '@/components/marketing/home/HomeFaq'
+import { HomeCta } from '@/components/marketing/home/HomeCta'
 import { createPublicPageMetadata } from '@/lib/siteMetadata'
 
 export const metadata: Metadata = createPublicPageMetadata({
@@ -22,17 +21,16 @@ export const metadata: Metadata = createPublicPageMetadata({
 export default function MarketingPage() {
   return (
     <>
-      <Hero />
+      <HomeHero />
       <DemoStory />
-      <TheGap />
-      <HowItWorks />
-      <Examples />
-      <Reliability />
-      <Comparison />
-      <Trust />
-      <PricingTable compact />
-      <Faq />
-      <FinalCta />
+      <Problem />
+      <Steps />
+      <SelfRepair />
+      <Processes />
+      <LocalFirst />
+      <HomePricing />
+      <HomeFaq />
+      <HomeCta />
     </>
   )
 }
