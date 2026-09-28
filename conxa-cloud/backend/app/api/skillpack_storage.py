@@ -135,6 +135,12 @@ def list_known_groups(slug: str) -> list[dict[str, Any]]:
     ]
 
 
+def get_known_group(slug: str, group_id: str) -> dict[str, Any] | None:
+    """One group's registry row, keyed the same way ``record_known_group`` writes it."""
+    row = db_get(skillpack_known_groups_ns(), f"{slug}:{group_id}")
+    return row if isinstance(row, dict) else None
+
+
 def skillpack_channels_ns() -> str:
     """KV namespace for the release-channel pointer, one row per slug.
 

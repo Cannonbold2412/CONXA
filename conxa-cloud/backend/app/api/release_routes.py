@@ -12,6 +12,7 @@ refreshes. See docs/Implementation-Plan.md §3.4 and the release-system plan.
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 from typing import Any
 
@@ -26,6 +27,7 @@ from app.api.product_ownership import (
 )
 from app.api.publish_routes import PublishFile, _validate_rel_path, _validate_slug, _SEMVER_RE
 from app.api.skillpack_storage import (
+    get_known_group,
     list_known_groups,
     list_known_skills,
     read_pack_json_mirror,
@@ -56,6 +58,23 @@ class ReleasePreviewBody(BaseModel):
 class UpsertGroupBody(BaseModel):
     group_name: str = Field(..., min_length=1, max_length=128)
     company_name: str = Field(default="", max_length=128)
+
+
+def _skill_dir_group(slug: str, group_id: str) -> str:
+    """The value written into pack.json's ``skill_groups`` map — what the runtime nests a
+    skill's directory under (``skill-packs/<company>/<this>/<skill_slug>/``). Never the raw
+    group_id: that's an opaque UUID a customer would otherwise see in a file path. Uses the
+    group's display name instead, deduped with the same ``name-<id prefix>`` scheme Build
+    Studio's own group_store.create_group uses for its local slug, so two groups sharing a
+    name still get distinct directories. Falls back to the raw id if the name isn't known yet
+    (e.g. a pre-Groups publish, or a group Studio never upserted via PUT .../groups/{id})."""
+    if not group_id:
+        return group_id
+    name = (get_known_group(slug, group_id) or {}).get("group_name", "").strip()
+    if not name:
+        return group_id
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "group"
+    return f"{base}-{group_id[:8]}"
 
 
 def _require_owned_slug(request: Request):
@@ -396,7 +415,7 @@ def post_release_release(
         existing_skill_groups = dict(existing_pack.get("skill_groups") or {})
         group_id = str(target_row.get("group_id") or "")
         if group_id:
-            existing_skill_groups[skill_slug] = group_id
+            existing_skill_groups[skill_slug] = _skill_dir_group(slug, group_id)
         write_pack_json_mirror(slug, {"skills": existing_skills, "skill_groups": existing_skill_groups})
 
         # 3. Rewrite this skill's own component_versions entry (what the
@@ -519,7 +538,7 @@ def post_skill_unarchive(installer_version: str, skill_slug: str, request: Reque
         existing_skill_groups = dict(existing_pack.get("skill_groups") or {})
         group_id = str(row.get("group_id") or "")
         if group_id:
-            existing_skill_groups[skill_slug] = group_id
+            existing_skill_groups[skill_slug] = _skill_dir_group(slug, group_id)
         write_pack_json_mirror(slug, {"skills": existing_skills, "skill_groups": existing_skill_groups})
 
     release_channel.record_release_event(principal, slug, skill_slug, release_channel.EVT_SKILL_UNARCHIVED)
