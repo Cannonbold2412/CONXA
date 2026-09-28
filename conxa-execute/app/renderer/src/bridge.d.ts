@@ -92,12 +92,13 @@ export type Bridge = {
   openExternal: (p: { url: string }) => Promise<{ ok: boolean }>;
   panel: {
     setBounds: (p: { runId: string; tabId: string; rect: PanelRect }) => Promise<{ ok: boolean }>;
+    setChat: (p: { chatId: string | null }) => Promise<{ ok: boolean }>;
     selectTab: (p: { runId: string; tabId: string; rect?: PanelRect }) => Promise<{ ok: boolean }>;
     closeTab: (p: { runId: string; tabId: string }) => Promise<{ ok: boolean }>;
     navigate: (p: { runId: string; tabId: string; action: PanelNavAction; url?: string }) => Promise<{ ok: boolean }>;
     newTab: (p: { runId: string }) => Promise<{ ok: boolean }>;
     loginDone: (p: { runId: string; tabId: string }) => Promise<{ ok: boolean; error?: string }>;
-    onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[]; focus?: boolean }) => void) => () => void;
+    onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[]; chatId?: string | null; focus?: boolean }) => void) => () => void;
   };
   windowControls: {
     minimize: () => Promise<void>;

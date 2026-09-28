@@ -180,3 +180,24 @@ test("AUTH-6: loginDone writes the file-drop signal for a real login tab, and no
   assert.deepStrictEqual(panel.loginDone("run-authdone", probeTabId), { ok: false }, "never fires for a non-login tab");
   assert.deepStrictEqual(panel.loginDone("run-authdone", "nope"), { ok: false }, "an unknown tab id is a no-op, not a throw");
 });
+
+test("setVisibleChat parks other chats' views (still alive); untagged runs stay visible", () => {
+  const rect = { x: 10, y: 10, width: 300, height: 200 };
+  const hidden = { x: 0, y: 0, width: 0, height: 0 };
+  panel.tagRun("run-chat-a", "chat-a");
+  const a = panel.newView("run-chat-a");
+  const viewA = added[added.length - 1];
+  const n = panel.newView("run-no-chat");
+  const viewNone = added[added.length - 1];
+  panel.setActiveBounds("run-chat-a", a.tabId, rect);
+  assert.deepStrictEqual(viewA.bounds, rect);
+  panel.setVisibleChat("chat-b");
+  assert.deepStrictEqual(viewA.bounds, hidden, "chat A's view is parked when chat B is shown");
+  assert.strictEqual(viewA.webContents.closed, undefined, "parked, not destroyed");
+  panel.setActiveBounds("run-no-chat", n.tabId, rect);
+  panel.setVisibleChat("chat-b");
+  assert.deepStrictEqual(viewNone.bounds, rect, "a run outside any chat is never parked");
+  panel.setActiveBounds("run-chat-a", a.tabId, rect); // back in chat A
+  assert.deepStrictEqual(viewA.bounds, rect);
+  assert.deepStrictEqual(viewNone.bounds, hidden, "showing one run parks every other run's view");
+});

@@ -119,7 +119,7 @@ function createWindow() {
   browserPanel.init(mainWindow, {
     onTabsChanged: (runId, tabs, meta) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send("panel:tabs", { runId, tabs, ...meta });
+        mainWindow.webContents.send("panel:tabs", { runId, tabs, chatId: browserPanel.chatOf(runId), ...meta });
       }
     },
   });
@@ -266,6 +266,12 @@ ipcMain.handle("panel:bounds", (_e, payload) => {
   const { runId, tabId, rect } = payload || {};
   if (!runId || !tabId || !rect) return { ok: false };
   browserPanel.setActiveBounds(runId, tabId, rect);
+  return { ok: true };
+});
+
+// The renderer switched chats (or started a new one): hide the panels of the other chats.
+ipcMain.handle("panel:set-chat", (_e, payload) => {
+  browserPanel.setVisibleChat((payload && payload.chatId) || null);
   return { ok: true };
 });
 
@@ -461,7 +467,10 @@ async function chatSend(payload) {
         if (!(await confirmRun(requestId, args))) {
           return "The user declined to run this skill. Do not retry it; ask what they would like instead.";
         }
-        args = { ...args, watch: true };
+        // Pick the run id here so the browser panel knows which chat owns the run's views.
+        const runId = `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+        browserPanel.tagRun(runId, sessionId);
+        args = { ...args, watch: true, _run_id: runId };
       }
       const text = await mcp.callTool(name, args);
       if (name === "get_execution_status" && args && args.run_id) {

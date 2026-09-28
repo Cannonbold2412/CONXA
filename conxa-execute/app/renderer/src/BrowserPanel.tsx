@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { PanelTab } from "./bridge";
 import { Icon, paths } from "./ui";
 
@@ -10,7 +10,7 @@ const WIDTH_KEY = "conxa.browserPanelWidth";
 const MIN_W = 360;
 const MIN_CHAT_W = 320;
 
-type RunEntry = { runId: string; tabs: PanelTab[] };
+type RunEntry = { runId: string; tabs: PanelTab[]; chatId: string | null };
 
 function activeTabOf(tabs: PanelTab[]): PanelTab | null {
   return tabs.find((t) => t.active) ?? tabs[0] ?? null;
@@ -61,8 +61,11 @@ function MenuItem({ children, onClick, disabled }: { children: ReactNode; onClic
  * empty: anything drawn inside it would be invisibly stuck underneath the real browser view,
  * so the header has to stay outside it.
  */
-export function BrowserPanel() {
-  const [runs, setRuns] = useState<RunEntry[]>([]);
+export function BrowserPanel({ sessionId }: { sessionId: string | null }) {
+  const [allRuns, setRuns] = useState<RunEntry[]>([]);
+  // Only the current chat's runs (plus runs started outside any chat) are shown; the rest keep
+  // running with their native view parked by the main process (panel:set-chat).
+  const runs = useMemo(() => allRuns.filter((r) => r.chatId === null || r.chatId === sessionId), [allRuns, sessionId]);
   const [selected, setSelected] = useState<string | null>(null);
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   const asideRef = useRef<HTMLElement | null>(null);
@@ -78,13 +81,13 @@ export function BrowserPanel() {
   });
 
   useEffect(() => {
-    return window.conxaExecute.panel.onTabsChanged(({ runId, tabs, focus }) => {
+    return window.conxaExecute.panel.onTabsChanged(({ runId, tabs, chatId, focus }) => {
       setRuns((prev) => {
         if (tabs.length === 0) return prev.filter((r) => r.runId !== runId);
         const idx = prev.findIndex((r) => r.runId === runId);
-        if (idx === -1) return [...prev, { runId, tabs }];
+        if (idx === -1) return [...prev, { runId, tabs, chatId: chatId ?? null }];
         const next = [...prev];
-        next[idx] = { runId, tabs };
+        next[idx] = { runId, tabs, chatId: chatId ?? null };
         return next;
       });
       // A brand-new run takes the foreground — this is the "slides in on execution"

@@ -278,6 +278,9 @@ export function App() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Switching chats (or starting a new one) parks the other chats' browser views; they keep running.
+  useEffect(() => { void api.panel.setChat({ chatId: sessionId }); }, [api, sessionId]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === ",") {
@@ -890,7 +893,7 @@ export function App() {
         )}
       </main>
 
-      <BrowserPanel />
+      <BrowserPanel sessionId={sessionId} />
 
       <SettingsModal
         open={showSettings}

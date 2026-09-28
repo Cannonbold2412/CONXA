@@ -23,6 +23,20 @@ const { resolveRuntimeCommand } = require("./runtime_path");
 // runId -> { partition, tabs: [{ id, view, markerUrl }], activeTabId }
 const _runs = new Map();
 
+// runId -> chat (session) id that started the run. Runs started outside a chat (the form) have
+// no entry and stay visible in every chat.
+const _chatOf = new Map();
+
+function tagRun(runId, chatId) {
+  if (runId && chatId) _chatOf.set(runId, chatId);
+}
+
+function chatOf(runId) {
+  return _chatOf.get(runId) ?? null;
+}
+
+const _HIDDEN = { x: 0, y: 0, width: 0, height: 0 };
+
 let _win = null; // the BaseWindow/BrowserWindow whose contentView hosts every run's views
 let _onTabsChanged = null; // (runId, tabs) => void — wired by main.js to push to the renderer
 
@@ -262,6 +276,7 @@ async function runEnd(runId) {
   const run = _runs.get(runId);
   if (!run) return;
   _runs.delete(runId);
+  _chatOf.delete(runId);
   for (const t of run.tabs) {
     try { if (_win) _win.contentView.removeChildView(t.view); } catch (_) {}
     try { t.view.webContents.close(); } catch (_) {}
@@ -283,10 +298,22 @@ async function runEnd(runId) {
 function setActiveBounds(runId, tabId, rect) {
   const run = _runs.get(runId);
   if (!run) return;
+  for (const [id, r] of _runs) {
+    if (id !== runId) for (const t of r.tabs) t.view.setBounds(_HIDDEN); // a native view never goes away on its own
+  }
   for (const t of run.tabs) {
-    t.view.setBounds(t.id === tabId ? rect : { x: 0, y: 0, width: 0, height: 0 });
+    t.view.setBounds(t.id === tabId ? rect : _HIDDEN);
   }
   run.activeTabId = tabId;
 }
 
-module.exports = { init, newView, newTab, closeTab, navigate, runEnd, setActiveBounds, loginDone, saveDownload };
+// The user moved to another chat: park every view that belongs to a different chat at 0x0. The
+// views stay alive (the run keeps going); coming back re-places them via setActiveBounds.
+function setVisibleChat(chatId) {
+  for (const [runId, run] of _runs) {
+    const owner = _chatOf.get(runId);
+    if (owner && owner !== chatId) for (const t of run.tabs) t.view.setBounds(_HIDDEN);
+  }
+}
+
+module.exports = { init, tagRun, chatOf, newView, newTab, closeTab, navigate, runEnd, setActiveBounds, setVisibleChat, loginDone, saveDownload };

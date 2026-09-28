@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   openExternal: (payload) => ipcRenderer.invoke("shell:openExternal", payload),
   panel: {
     setBounds: (payload) => ipcRenderer.invoke("panel:bounds", payload),
+    setChat: (payload) => ipcRenderer.invoke("panel:set-chat", payload),
     selectTab: (payload) => ipcRenderer.invoke("panel:select-tab", payload),
     closeTab: (payload) => ipcRenderer.invoke("panel:close-tab", payload),
     navigate: (payload) => ipcRenderer.invoke("panel:navigate", payload),
