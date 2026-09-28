@@ -79,7 +79,7 @@ type CompileState = {
  *
  * The Python backend already runs each command on its own thread, so a compile
  * survives the user navigating away — but until this store existed the progress
- * lived in CompileProgress's local state and died with the component. Worse,
+ * lived in CompilePanel's local state and died with the component. Worse,
  * remounting that page re-fired `cmd('compile')`, starting a *second* compile on
  * the same recording and reserving a *second* compile credit. `start()` is
  * idempotent on `key`, so returning to the page re-attaches to the live run

@@ -252,7 +252,9 @@ All three pane columns (`WorkflowViewer`'s aside, `InlineRetargetFlow`'s panel, 
 
 ---
 
-### 2.8 Compile (`CompileProgress.tsx`) — no standalone page, removed 2026-08-12
+### 2.8 Compile (`CompilePanel.tsx`) — inline panel under the workflow card (2026-09-28)
+
+Compile/Re-compile opens a log panel under the workflow's row on the Group Page (same slot as the Test panel; only one of the two is open at a time). Clicking the card shows/hides whichever panel it has; hidden panels stay mounted so logs survive. Finishing a compile jumps to Human Edit. The old `/workflows/:id/compile/:sessionId` route was removed.
 
 **Purpose:** Turn a recording into a skill — the user decides when to spend a compile credit.
 **Inputs:** The Group Page's own Compile/Recompile rail node (`WorkflowStageRail` — see §2.3a); per-workflow session ID.

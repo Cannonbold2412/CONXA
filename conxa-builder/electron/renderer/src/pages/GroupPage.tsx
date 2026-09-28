@@ -16,6 +16,7 @@ import { DeleteWorkflowButton } from '@/components/DeleteWorkflowButton'
 import { UsageCards } from '@/components/EntitlementMeters'
 import { WorkflowTestRow } from '@/components/WorkflowTests'
 import { PageHeader } from '@/components/layout/PageHeader'
+import { CompilePanel } from '@/components/CompilePanel'
 import { WorkflowStageBadge, WorkflowStageRail } from '@/components/StagePath'
 import { Button } from '@/components/ui/button'
 import {
@@ -226,7 +227,12 @@ function WorkflowRow({
   const [recordOpen, setRecordOpen] = useState(false)
   const [rerecordConfirmOpen, setRerecordConfirmOpen] = useState(false)
   const [recompileConfirmOpen, setRecompileConfirmOpen] = useState(false)
-  const [testOpen, setTestOpen] = useState(false)
+  // One inline panel per row, never two: opening compile closes test and vice versa.
+  // `collapsed` hides the active panel without unmounting it, so a running test or
+  // compile keeps its logs while folded away.
+  const [panel, setPanel] = useState<'compile' | 'test' | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
+  const [compileMode, setCompileMode] = useState<'compile' | 'recompile'>('compile')
 
   const hasRecording = !!wf.session_id
   const hasSkill = !!wf.skill_id
@@ -259,7 +265,7 @@ function WorkflowRow({
     // Compiles run one at a time (see compileStore) — say so here rather than
     // letting the user land on the compile page just to be told no. But if the
     // running compile IS this workflow's own (started, then navigated away
-    // from), let it through — CompileProgress re-attaches to it by key instead
+    // from), let it through — CompilePanel re-attaches to it by key instead
     // of refusing to open.
     const key = `${wf.id}:${wf.session_id}:${hasSkill ? 'recompile' : 'compile'}`
     if (compileRun?.status === 'running' && !ownCompiling && compileRun.key !== key) {
@@ -270,7 +276,30 @@ function WorkflowRow({
       setRecompileConfirmOpen(true)
       return
     }
-    navigate(`/workflows/${encodeURIComponent(wf.id)}/compile/${encodeURIComponent(wf.session_id!)}`)
+    openCompile('compile')
+  }
+
+  function openCompile(mode: 'compile' | 'recompile') {
+    setCompileMode(mode)
+    setPanel('compile')
+    setCollapsed(false)
+  }
+
+  function toggleTest() {
+    if (panel === 'test') setCollapsed((c) => !c)
+    else {
+      setPanel('test')
+      setCollapsed(false)
+    }
+  }
+
+  // Clicking the card itself shows/hides whichever panel it has: compile if one
+  // ran this session, else test when a test can run.
+  function handleCardClick(e: React.MouseEvent) {
+    if ((e.target as HTMLElement).closest('button')) return
+    if (panel) return setCollapsed((c) => !c)
+    if (compileRun?.workflowId === wf.id) openCompile(hasSkill ? 'recompile' : 'compile')
+    else if (hasSkill && packBuilt) toggleTest()
   }
 
   return (
@@ -278,8 +307,8 @@ function WorkflowRow({
       {/* Two lines, deliberately: identity on the first, the lifecycle rail on
           its own line below. Sharing one line is what made the rail read as five
           loose buttons rather than a pipeline. */}
-      <div className="px-5 py-4">
-        <div className="flex items-start gap-4">
+      <div className="px-5 py-4" onClick={handleCardClick}>
+        <div className="flex cursor-pointer items-start gap-4">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <p className="truncate text-sm font-medium text-white">{wf.name}</p>
@@ -337,14 +366,19 @@ function WorkflowRow({
             onRecord={() => (hasRecording ? setRerecordConfirmOpen(true) : setRecordOpen(true))}
             onCompile={handleCompileClick}
             onReview={() => navigate(`/edit/${encodeURIComponent(wf.skill_id!)}?from=${encodeURIComponent(`/groups/${groupId}`)}`)}
-            onToggleTest={() => setTestOpen((v) => !v)}
+            onToggleTest={toggleTest}
             onPackage={() => navigate('/publish')}
           />
         </div>
       </div>
 
-      {testOpen && (
-        <div className="border-t border-white/8 bg-black/10 px-5 py-3">
+      {panel === 'compile' && (
+        <div className={cn('border-t border-white/8 bg-black/10 px-5 py-3', collapsed && 'hidden')}>
+          <CompilePanel workflowId={wf.id} sessionId={wf.session_id!} mode={compileMode} groupId={groupId} />
+        </div>
+      )}
+      {panel === 'test' && (
+        <div className={cn('border-t border-white/8 bg-black/10 px-5 py-3', collapsed && 'hidden')}>
           <WorkflowTestRow wf={wf} skillPackBuild={skillPackBuild} onComplete={onChanged} />
         </div>
       )}
@@ -395,7 +429,7 @@ function WorkflowRow({
             <AlertDialogCancel className="border-white/10 bg-white/5 text-zinc-200">Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-amber-600 text-white hover:bg-amber-700"
-              onClick={() => navigate(`/workflows/${encodeURIComponent(wf.id)}/compile/${encodeURIComponent(wf.session_id!)}?mode=recompile`)}
+              onClick={() => openCompile('recompile')}
             >
               Recompile
             </AlertDialogAction>

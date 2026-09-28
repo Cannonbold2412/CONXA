@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { fetchWorkflow } from "@/api/workflowsApi";
-import { PageHeader } from "@/components/layout/PageHeader";
+import { useNavigate } from "react-router-dom";
 import {
   PIPELINE_STEPS,
   useCompileStore,
@@ -12,34 +9,37 @@ import {
   type StepState,
 } from "@/store/compileStore";
 
-export function CompileProgress() {
-  const { workflowId, sessionId } = useParams<{ workflowId: string; sessionId: string }>();
+/** Inline compile log for one workflow row on the Group page — the compile twin of
+ * WorkflowTestRow. Mounting it starts (or re-attaches to) the compile; finishing
+ * jumps straight to Human Edit. */
+export function CompilePanel({
+  workflowId,
+  sessionId,
+  mode,
+  groupId,
+}: {
+  workflowId: string;
+  sessionId: string;
+  mode: "compile" | "recompile";
+  groupId: string;
+}) {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const mode = searchParams.get("mode") === "recompile" ? "recompile" : "compile";
 
   // The run lives in a store, not in this component, so it keeps going (and keeps
   // reporting) when the user navigates away. See compileStore.ts.
   const run = useCompileStore((s) => s.run);
   const start = useCompileStore((s) => s.start);
   const clear = useCompileStore((s) => s.clear);
-  const workflowQ = useQuery({
-    queryKey: ["workflow", workflowId],
-    queryFn: () => fetchWorkflow(workflowId!),
-    enabled: !!workflowId,
-  });
-  const workflowName = workflowQ.data?.workflow.name;
   const [blocked, setBlocked] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const [now, setNow] = useState(Date.now());
 
-  const key = workflowId && sessionId ? `${workflowId}:${sessionId}:${mode}` : null;
-  const isThisRun = !!key && run?.key === key;
+  const key = `${workflowId}:${sessionId}:${mode}`;
+  const isThisRun = run?.key === key;
 
-  // Idempotent: arriving fresh starts the compile, returning mid-run re-attaches
+  // Idempotent: opening fresh starts the compile, returning mid-run re-attaches
   // to the one already going rather than starting (and billing) a second.
   useEffect(() => {
-    if (!workflowId || !sessionId) return;
     setBlocked(start({ workflowId, sessionId, mode }) === "busy");
   }, [workflowId, sessionId, mode, start]);
 
@@ -68,13 +68,11 @@ export function CompileProgress() {
 
   function goToEditor(replace = false) {
     if (!skillId) return;
-    const fromParam = workflowId ? `?from=${encodeURIComponent(`/workflows/${workflowId}`)}` : "";
-    navigate(`/edit/${encodeURIComponent(skillId)}${fromParam}`, { replace });
+    navigate(`/edit/${encodeURIComponent(skillId)}?from=${encodeURIComponent(`/groups/${groupId}`)}`, { replace });
   }
 
-  // Compile finishing is the end of this page's job — go straight to Human Edit rather
-  // than waiting for a click, so there's no intermediate stop between compile and review.
-  // `replace` so Back from the editor doesn't bounce into a finished compile screen.
+  // Compile finishing is the end of this panel's job — go straight to Human Edit
+  // rather than waiting for a click. `replace` so Back doesn't bounce into a finished compile.
   useEffect(() => {
     if (isThisRun && overallStatus === "done" && skillId) {
       goToEditor(true);
@@ -82,13 +80,7 @@ export function CompileProgress() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isThisRun, overallStatus, skillId]);
 
-  function goToWorkflow() {
-    if (!workflowId) return;
-    navigate(`/workflows/${encodeURIComponent(workflowId)}`);
-  }
-
   function retryCompile() {
-    if (!workflowId || !sessionId) return;
     clear();
     start({ workflowId, sessionId, mode });
   }
@@ -100,69 +92,36 @@ export function CompileProgress() {
   // silently showing another workflow's progress under this one's name.
   if (blocked) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-        <p className="text-sm font-medium text-zinc-300">Another workflow is compiling</p>
-        <p className="max-w-sm text-xs text-zinc-500">
-          Compiles run one at a time. This one will start as soon as the current compile finishes.
-        </p>
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={goToWorkflow}
-            className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/[0.07] hover:text-white"
-          >
-            Back
-          </button>
-          {run && (
-            <button
-              type="button"
-              onClick={() =>
-                navigate(
-                  `/workflows/${encodeURIComponent(run.workflowId)}/compile/${encodeURIComponent(run.sessionId)}${
-                    run.mode === "recompile" ? "?mode=recompile" : ""
-                  }`,
-                )
-              }
-              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-zinc-300 hover:bg-white/[0.07] hover:text-white"
-            >
-              View the running compile
-            </button>
-          )}
-        </div>
-      </div>
+      <p className="py-6 text-center text-xs text-zinc-500">
+        Another workflow is compiling. Compiles run one at a time — try again once it finishes.
+      </p>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 0 }}>
-      <PageHeader
-        title={`${mode === "recompile" ? "Recompiling" : "Compiling"} ${workflowName ?? "workflow"}`}
-        description={
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <StatusPill overallStatus={overallStatus} doneCount={doneCount} stepsLength={steps.length} />
-            {overallStatus === "done" && skillId && (
-              <button
-                type="button"
-                onClick={() => goToEditor()}
-                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", font: "inherit" }}
-              >
-                Review steps →
-              </button>
-            )}
-            {overallStatus === "error" && (
-              <button
-                type="button"
-                onClick={retryCompile}
-                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", font: "inherit" }}
-              >
-                Retry compile
-              </button>
-            )}
-          </div>
-        }
-        extra={<ProgressBar pct={pct} status={overallStatus} />}
-        onBack={goToWorkflow}
-      />
+    <div style={{ display: "flex", flexDirection: "column", height: 288, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", fontSize: 12 }}>
+        <StatusPill overallStatus={overallStatus} doneCount={doneCount} stepsLength={steps.length} />
+        {overallStatus === "done" && skillId && (
+          <button
+            type="button"
+            onClick={() => goToEditor()}
+            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", font: "inherit" }}
+          >
+            Review steps →
+          </button>
+        )}
+        {overallStatus === "error" && (
+          <button
+            type="button"
+            onClick={retryCompile}
+            style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", font: "inherit" }}
+          >
+            Retry compile
+          </button>
+        )}
+      </div>
+      <ProgressBar pct={pct} status={overallStatus} />
 
       {/* Three-panel body */}
       <div style={{ display: "flex", flex: 1, minHeight: 0, overflow: "hidden" }}>

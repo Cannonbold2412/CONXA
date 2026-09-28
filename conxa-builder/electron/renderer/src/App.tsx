@@ -24,7 +24,6 @@ import { BuildInstallerPage } from '@/pages/BuildInstallerPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 
 // Studio-exclusive pages (keep existing)
-import { CompileProgress } from '@/pages/CompileProgress'
 
 function SplashScreen() {
   return (
@@ -286,7 +285,6 @@ export function App() {
             <Route path="/" element={<DefaultRedirect />} />
             <Route path="/workflows" element={<WorkflowListPage />} />
             <Route path="/workflows/:workflowId" element={<WorkflowRedirect />} />
-            <Route path="/workflows/:workflowId/compile/:sessionId" element={<CompileProgress />} />
             <Route path="/workflows/:workflowId/inspector" element={<InspectorPage />} />
             <Route path="/groups/:groupId" element={<GroupPage />} />
             <Route path="/edit" element={<HumanEditPage />} />

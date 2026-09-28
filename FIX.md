@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Compile progress now opens right under the workflow card — 2026-09-28
+Clicking Compile or Re-compile used to whisk you away to a separate full-screen page. Now the progress log slides open beneath the workflow, just like the Test log does, and only one of the two is open at a time. Clicking the workflow's card folds that log away or brings it back, so you never lose your place.
+— 2026-09-28
+
 ## Removed a leftover button that did the same job as the new review popup — 2026-09-28
 When a recording flagged a possible optional pop-up, the new review popup asked about it — but the old "treat as optional?" button next to the step was still there too, so the same question had two doors. The old button is gone, so there's one clear place to answer. The popup's list of question types is also now a simple list, so adding a new kind of question means adding one line instead of editing the popup itself.
 
