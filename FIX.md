@@ -2,6 +2,24 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Tidied up the top of the skill review screen — 2026-09-29
+The review screen's title line no longer shows the confidence percentage or the "recompile" link — just a plain step count. The Suggestions button moved into the "More" menu next to Diagnostics, and Workflow plan and Input variables took its old spot as their own buttons up top. Less clutter at a glance, same tools all still one click away.
+
+## Conxa logo now shows in the top-left corner of Build Studio — 2026-09-29
+The top-left corner of Build Studio used to show a generic stack-of-layers icon instead of our brand. It now shows the real Conxa logo. This makes the app look like our product from the very first glance.
+
+## Cleaner Input variables, Workflow plan, Diagnostics and selector review screens — 2026-09-29
+The Input variables, Workflow plan and Diagnostics windows in the review screen were busy grids of boxes; they're now simple, calm lists in a smaller window. Each variable shows as a one-line summary you click to edit, and rarely-needed technical details sit behind an "Advanced" link. When reviewing how a step finds its button, you now just click the option you trust most to make it the main one. Nothing was taken away — every setting is still one click away.
+— 2026-09-29
+
+## A group's page top bar is now one tidy row too — 2026-09-29
+Opening a group used to show two stacked bars: the group name on top, and a second bar below with the credit counters and the Rename, Delete and "New Workflow" buttons. They're now one bar, matching the Workflows page. It looks cleaner and gives the workflow list more room.
+— 2026-09-29
+
+## The Workflows page top bar is now one tidy row — 2026-09-29
+The top of the Workflows page used to be two stacked bars: one with the page title, and a second one underneath holding the credit counters and the "New Group" button. They're now merged into a single bar, with the title on the left and the credits and "New Group" on the right. It looks cleaner and gives the group folders a little more room on screen.
+— 2026-09-29
+
 ## Skills that ran fine on a customer's computer now show up on the Cloud Dashboard — 2026-09-29
 A skill could run perfectly on a customer's machine, but the Cloud Dashboard would still say "no production telemetry yet" — like a store's cash register ringing up sales correctly, but the owner's report always showing zero. The dashboard was looking up each customer's activity under their pretty display name instead of the internal ID that activity was actually filed under, so it could never find it. Now both sides use the same internal ID to file and look up activity, and the pretty name is shown separately. This affected every skill on every installed pack, not just one workflow.
 — 2026-09-29
@@ -149,4 +167,52 @@ The local server would not start because it was told to listen at an address tha
 **Each chat in Conxa Execute now keeps its own browser window — 2026-09-29**
 Before, starting a new chat left the previous chat's browser window sitting on screen, like a TV that stays on when you walk into another room. Now the window tucks away when you leave that chat, keeps working in the background, and comes back when you click the chat again. A new chat opens its own fresh browser the first time it runs a workflow.
 
+— 2026-09-29
+
+**Rebuilt the homepage so it explains the product in a few clear pictures — 2026-09-29**
+The old homepage looked like most other software sites and packed in a lot of text. Now each part of the page has its own look: a cursor that draws the path of one task across three apps, a crossed-out list of why scripts and integrations fail, a bright section showing a button that moved and was still found, and a simple picture of what stays on your machine. The wording now says any AI agent can run a skill, not only one. This makes the idea easier to grasp in the first few seconds.
+
+— 2026-09-29
+
+**Drew a cleaner design for the step review screen in Human Edit — 2026-09-29**
+The screen where you check "is this the right element?" had several bright orange buttons fighting for attention, a lot of empty space at the top, and a warning repeated on almost every step. The new design puts everything in one header row, shows how many steps you've checked, and keeps a single orange button for the one thing to do next. This is a design mockup only; the app itself hasn't changed yet.
+
+— 2026-09-29
+
+**Tidied the spacing and alignment on the Human Edit screen mockup — 2026-09-29**
+This is a light touch-up of the step review screen, not a redesign. The title and the action buttons now sit in one row at the top. Long web addresses in the step list are cut to one line so they no longer wrap. The step cards, the screenshot and its buttons now line up on the same edges. It's a design mockup only; the app itself hasn't changed.
+
+— 2026-09-29
+
+**Tightened up the Human Edit screen's layout — 2026-09-29**
+The Human Edit screen had two header bars stacked on top of each other, leaving a big empty band at the top. Now the title and all the buttons share one bar. Long web addresses in the step list used to spill over three lines; now each step fits on one line, and hovering shows the full text. The small labels under each step and the screenshot area also line up neatly.
+
+— 2026-09-29
+
+**Drew a calmer design for the Publish Skill Package screen — 2026-09-29**
+The old screen showed a warning box, a form, and a note all with equal weight, so it wasn't obvious what to do first. The new design turns it into two clear steps: run the test, then fill in the release details. The Publish button stays greyed out with a short "locked until the test passes" reason. This is a design mockup only; the app itself hasn't changed yet.
+
+— 2026-09-29
+
+**The Publish page now walks you through two steps — 2026-09-29**
+Before, the Publish page showed a warning, a form and a note all at once, and you had to leave the page to run the required test. Now step one is "Run the test" right on the page, and the release form stays locked with a short reason until the test passes. The skill list also uses different icon shapes, not just colors, to show which skills have passed.
+
+— 2026-09-29
+
+**Made the screenshot bigger on the "Is this the right element?" screen — 2026-09-29**
+On this screen the recorded screenshot used to sit in a small box with the text and buttons squeezed beside it. Now the explanation sits on top, the screenshot uses the full width, and all the buttons sit in one row underneath. It's much easier to see whether the highlighted element is the right one.
+
+— 2026-09-29
+
+**Made the screenshot on the "Is this the right element?" screen larger — 2026-09-29**
+The recorded screenshot on this screen was still on the small side. It can now grow about 100 pixels taller on a typical window, so the highlighted element is easier to check.
+
+— 2026-09-29
+
+**Designed a cleaner layout for the Settings screen — 2026-09-29**
+The Settings screen was one long stack of wide boxes with small grey labels, which made it hard to scan. The new design groups the page into Account, Usage and About, shows the usage numbers as large figures, and puts your name and sign-out in one row. This is only a design mock-up for now; the real screen has not changed yet.
+— 2026-09-29
+
+**Rebuilt the Settings screen to be easier to scan — 2026-09-29**
+The Settings screen used to be four wide boxes with tiny grey labels, and the version and update button lived in a separate box at the bottom. It now has a short menu on the left, your name and sign-out on one line, big usage numbers, and the version and update button together under About. Nothing about how accounts, usage or updates work has changed — only how they are laid out.
 — 2026-09-29
