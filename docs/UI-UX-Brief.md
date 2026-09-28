@@ -661,9 +661,8 @@ AppChrome (layout)
 │   │   create groups; §2.3)
 │   │   └── [Group ID] (GroupPage.tsx — group's apps + auth, and every workflow's
 │   │       full lifecycle rail (record/compile/review/test/ready-to-package)
-│   │       inline per row; create/search/delete workflows here; §2.3a)
-│   │       └── /compile/[sessionId] (CompileProgress — live compile drill-in,
-│   │           reached from a workflow row's Compile/Recompile rail node)
+│   │       inline per row — compile log (CompilePanel) and test panel open
+│   │       under the row; create/search/delete workflows here; §2.3a)
 │   ├── Human Edit (HumanEditListPage.tsx — compiled workflows, needs-review-first,
 │   │   → /edit/[skillId] HumanEditPage.tsx, the per-skill editor — see §2.7 — opens
 │   │       a mandatory ReviewQuestionsDialog first if the skill has pending loop/
