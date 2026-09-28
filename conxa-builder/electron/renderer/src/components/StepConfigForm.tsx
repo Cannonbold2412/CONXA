@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useState } from 'react'
 import { FormProvider, useForm, useFormState, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 import type { StepEditorDTO, WorkflowResponse } from '../types/workflow'
@@ -9,12 +9,13 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { InfoHint } from '@/components/ui/info-hint'
 import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass, fieldTextareaClass } from '@/lib/fieldStyles'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { Trash2 } from 'lucide-react'
+import { ChevronRight, Trash2 } from 'lucide-react'
 import { AssertionEditorRows, describeWaitFor, hasInvalidAssertions, type AssertionDraft } from '@/components/validation/AssertionEditor'
 import { ElementFingerprintCard } from '@/components/ElementFingerprintCard'
 import { anchorRowsFromObjects, parseAnchorRows } from '@/lib/anchors'
@@ -200,12 +201,6 @@ export type StepConfigFormHandle = {
   submitIfDirty: () => Promise<boolean>
 }
 
-function humanizeAction(action: string): string {
-  const cleaned = action.trim().replace(/[_-]+/g, ' ')
-  if (!cleaned) return 'Action'
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
-}
-
 function stepActionKind(step: StepEditorDTO): string {
   return step.action_type.trim().toLowerCase().replace(/-/g, '_')
 }
@@ -277,6 +272,7 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
   // (see this file's Props.path doc comment).
   const patchIndex = parentStepIndex ?? step?.step_index ?? 0
   const methods = useForm<FormValues>({ defaultValues: step ? defaultsFromStep(step) : emptyForm })
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   // Re-sync from the server whenever `step` gets a new reference — but only when the form has
   // no unsaved edits. `step` (HumanEditPage's currentStep) is re-derived from the workflow query
@@ -657,21 +653,17 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
   return (
     <FormProvider {...methods}>
       <DirtySync stepIndex={patchIndex} />
-      <form onSubmit={onSubmit} className="space-y-2">
-      <Card className={cn('gap-2 py-3', PANEL_CARD_CLASS)}>
-        <CardHeader className="p-2.5 pb-1">
-          <CardTitle className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-            Action: {humanizeAction(step.action_type)}
-            <InfoHint {...editorHelp.actionStep} size="md" side="bottom" align="start" />
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2 p-2.5 pt-0">
+      <form onSubmit={onSubmit} className="space-y-7">
           <div className="grid gap-2">
-            <Label htmlFor="intent">Intent</Label>
+            <Label htmlFor="intent" className="flex items-center gap-1.5 text-sm font-medium">
+              Description
+              <InfoHint {...editorHelp.actionStep} size="md" side="bottom" align="start" />
+            </Label>
             <Input
               id="intent"
               type="text"
               disabled={!canEdit('intent')}
+              className="h-[46px] rounded-[10px] text-[15px]"
               {...methods.register('intent')}
             />
             {step.intent && step.intent.trim() !== methods.getValues('intent').trim() ? (
@@ -836,12 +828,13 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
           ) : null}
           {isNavigateStep ? (
             <div className="grid gap-2">
-              <Label htmlFor="url">URL</Label>
+              <Label htmlFor="url" className="text-sm font-medium">Page address</Label>
               <Input
                 id="url"
                 type="url"
                 placeholder="https://example.com"
                 disabled={!canEdit('url')}
+                className="h-[46px] rounded-[10px] text-[15px]"
                 {...methods.register('url')}
               />
               {methods.formState.errors.url ? (
@@ -891,66 +884,16 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
               </pre>
             </div>
           ) : null}
-          {actionHasSelectors && !hideSelectorTools ? (
-            <>
-              <div className="grid gap-2">
-                <div className="flex items-center justify-between gap-2">
-                  <Label htmlFor="selector_0">Selectors</Label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!canEdit('selectors')}
-                    onClick={() => methods.setValue('selectors', [...selectors, ''], { shouldDirty: true })}
-                  >
-                    Add selector
-                  </Button>
-                </div>
-                <p className="text-muted-foreground text-xs">
-                  Top selector is primary. Selectors below are fallbacks.
-                </p>
-                <div className="space-y-2">
-                  {selectors.map((_, index) => (
-                    <div key={`selector-${index}`} className="flex items-center gap-2">
-                      <Input
-                        id={`selector_${index}`}
-                        type="text"
-                        placeholder={index === 0 ? 'Primary selector' : `Fallback selector ${index}`}
-                        disabled={!canEdit('selectors')}
-                        {...methods.register(`selectors.${index}` as const)}
-                      />
-                      <Button
-                        type="button"
-                        size="icon-sm"
-                        variant="ghost"
-                        className="text-destructive hover:text-destructive h-7 w-7"
-                        disabled={!canEdit('selectors') || selectors.length <= 1}
-                        onClick={() =>
-                          methods.setValue(
-                            'selectors',
-                            selectors.filter((_, i) => i !== index),
-                            { shouldDirty: true },
-                          )
-                        }
-                        aria-label={`Remove selector ${index + 1}`}
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          ) : null}
           {!isMarkerStep && actionHasValue ? (
             <div className="grid gap-2">
-              <Label htmlFor="value">{actionValueLabel(step)}</Label>
+              <Label htmlFor="value" className="text-sm font-medium">{actionValueLabel(step)}</Label>
               <Input
                 id="value"
                 type={isWaitStep ? 'number' : 'text'}
                 inputMode={isWaitStep ? 'numeric' : undefined}
                 disabled={!canEdit('value')}
                 placeholder={isWaitStep ? '1000' : isScreenshotStep ? '' : undefined}
+                className="h-[46px] rounded-[10px] text-[15px]"
                 {...methods.register('value')}
               />
               {methods.formState.errors.value ? (
@@ -958,8 +901,6 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
               ) : null}
             </div>
           ) : null}
-      </CardContent>
-      </Card>
 
       {!hideSelectorTools && !isAiReviewStep && canEdit('validation') ? (
         <StepValidationPanel
@@ -969,6 +910,64 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
         />
       ) : null}
 
+      {!isMarkerStep ? (
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild>
+          <button type="button" className="flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-300">
+            Advanced
+            <ChevronRight className={cn('size-3.5 transition-transform', advancedOpen && 'rotate-90')} aria-hidden />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-2 pt-3">
+      {actionHasSelectors && !hideSelectorTools ? (
+        <div className="grid gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="selector_0">Selectors</Label>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={!canEdit('selectors')}
+              onClick={() => methods.setValue('selectors', [...selectors, ''], { shouldDirty: true })}
+            >
+              Add selector
+            </Button>
+          </div>
+          <p className="text-muted-foreground text-xs">
+            Top selector is primary. Selectors below are fallbacks.
+          </p>
+          <div className="space-y-2">
+            {selectors.map((_, index) => (
+              <div key={`selector-${index}`} className="flex items-center gap-2">
+                <Input
+                  id={`selector_${index}`}
+                  type="text"
+                  placeholder={index === 0 ? 'Primary selector' : `Fallback selector ${index}`}
+                  disabled={!canEdit('selectors')}
+                  {...methods.register(`selectors.${index}` as const)}
+                />
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  className="text-destructive hover:text-destructive h-7 w-7"
+                  disabled={!canEdit('selectors') || selectors.length <= 1}
+                  onClick={() =>
+                    methods.setValue(
+                      'selectors',
+                      selectors.filter((_, i) => i !== index),
+                      { shouldDirty: true },
+                    )
+                  }
+                  aria-label={`Remove selector ${index + 1}`}
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {showSelectorAndAnchorTools ? (
       <>
       <Card className={cn('gap-2 py-3', PANEL_CARD_CLASS)}>
@@ -1085,7 +1084,10 @@ export const StepConfigForm = memo(forwardRef<StepConfigFormHandle, Props>(
       </>
       ) : null}
 
-      {!isMarkerStep ? <ElementFingerprintCard fingerprint={step.fingerprint} /> : null}
+      <ElementFingerprintCard fingerprint={step.fingerprint} />
+        </CollapsibleContent>
+      </Collapsible>
+      ) : null}
 
       {!hideSubmitButton ? (
         <>

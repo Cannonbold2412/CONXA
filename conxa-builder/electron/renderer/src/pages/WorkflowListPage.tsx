@@ -231,8 +231,13 @@ export function WorkflowListPage() {
     <PageHeader
       title="Workflows"
       description="Organize your automations by business group — each one owns its own logins."
-      leading={<UsageCards />}
-      actions={<NewGroupDialog />}
+      inlineActions
+      actions={
+        <>
+          <UsageCards />
+          <NewGroupDialog />
+        </>
+      }
     />
   )
 

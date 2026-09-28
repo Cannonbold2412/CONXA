@@ -313,7 +313,14 @@ function ScreenshotViewInner({
               src={resolvedSrc}
               alt="Captured page region for this step"
               className={cn(
-                'h-auto max-h-[55vh] w-auto max-w-full',
+                // A fixed vh share (55vh) let this run taller than the wizard panel actually had
+                // room for once the heading/stepper/toolbar/continue-bar around it were counted,
+                // forcing the whole Pick Element phase to scroll to reach Continue. Reserving a
+                // fixed budget for that surrounding chrome (~460px) instead means the image always
+                // shrinks to what's actually left, so the phase fits without scrolling on any
+                // realistic window height; the vh term still caps it on very tall windows and the
+                // floor keeps it usable on short ones. Overridable via --shot-max-h.
+                'h-auto max-h-[var(--shot-max-h,clamp(220px,calc(100vh-460px),56vh))] w-auto max-w-full',
                 bboxDrawMode && !bboxDrawSaving && 'select-none',
               )}
               draggable={false}

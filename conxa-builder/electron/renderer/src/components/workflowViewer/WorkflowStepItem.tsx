@@ -1,11 +1,10 @@
 import type { DragEvent, KeyboardEvent } from 'react'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import type { StepEditorDTO } from '@/types/workflow'
 import { RECORDING_SCREENSHOT_DRAG_MIME } from '@/api/workflowApi'
-import { BoxSelect, GitBranch, GripVertical, MousePointer2, Repeat, ShieldAlert, Trash2 } from 'lucide-react'
+import { BoxSelect, GitBranch, GripVertical, Repeat, Trash2 } from 'lucide-react'
 import { compactStepLabel, handleRecordingScreenshotDrop, visualBboxState, type BboxState } from '@/lib/workflowViewerHelpers'
 
 type WorkflowStepItemProps = {
@@ -13,6 +12,9 @@ type WorkflowStepItemProps = {
   isSelected: boolean
   isDirty: boolean
   isDragging: boolean
+  /** Set when this step's index is in compile_health.steps_below_threshold — shown as a quiet
+   *  warn dot instead of the old banner's separate "jump to step" chip. */
+  belowThreshold?: boolean
   recordingShotDragActive?: boolean
   draggingIndex: number | null
   onSelect: (index: number) => void
@@ -29,6 +31,7 @@ export function WorkflowStepItem({
   isSelected,
   isDirty,
   isDragging,
+  belowThreshold,
   recordingShotDragActive,
   draggingIndex,
   onSelect,
@@ -88,7 +91,7 @@ export function WorkflowStepItem({
           isDragging && 'opacity-70',
         )}
       >
-        <span className="text-muted-foreground mt-0.5 shrink-0 cursor-grab" aria-hidden>
+        <span className="text-muted-foreground mt-1 shrink-0 cursor-grab" aria-hidden>
           <GripVertical className="size-4" />
         </span>
         <span
@@ -100,13 +103,19 @@ export function WorkflowStepItem({
         >
           {step.step_index + 1}
         </span>
-        <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">
-          <span className="block">{compactStepLabel(step.human_readable_description)}</span>
-          {bboxState ? <VisualBboxBadge state={bboxState} /> : null}
-          {step.branch_summary ? <BranchSummaryBadge summary={step.branch_summary} /> : null}
-          {step.for_each_summary ? <ForEachSummaryBadge summary={step.for_each_summary} /> : null}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate leading-6" title={step.human_readable_description}>
+            {compactStepLabel(step.human_readable_description)}
+          </span>
+          {bboxState || step.branch_summary || step.for_each_summary ? (
+            <span className="mt-1.5 flex flex-wrap gap-1.5">
+              {bboxState ? <VisualBboxBadge state={bboxState} /> : null}
+              {step.branch_summary ? <BranchSummaryBadge summary={step.branch_summary} /> : null}
+              {step.for_each_summary ? <ForEachSummaryBadge summary={step.for_each_summary} /> : null}
+            </span>
+          ) : null}
         </span>
-        <StepBadges step={step} isDirty={isDirty} onDeleteRequest={onDeleteRequest} />
+        <StepBadges step={step} isDirty={isDirty} belowThreshold={belowThreshold} onDeleteRequest={onDeleteRequest} />
       </div>
     </li>
   )
@@ -125,7 +134,7 @@ function BranchSummaryBadge({ summary }: { summary: NonNullable<import('@/types/
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="mt-1 inline-flex max-w-full items-center gap-1 rounded border border-violet-400/20 bg-violet-400/[0.06] px-1.5 py-0.5 text-[0.65rem] leading-none text-violet-300/90">
+        <span className="inline-flex max-w-full items-center gap-1 rounded border border-violet-400/20 bg-violet-400/[0.06] px-1.5 py-0.5 text-[0.65rem] leading-none text-violet-300/90">
           <GitBranch className="size-3 shrink-0" aria-hidden />
           <span className="min-w-0 truncate">{label}</span>
         </span>
@@ -150,10 +159,10 @@ function ForEachSummaryBadge({ summary }: { summary: NonNullable<import('@/types
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="mt-1 inline-flex max-w-full items-center gap-1 rounded border border-sky-400/20 bg-sky-400/[0.06] px-1.5 py-0.5 text-[0.65rem] leading-none text-sky-100">
+        <span className="inline-flex max-w-full items-center gap-1 rounded border border-sky-400/20 bg-sky-400/[0.06] px-1.5 py-0.5 text-[0.65rem] leading-none text-sky-100">
           <Repeat className="size-3 shrink-0" aria-hidden />
           <span className="min-w-0 truncate">
-            loops {summary.step_count} step{summary.step_count === 1 ? '' : 's'} · driven by {source}
+            loops {summary.step_count} step{summary.step_count === 1 ? '' : 's'} · {source}
           </span>
         </span>
       </TooltipTrigger>
@@ -171,7 +180,7 @@ function VisualBboxBadge({ state }: { state: BboxState }) {
       <TooltipTrigger asChild>
         <span
           className={cn(
-            'mt-1 inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[0.65rem] leading-none',
+            'inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[0.65rem] leading-none',
             state.usable ? 'border-sky-400/20 bg-sky-400/[0.06] text-sky-300/90' : 'border-white/8 bg-white/[0.02] text-zinc-500',
           )}
         >
@@ -184,57 +193,48 @@ function VisualBboxBadge({ state }: { state: BboxState }) {
   )
 }
 
+/** A single quiet status dot with an explanatory tooltip — replaces the old text badge row.
+ *  Destructive/forced/hover-chain/generic-intent detail now surfaces in the step editor's own
+ *  eyebrow line (InlineRetargetFlow) instead of cluttering every row in the list. */
+function StatusDot({ colorClass, label, detail }: { colorClass: string; label: string; detail: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className={cn('mt-1 size-1.5 shrink-0 rounded-full', colorClass)} aria-label={label} />
+      </TooltipTrigger>
+      <TooltipContent side="top">{detail}</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function StepBadges({
   step,
   isDirty,
+  belowThreshold,
   onDeleteRequest,
 }: {
   step: StepEditorDTO
   isDirty: boolean
+  belowThreshold?: boolean
   onDeleteRequest: (index: number) => void
 }) {
   return (
-    <span className="flex shrink-0 items-start gap-1">
-      {isDirty ? (
-        <Badge variant="secondary" className="text-[0.65rem]">
-          edited
-        </Badge>
+    <span className="flex shrink-0 items-start gap-1.5">
+      {belowThreshold ? (
+        <StatusDot colorClass="bg-status-warn" label="Below confidence threshold" detail="This step's identity confidence is below the workflow's minimum — review it in Diagnostics." />
       ) : null}
+      {isDirty ? <StatusDot colorClass="bg-amber-300" label="Edited" detail="Unsaved changes on this step." /> : null}
       {step.flags.is_destructive ? (
-        <Badge variant="destructive" className="text-[0.65rem]">
-          destructive
-        </Badge>
-      ) : null}
-      {step.flags.generic_intent ? (
-        <Badge variant="outline" className="text-[0.65rem]">
-          intent
-        </Badge>
+        <StatusDot colorClass="bg-status-error" label="Destructive" detail="This step performs a destructive action (e.g. delete, submit)." />
       ) : null}
       {step.safety.allow_forced_action ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Badge variant="destructive" className="gap-1 text-[0.65rem]">
-              <ShieldAlert className="size-3" aria-hidden />
-              forced
-            </Badge>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            This step is allowed to force the action even when the target looks non-interactable.
-          </TooltipContent>
-        </Tooltip>
+        <StatusDot colorClass="bg-status-error" label="Forced" detail="This step is allowed to force the action even when the target looks non-interactable." />
       ) : null}
       {step.safety.has_hover_chain ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Badge variant="outline" className="gap-1 text-[0.65rem]">
-              <MousePointer2 className="size-3" aria-hidden />
-              hover chain
-            </Badge>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            This step depends on hovering other elements first before it can act.
-          </TooltipContent>
-        </Tooltip>
+        <StatusDot colorClass="bg-sky-400" label="Hover chain" detail="This step depends on hovering other elements first before it can act." />
+      ) : null}
+      {step.flags.generic_intent ? (
+        <StatusDot colorClass="bg-zinc-500" label="Generic intent" detail="This step's intent was not confidently inferred." />
       ) : null}
       <Tooltip>
         <TooltipTrigger asChild>

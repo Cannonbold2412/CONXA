@@ -27,7 +27,6 @@ import { CopilotLauncher } from '@/components/copilot/CopilotLauncher'
 const COPILOT_ENABLED = true
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
 import { WorkflowPlanPanel } from '@/components/WorkflowPlanPanel'
-import { CompileHealthBanner } from '@/components/CompileHealthBanner'
 import { ReviewQuestionsDialog } from '@/components/ReviewQuestionsDialog'
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel'
 import { WorkflowViewer } from '@/components/WorkflowViewer'
@@ -46,6 +45,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { InfoHint } from '@/components/ui/info-hint'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
@@ -53,8 +53,6 @@ import {
   AlertCircle,
   BadgeCheck,
   ChevronDown,
-  ChevronLeft,
-  Copy,
   Home,
   Image as ImageIcon,
   Lightbulb,
@@ -69,9 +67,6 @@ import {
 import type { HelpEntry } from '@/lib/editorHelp'
 
 type ToolPaneKey = 'suggestions' | 'variables' | 'screenshots' | 'workflowPlan' | 'diagnostics'
-
-const SKILL_ID_CAPTION_CLASS =
-  'max-w-[12rem] truncate font-mono text-[10px] leading-none text-zinc-500 sm:max-w-[16rem]'
 
 const FLOW_STEPS = ['Record', 'Compile', 'Edit', 'Approve'] as const
 
@@ -155,6 +150,18 @@ export function HumanEditPage() {
     },
     [qc, skillId],
   )
+
+  // Shared by Back, Recompile and Approve — lands on this skill's workflow group page
+  // (recompile + testing live there), falling back to the workflows list if it can't be found.
+  const goToOwnerGroup = useCallback(async () => {
+    try {
+      const list = normalizeWorkflowList(await fetchWorkflows())
+      const owner = list.find((wf) => wf.skill_id === skillId)
+      navigate(owner ? `/groups/${encodeURIComponent(owner.group_id)}` : '/workflows')
+    } catch {
+      navigate(fromPath ?? '/workflows')
+    }
+  }, [skillId, fromPath, navigate])
 
   const currentStep = useMemo(() => {
     if (!q.data || selected === null) return null
@@ -403,13 +410,7 @@ export function HumanEditPage() {
     }
     // Land on the workflow's group page — testing lives there (WorkflowTestRow), not on a
     // dedicated Test Skill page anymore.
-    try {
-      const list = normalizeWorkflowList(await fetchWorkflows())
-      const owner = list.find((wf) => wf.skill_id === skillId)
-      navigate(owner ? `/groups/${encodeURIComponent(owner.group_id)}` : '/workflows')
-    } catch {
-      navigate(fromPath ?? '/workflows')
-    }
+    await goToOwnerGroup()
   }
 
   const onDroppedRecordingScreenshot = useCallback(
@@ -788,117 +789,71 @@ export function HumanEditPage() {
     count: effectiveStep?.screenshot?.frames?.length ?? '—',
   }
   const activeTool = openTool === 'screenshots' ? screenshotsTool : (toolPanes.find((t) => t.key === openTool) ?? null)
+  // Workflow plan / Diagnostics use the redesigned 760px auto-height modal with a Close footer.
+  const isCompactTool = activeTool?.key === 'workflowPlan' || activeTool?.key === 'diagnostics'
+  const compileHealth = wf.compile_health
+  const stepsBelowThreshold = compileHealth.steps_below_threshold ?? []
+  const statusWord =
+    compileHealth.status === 'failed' ? 'compile issues' : compileHealth.status === 'review_needed' ? 'review recommended' : null
 
   return (
     <TooltipProvider>
     <div className="flex h-full min-h-0 flex-col">
     <PageHeader
-      title={`Skill: ${skillTitle}`}
+      title={skillTitle}
       description={
-        skillId ? (
-          <div className="flex max-w-full flex-wrap items-center gap-2">
-            <div className="flex items-center gap-0.5">
-              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide leading-none text-zinc-600">
-                Skill id
-              </span>
-              <span className={cn(SKILL_ID_CAPTION_CLASS, 'min-w-0 text-left')} title={skillId}>
-                {skillId}
-              </span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    className="h-5 w-5 shrink-0 p-0 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 [&_svg]:size-2.5"
-                    aria-label="Copy skill id"
-                    onClick={() =>
-                      navigator.clipboard
-                        .writeText(skillId)
-                        .then(() => toast.success('Skill id copied'))
-                        .catch(() => toast.error('Could not copy'))
-                    }
-                  >
-                    <Copy className="size-2.5" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Copy skill id</TooltipContent>
-              </Tooltip>
-            </div>
-            {version > 0 && (
-              <Badge variant="outline" className="border-white/10 font-mono text-[0.65rem] text-zinc-500">
-                v{version}
-              </Badge>
-            )}
-          </div>
-        ) : null
+        <div className="flex max-w-full flex-nowrap items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-sm text-zinc-500">
+          <span>{wf.steps.length} step{wf.steps.length === 1 ? '' : 's'}</span>
+          {statusWord && <span className="text-status-warn">· {statusWord}</span>}
+        </div>
       }
+      onBack={() => (fromPath ? navigate(fromPath) : void goToOwnerGroup())}
+      inlineActions
       actions={
-        <div className="flex w-full items-center gap-3">
-          {fromPath && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-9 shrink-0 border-white/12 bg-white/[0.045] text-zinc-300 hover:bg-white/[0.08] hover:text-white"
-                  onClick={() => navigate(fromPath)}
-                >
-                  <ChevronLeft className="size-3.5" />
-                  <span className="hidden sm:inline">Back</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Back to workflow</TooltipContent>
-            </Tooltip>
-          )}
-          {/* Inspector tool-launchers live on the LEFT (secondary "views"); the primary
-              commit cluster (pool / unsaved / undo-redo / Approve) is pinned RIGHT via
-              ml-auto. This spreads the row across its full width instead of jamming
-              everything right, so the tools sit at their natural width with no scroll. */}
-          <div className="flex h-9 items-center overflow-hidden rounded-md border border-white/12 bg-white/[0.045] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-            {toolPanes.map((tool, i) => {
-              const Icon = tool.icon
-              const active = openTool === tool.key
-              return (
-                <div key={tool.key} className="flex h-full items-center">
-                  {i > 0 && <div className="h-5 w-px bg-white/12" />}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-pressed={active}
-                        aria-controls={tool.controls}
-                        className={cn(
-                          'h-full gap-1.5 rounded-none px-3 text-zinc-300 hover:bg-white/[0.07] hover:text-white',
-                          active && 'bg-brand/14 text-brand hover:bg-brand/18 hover:text-brand',
-                        )}
-                        onClick={() => setOpenTool(tool.key)}
-                      >
-                        <Icon className={cn('size-3.5 shrink-0', !active && tool.iconClass)} />
-                        <span className="hidden text-xs font-medium lg:inline">{tool.label}</span>
-                        {tool.count !== undefined && (
-                          <Badge
-                            variant="outline"
-                            className={cn(
-                              'shrink-0 px-1.5 text-[0.65rem] font-semibold',
-                              active ? 'border-brand/40 text-brand' : 'border-white/15 text-zinc-400',
-                            )}
-                          >
-                            {tool.count}
-                          </Badge>
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{tool.label}</TooltipContent>
-                  </Tooltip>
-                </div>
-              )
-            })}
-          </div>
-          <div className="ml-auto flex shrink-0 items-center gap-2.5">
-          <HumanEditPoolBadge className="h-9" />
+        <div className="flex items-center gap-2.5">
+          {/* Sits in AppChrome's header row after the title (PageHeader's inlineActions):
+              Workflow plan + Input variables launchers (Suggestions' old spot), the More
+              menu (Suggestions, Diagnostics, credits), then the commit cluster
+              (unsaved / undo-redo / Approve). */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-controls="workflow-plan-modal"
+                className={cn(
+                  'h-9 gap-1.5 px-3 text-zinc-300 hover:bg-white/[0.07] hover:text-white',
+                  openTool === 'workflowPlan' && 'bg-brand/14 text-brand hover:bg-brand/18 hover:text-brand',
+                )}
+                onClick={() => setOpenTool('workflowPlan')}
+              >
+                <MapIcon className={cn('size-3.5 shrink-0', openTool !== 'workflowPlan' && 'text-violet-300')} />
+                <span className="hidden sm:inline">Workflow plan</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Workflow plan</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-controls="variables-modal"
+                className={cn(
+                  'h-9 gap-1.5 px-3 text-zinc-300 hover:bg-white/[0.07] hover:text-white',
+                  openTool === 'variables' && 'bg-brand/14 text-brand hover:bg-brand/18 hover:text-brand',
+                )}
+                onClick={() => setOpenTool('variables')}
+              >
+                <SlidersHorizontal className={cn('size-3.5 shrink-0', openTool !== 'variables' && 'text-sky-300')} />
+                <span className="hidden sm:inline">Input variables</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Input variables</TooltipContent>
+          </Tooltip>
+          <div className="flex shrink-0 items-center gap-2.5">
           {dirtyCount > 0 && (
             <span
               className="hidden h-9 items-center gap-1.5 rounded-md border border-amber-400/25 bg-amber-400/10 px-2.5 text-[0.7rem] font-medium text-amber-200 sm:inline-flex"
@@ -944,6 +899,49 @@ export function HumanEditPage() {
               <TooltipContent>Redo · Ctrl+Y</TooltipContent>
             </Tooltip>
           </div>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-9 gap-1.5 border-white/12 bg-white/[0.045] px-3 text-sm text-zinc-300 hover:bg-white/[0.08] hover:text-white"
+              >
+                More
+                <ChevronDown className="size-3" aria-hidden />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-1.5">
+              {toolPanes
+                .filter((t) => t.key !== 'variables' && t.key !== 'workflowPlan')
+                .map((tool) => {
+                  const Icon = tool.icon
+                  return (
+                    <button
+                      key={tool.key}
+                      type="button"
+                      aria-controls={tool.controls}
+                      className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm text-zinc-200 hover:bg-white/[0.06]"
+                      onClick={() => setOpenTool(tool.key)}
+                    >
+                      <Icon className={cn('size-3.5 shrink-0', tool.iconClass)} />
+                      {tool.label}
+                      {tool.key === 'suggestions' && (
+                        <span className="ml-auto text-zinc-500">{suggestionCount}</span>
+                      )}
+                      {stepsBelowThreshold.length > 0 && tool.key === 'diagnostics' && (
+                        <span className="ml-auto size-1.5 rounded-full bg-status-warn" aria-hidden />
+                      )}
+                    </button>
+                  )
+                })}
+              <div className="my-1 h-px bg-white/10" />
+              <div className="flex items-center justify-between px-2.5 py-1.5 text-xs text-zinc-500">
+                AI usage credits
+                <HumanEditPoolBadge className="h-auto border-0 bg-transparent p-0 text-zinc-300" />
+              </div>
+            </PopoverContent>
+          </Popover>
           <div className="hidden h-7 w-px bg-white/15 sm:block" aria-hidden />
           <Tooltip>
             <TooltipTrigger asChild>
@@ -963,9 +961,7 @@ export function HumanEditPage() {
           </div>
         </div>
       }
-      className="py-3.5"
     />
-    <CompileHealthBanner compileHealth={wf.compile_health} onOpenDiagnostics={() => setOpenTool('diagnostics')} />
     {skillId && (
       <ReviewQuestionsDialog skillId={skillId} wf={wf} onWorkflowUpdated={onWorkflowUpdated} />
     )}
@@ -977,6 +973,7 @@ export function HumanEditPage() {
         <WorkflowViewer
           skillId={skillId}
           steps={wf.steps}
+          stepsBelowThreshold={stepsBelowThreshold}
           onReorder={onReorder}
           onDelete={onDelete}
           onAddAction={(actionKind) => void onAddAction(actionKind)}
@@ -1025,24 +1022,26 @@ export function HumanEditPage() {
           // and an unprefixed max-w-none does NOT override a sm:-prefixed class (different
           // tailwind-merge scope), so without this every tool dialog was silently clamped
           // to 384px and its content overflowed/clipped instead of using the width below.
-          'anim-pop flex h-[min(85vh,880px)] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none',
+          'anim-pop flex max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none',
           activeTool?.key === 'screenshots'
-            ? 'w-[min(1500px,96vw)]'
-            : activeTool?.key === 'variables'
-              ? 'w-[min(1400px,96vw)]'
-              : 'w-[min(1100px,94vw)]',
+            ? 'h-[min(85vh,880px)] w-[min(1500px,96vw)]'
+            : activeTool?.key === 'suggestions'
+              ? 'h-[min(85vh,880px)] w-[min(1100px,94vw)]'
+              : // Variables / Workflow plan / Diagnostics: the step-editor-redesign 760px
+                // modal, sized to its content up to a cap instead of a fixed height.
+                'max-h-[min(780px,88vh)] w-[min(760px,94vw)]',
         )}
         id={activeTool?.controls}
       >
         {activeTool && (
           <>
-            <DialogHeader className="flex-col gap-3 border-b border-white/8 py-4 pl-5 pr-12">
-              <div className="flex items-start gap-3">
-                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
-                  <activeTool.icon className={cn('size-4.5', activeTool.iconClass)} />
+            <DialogHeader className="flex-col gap-3 border-b border-white/8 pt-6 pb-5 pl-7 pr-12">
+              <div className="flex items-start gap-3.5">
+                <span className="bg-brand/14 text-brand flex size-[34px] shrink-0 items-center justify-center rounded-[9px]">
+                  <activeTool.icon className="size-[17px]" />
                 </span>
                 <div className="min-w-0 flex-1 pt-0.5">
-                  <DialogTitle className="flex items-center gap-2 text-base leading-none">
+                  <DialogTitle className="flex items-center gap-2 text-base leading-none font-semibold">
                     <span className="truncate">{activeTool.label}</span>
                     {activeTool.count !== undefined && (
                       <Badge variant="outline" className="shrink-0 border-brand/40 text-[0.65rem] text-brand">
@@ -1050,7 +1049,7 @@ export function HumanEditPage() {
                       </Badge>
                     )}
                   </DialogTitle>
-                  <DialogDescription className="mt-1.5 max-w-2xl">{activeTool.help.summary}</DialogDescription>
+                  <DialogDescription className="mt-1.5 max-w-2xl text-sm leading-normal">{activeTool.help.summary}</DialogDescription>
                 </div>
                 <InfoHint {...activeTool.help} side="bottom" align="end" triggerLabel={`About ${activeTool.label}`} />
               </div>
@@ -1075,6 +1074,8 @@ export function HumanEditPage() {
               // scrolling out of view at the end of an unbounded content column.
               <ParameterizationInlinePanel workflow={wf} onSaved={onWorkflowUpdated} onClose={() => setOpenTool(null)} />
             ) : (
+              <>
+              {!isCompactTool ? (
               <ScrollArea className="min-h-0 flex-1">
                 <div className="p-5">
                   {activeTool.key === 'suggestions' && <SuggestionsInlinePanel suggestions={wf.suggestions} />}
@@ -1095,10 +1096,27 @@ export function HumanEditPage() {
                       }
                     />
                   )}
-                  {activeTool.key === 'workflowPlan' && <WorkflowPlanPanel workflow={wf} />}
-                  {activeTool.key === 'diagnostics' && <DiagnosticsPanel workflow={wf} currentStep={currentStep} />}
                 </div>
               </ScrollArea>
+              ) : (
+                <>
+                  {/* Auto-height dialog (max-h only): a plain overflow div scrolls here, whereas
+                      ScrollArea's size-full viewport never gets a definite height and would clip. */}
+                  <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
+                    {activeTool.key === 'workflowPlan' ? (
+                      <WorkflowPlanPanel workflow={wf} />
+                    ) : (
+                      <DiagnosticsPanel workflow={wf} currentStep={currentStep} skillId={skillId} version={version} />
+                    )}
+                  </div>
+                  <div className="flex shrink-0 justify-end border-t border-white/8 px-7 py-4">
+                    <Button type="button" variant="outline" onClick={() => setOpenTool(null)}>
+                      Close
+                    </Button>
+                  </div>
+                </>
+              )}
+              </>
             )}
           </>
         )}

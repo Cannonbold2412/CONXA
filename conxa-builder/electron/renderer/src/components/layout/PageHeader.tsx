@@ -15,22 +15,26 @@ type PageHeaderProps = {
   /** Shows a back-chevron at the true left edge of AppChrome's header row,
    * before the title. Most pages never set this. */
   onBack?: () => void
+  /** Renders `actions` inside AppChrome's header row (after the title) instead
+   * of a separate strip in the page body. */
+  inlineActions?: boolean
 }
 
 /** Registers this page's title/description into AppChrome's sticky top bar
- * (next to the user/logout widget) so it's never repeated in the page body.
+ * so it's never repeated in the page body.
  * Only renders something here when `leading` or `actions` are supplied — a
  * two-part strip that stays put in the body: standing information on the left,
  * page-level buttons on the right. */
-export function PageHeader({ title, description, leading, actions, className, extra, onBack }: PageHeaderProps) {
+export function PageHeader({ title, description, leading, actions, className, extra, onBack, inlineActions }: PageHeaderProps) {
   const { setHeader } = usePageHeaderContext()
+  const headerActions = inlineActions ? actions : undefined
 
   useEffect(() => {
-    setHeader({ title, description, extra, onBack })
+    setHeader({ title, description, extra, onBack, actions: headerActions })
     return () => setHeader(null)
-  }, [title, description, extra, onBack, setHeader])
+  }, [title, description, extra, onBack, headerActions, setHeader])
 
-  if (!actions && !leading) return null
+  if (inlineActions || (!actions && !leading)) return null
 
   return (
     // A toolbar, not a second header: one row tall, tinted a shade darker than

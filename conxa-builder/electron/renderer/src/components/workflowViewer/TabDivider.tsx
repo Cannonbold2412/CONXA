@@ -1,7 +1,6 @@
-import { ArrowRightLeft } from 'lucide-react'
-
 type TabDividerProps = {
-  /** 1-indexed tab position (StepEditorDTO.tab.index + 1) — "Tab 2", not the internal tab_1 id. */
+  /** 1-indexed tab position (StepEditorDTO.tab.index + 1) — used only in the tooltip/title, not
+   *  the label itself (the board reads "New tab", not "Tab 2"). */
   tabNumber: number
   url?: string
 }
@@ -18,12 +17,10 @@ export function TabDivider({ tabNumber, url }: TabDividerProps) {
   }
 
   return (
-    <li className="flex items-center gap-2 px-1 py-1.5" aria-hidden={false}>
+    <li className="flex items-center gap-3 px-1 py-2.5" title={`Tab ${tabNumber}`} aria-hidden={false}>
       <span className="h-px flex-1 bg-white/10" />
-      <span className="text-brand flex items-center gap-1 whitespace-nowrap text-[0.65rem] font-semibold uppercase tracking-wide">
-        <ArrowRightLeft className="size-3" />
-        Tab {tabNumber}
-        {host ? <span className="text-muted-foreground normal-case tracking-normal">— {host}</span> : null}
+      <span className="whitespace-nowrap text-xs text-zinc-500">
+        New tab{host ? ` · ${host}` : ''}
       </span>
       <span className="h-px flex-1 bg-white/10" />
     </li>

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { Plus, Trash2 } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { InfoHint } from '@/components/ui/info-hint'
 import { patchStep, errorMessage } from '@/api/workflowApi'
 import { editorHelp } from '@/lib/editorHelp'
@@ -74,51 +74,51 @@ export function RecoveryAnchorsCard({ stepIndex, skillId, anchors, onWorkflowUpd
   }
 
   return (
-    <Card className="gap-2 bg-[linear-gradient(180deg,rgba(17,24,39,0.85),rgba(7,10,16,0.92))] py-3 ring-white/10">
-      <CardHeader className="p-2.5 pb-1">
-        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
-          Search hints for recovery
-          <InfoHint {...editorHelp.recoverySearchHints} size="md" side="bottom" align="start" />
-        </CardTitle>
-        <CardDescription className="text-xs">
-          Landmarks the AI fallback looks near if every selector above stops matching
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2 p-2.5 pt-0">
-        <div className="space-y-1.5">
-          {rows.map((row, index) => (
-            <div key={index} className="flex items-center gap-1.5">
-              <Input
-                value={row}
-                onChange={(e) => setRow(index, e.target.value)}
-                placeholder={index === 0 ? 'near:Sign in' : `Hint ${index + 1}`}
-                disabled={disabled}
-                className="h-7 text-xs"
-              />
-              <Button
-                type="button"
-                size="icon-sm"
-                variant="ghost"
-                className="text-destructive hover:text-destructive h-7 w-7 shrink-0"
-                disabled={disabled || rows.length <= 1}
-                onClick={() => removeRow(index)}
-                aria-label={`Remove hint ${index + 1}`}
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
-            </div>
-          ))}
+    <div className="flex flex-col gap-2">
+      <Label htmlFor={`recovery-hint-${stepIndex}-0`} className="flex items-center gap-1.5 text-sm font-medium">
+        Landmark to search near, if every signal above stops matching
+        <InfoHint {...editorHelp.recoverySearchHints} size="md" side="bottom" align="start" />
+      </Label>
+      {rows.map((row, index) => (
+        <div key={index} className="flex items-center gap-1.5">
+          <Input
+            id={`recovery-hint-${stepIndex}-${index}`}
+            value={row}
+            onChange={(e) => setRow(index, e.target.value)}
+            placeholder={index === 0 ? 'near:Sign in' : `Hint ${index + 1}`}
+            disabled={disabled}
+            className="h-[46px] rounded-[10px] font-mono text-sm"
+          />
+          {rows.length > 1 ? (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              className="text-destructive hover:text-destructive shrink-0"
+              disabled={disabled}
+              onClick={() => removeRow(index)}
+              aria-label={`Remove hint ${index + 1}`}
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          ) : null}
         </div>
-        <div className="flex items-center justify-between gap-2 pt-0.5">
-          <Button type="button" size="sm" variant="outline" className="gap-1.5" disabled={disabled} onClick={addRow}>
-            <Plus className="size-3.5" />
-            Add hint
+      ))}
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          className="text-brand text-sm font-medium hover:underline disabled:opacity-50"
+          disabled={disabled}
+          onClick={addRow}
+        >
+          + Add another landmark
+        </button>
+        {dirty ? (
+          <Button type="button" size="sm" variant="outline" disabled={disabled || saving} onClick={handleSave}>
+            {saving ? 'Saving…' : 'Save landmarks'}
           </Button>
-          <Button type="button" size="sm" disabled={disabled || !dirty || saving} onClick={handleSave}>
-            {saving ? 'Saving…' : 'Save hints'}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+        ) : null}
+      </div>
+    </div>
   )
 }

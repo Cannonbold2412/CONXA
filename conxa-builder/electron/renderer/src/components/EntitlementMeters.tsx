@@ -33,12 +33,6 @@ function formatCount(value: number | null | undefined, key: EntitlementMeterKey)
   return new Intl.NumberFormat().format(value)
 }
 
-function meterText(meter: EntitlementMeter | undefined, key: EntitlementMeterKey) {
-  if (!meter) return 'Unavailable'
-  if (meter.unlimited) return `${formatCount(meter.used, key)} used`
-  return `${formatCount(meter.used, key)} of ${formatCount(meter.limit, key)}`
-}
-
 /** Percentage of the allowance consumed. 0 for unlimited/unmetered. */
 function usedPct(meter: EntitlementMeter) {
   if (meter.unlimited || !meter.limit) return 0
@@ -152,11 +146,9 @@ export function HumanEditPoolBadge({ className }: { className?: string }) {
 export function EntitlementMeters({
   meters = DEFAULT_METERS,
   className,
-  compact = false,
 }: {
   meters?: EntitlementMeterKey[]
   className?: string
-  compact?: boolean
 }) {
   const usageQ = useQuery({
     queryKey: ['entitlements'],
@@ -167,9 +159,9 @@ export function EntitlementMeters({
 
   if (usageQ.isLoading) {
     return (
-      <div className={cn('grid gap-2', compact ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4', className)}>
+      <div className={cn('grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-white/8 bg-white/8', className)}>
         {meters.map((key) => (
-          <div key={key} className="h-20 animate-pulse rounded-lg border border-white/8 bg-white/[0.03]" />
+          <div key={key} className="h-28 animate-pulse bg-[#252525]" />
         ))}
       </div>
     )
@@ -185,15 +177,31 @@ export function EntitlementMeters({
   }
 
   return (
-    <div className={cn('grid gap-2', compact ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4', className)}>
+    <div className={cn('grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-white/8 bg-white/8', className)}>
       {meters.map((key) => {
         const meter = data?.meters?.[key]
         const remaining = meter?.unlimited ? 'Unlimited' : formatCount(meter?.remaining, key)
+        const pct = meter ? usedPct(meter) : 0
         return (
-          <div key={key} className="rounded-lg border border-white/8 bg-white/[0.03] px-3 py-2.5">
-            <p className="text-[0.6875rem] font-medium text-zinc-400">{LABELS[key]}</p>
-            <p className="mt-1 text-sm font-medium text-white">{meterText(meter, key)}</p>
-            <p className="mt-0.5 text-xs text-zinc-500">{remaining} remaining</p>
+          <div key={key} className="bg-[#252525] p-5">
+            <p className="text-sm text-zinc-400">{LABELS[key]}</p>
+            {meter ? (
+              <>
+                <p className="mt-1 text-2xl font-semibold leading-tight tabular-nums text-white">
+                  {formatCount(meter.used, key)}
+                </p>
+                <p className="mt-1 text-xs text-zinc-400">
+                  {meter.unlimited ? 'used' : `of ${formatCount(meter.limit, key)}`} · {remaining} remaining
+                </p>
+                {!meter.unlimited && (
+                  <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/8">
+                    <div className={cn('h-full rounded-full', barColor(pct))} style={{ width: `${pct}%` }} />
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="mt-1 text-sm text-zinc-400">Unavailable</p>
+            )}
           </div>
         )
       })}

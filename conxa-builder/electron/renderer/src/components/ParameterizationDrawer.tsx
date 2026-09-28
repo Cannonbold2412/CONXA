@@ -1,17 +1,15 @@
 import { useMemo, useRef, useState } from 'react'
-import { Sparkles, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
+import { Trash2, ChevronDown, ChevronRight } from 'lucide-react'
 import type { StepEditorDTO, WorkflowResponse } from '../types/workflow'
 import { fetchWorkflow, patchSkillInputs, postWorkflowReplaceLiterals } from '../api/workflowApi'
 import { Button } from '@/components/ui/button'
-import { fieldTextareaClass } from '@/lib/fieldStyles'
+import { fieldTextareaClass, SECTION_LABEL } from '@/lib/fieldStyles'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { InfoHint } from '@/components/ui/info-hint'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import {
   addSpottedToRows,
@@ -33,8 +31,10 @@ type Props = {
   onClose: () => void
 }
 
-// grid-cols shared by the header and every body row so columns stay aligned.
-const ROW_GRID = 'grid grid-cols-[minmax(160px,1.3fr)_minmax(160px,1.3fr)_128px_minmax(140px,1fr)_90px_90px_36px] items-center gap-2.5'
+// grid-cols shared by an expanded card's field labels and its inputs so columns stay aligned.
+const ROW_COLS = 'grid grid-cols-[minmax(0,1.2fr)_minmax(0,1.2fr)_128px_minmax(0,1fr)] gap-2.5'
+const ROW_GRID = `${ROW_COLS} items-center`
+const ROW_HEAD = `${ROW_COLS} text-muted-foreground text-xs font-medium`
 
 /** The product's own `{{id}}` syntax, worn by the input itself. A pasted `{{name}}` is
  * unwrapped on the way in so the field never ends up displaying doubled braces. */
@@ -86,21 +86,97 @@ function VariableNameField({
   )
 }
 
-function VariableRow({
+const TYPE_LABELS: Record<VariableFormRow['varType'], string> = {
+  text: 'Text',
+  select: 'Choice list',
+  multiselect: 'Multiple choice',
+  date: 'Date',
+}
+
+/** Collapsed summary of one variable; clicking it expands the full editor in place. */
+function VariableCard({
   row,
   usingSteps,
+  expanded,
+  onToggle,
   onChange,
   onRemove,
 }: {
   row: VariableFormRow
   usingSteps: StepEditorDTO[]
+  expanded: boolean
+  onToggle: () => void
+  onChange: (r: VariableFormRow) => void
+  onRemove: () => void
+}) {
+  const usage =
+    usingSteps.length === 0 ? (
+      <span className="text-status-warn shrink-0 text-xs">Not used in any step</span>
+    ) : (
+      <span className="shrink-0 truncate text-xs text-zinc-500">
+        Used in: {usingSteps.map((s) => `Step ${s.step_index + 1}`).join(', ')}
+      </span>
+    )
+  return (
+    <div className="rounded-xl border border-white/12" data-slot="var-row">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        onClick={onToggle}
+        className="flex w-full flex-col gap-3 rounded-xl p-4 text-left hover:bg-white/[0.03] focus-visible:ring-2 focus-visible:ring-brand-ring focus-visible:outline-none"
+      >
+        <span className="flex w-full items-center justify-between gap-3">
+          <span className="flex min-w-0 items-center gap-2.5">
+            <span className="truncate font-mono text-base text-zinc-100">{row.id || 'unnamed'}</span>
+            {row.label ? <span className="truncate text-sm text-zinc-500">{row.label}</span> : null}
+          </span>
+          {usage}
+        </span>
+        {!expanded ? (
+          <span className="flex flex-wrap gap-x-5 gap-y-1 text-sm text-zinc-500">
+            <span>
+              Type <span className="text-zinc-200">{TYPE_LABELS[row.varType]}</span>
+            </span>
+            <span>
+              Default <span className="text-zinc-200">{row.defaultValue.trim() || 'none'}</span>
+            </span>
+            <span>
+              Optional <span className="text-zinc-200">{isEffectivelyOptional(row) ? 'Yes' : 'No'}</span>
+            </span>
+            <span>
+              Sensitive <span className="text-zinc-200">{row.sensitive ? 'Yes' : 'No'}</span>
+            </span>
+          </span>
+        ) : null}
+      </button>
+      {expanded ? (
+        <div className="px-4 pb-4">
+          <VariableEditor row={row} onChange={onChange} onRemove={onRemove} />
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function VariableEditor({
+  row,
+  onChange,
+  onRemove,
+}: {
+  row: VariableFormRow
   onChange: (r: VariableFormRow) => void
   onRemove: () => void
 }) {
   const optionalLocked = row.defaultValue.trim() !== ''
   const optionalChecked = isEffectivelyOptional(row)
   return (
-    <div className="border-border/70 bg-white/[0.02] space-y-1.5 rounded-lg border p-2.5" data-slot="var-row">
+    <div className="space-y-2">
+      <div className={ROW_HEAD}>
+        <span>Name</span>
+        <span>Label</span>
+        <span>Type</span>
+        <span>Default</span>
+      </div>
       <div className={ROW_GRID}>
         <VariableNameField
           ariaLabel="Variable name"
@@ -154,53 +230,53 @@ function VariableRow({
           value={row.defaultValue}
           onChange={(e) => onChange({ ...row, defaultValue: e.target.value })}
         />
-        <div className="flex items-center justify-center gap-1">
-          <Checkbox
-            aria-label="Optional — the skill can run without this value"
-            checked={optionalChecked}
-            disabled={optionalLocked}
-            onCheckedChange={(checked) => onChange({ ...row, optional: checked === true })}
-          />
-          {optionalLocked ? <span className="text-muted-foreground text-[0.65rem]">auto</span> : null}
-        </div>
-        <div className="flex items-center justify-center">
-          <Checkbox
-            aria-label="Sensitive — mask this value in test history"
-            checked={row.sensitive}
-            onCheckedChange={(checked) => onChange({ ...row, sensitive: checked === true })}
-          />
-        </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground hover:text-destructive justify-self-end"
-          onClick={onRemove}
-          aria-label={`Remove ${row.id || 'this variable'}`}
-        >
-          <Trash2 className="size-3.5" />
-        </Button>
       </div>
       {row.varType === 'select' || row.varType === 'multiselect' ? (
-        <div className="flex items-center gap-2 pl-1">
+        <div className="flex items-center gap-2">
           <Label className="text-muted-foreground shrink-0 text-xs">Options</Label>
           <Input
-            className="h-7 text-sm"
+            className="h-8 text-sm"
             placeholder="small, medium, large"
             value={row.optionsText}
             onChange={(e) => onChange({ ...row, optionsText: e.target.value })}
           />
         </div>
       ) : null}
-      {usingSteps.length === 0 ? (
-        <p className="text-status-warn flex items-center gap-1 pl-1 text-[0.7rem]">
-          <span aria-hidden>▲</span> Not used in any step
-        </p>
-      ) : (
-        <p className="text-muted-foreground truncate pl-1 text-[0.7rem]">
-          Used in: {usingSteps.map((s) => `Step ${s.step_index + 1}`).join(', ')}
-        </p>
-      )}
+      <div className="flex items-center gap-5 pt-1 text-sm text-zinc-400">
+        <label className="flex items-center gap-2">
+          <Checkbox
+            checked={optionalChecked}
+            disabled={optionalLocked}
+            onCheckedChange={(checked) => onChange({ ...row, optional: checked === true })}
+          />
+          Optional{optionalLocked ? <span className="text-xs text-zinc-500">(auto — has a default)</span> : null}
+          <InfoHint
+            size="sm"
+            label="Optional"
+            summary="The skill can run without this value. A variable with a default is always optional — the runtime fills the default in automatically."
+          />
+        </label>
+        <label className="flex items-center gap-2">
+          <Checkbox checked={row.sensitive} onCheckedChange={(checked) => onChange({ ...row, sensitive: checked === true })} />
+          Sensitive
+          <InfoHint
+            size="sm"
+            label="Sensitive"
+            summary="Blanks this value out of saved test history, and helps pick the shipped bundle's authentication type from the variable's name."
+          />
+        </label>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="text-muted-foreground hover:text-destructive ml-auto gap-1.5"
+          onClick={onRemove}
+          aria-label={`Remove ${row.id || 'this variable'}`}
+        >
+          <Trash2 className="size-3.5" />
+          Remove
+        </Button>
+      </div>
     </div>
   )
 }
@@ -225,6 +301,15 @@ export function ParameterizationInlinePanel({ workflow, onSaved, onClose }: Prop
   }
 
   const [rows, setRows] = useState<VariableFormRow[]>(initial.current.rows)
+  // Cards start collapsed to a one-line summary; rows the user just added open straight away.
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set())
+  const expand = (keys: string[]) => setExpandedKeys((prev) => new Set([...prev, ...keys]))
+  const toggleExpanded = (key: string) =>
+    setExpandedKeys((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -337,141 +422,116 @@ export function ParameterizationInlinePanel({ workflow, onSaved, onClose }: Prop
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-      <div className="space-y-3 p-5">
+      {/* Plain overflow div, not ScrollArea: this dialog is auto-height (max-h only), where
+          ScrollArea's size-full viewport never gets a definite height and would clip. */}
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-6">
         {spottedIds.length > 0 ? (
-          <div className="border-border/70 rounded-lg border bg-white/[0.02] p-3" data-slot="spotted">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              <Sparkles className="text-brand size-4 shrink-0" aria-hidden />
-              <p className="text-foreground/90 text-sm font-medium">Used in your steps</p>
+          <div className="flex flex-col gap-2.5" data-slot="spotted">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className={SECTION_LABEL}>Used in your steps</p>
               {missing.length > 0 ? (
-                <Badge variant="secondary" className="text-xs font-normal">
-                  {missing.length} new
-                </Badge>
-              ) : (
-                <Badge variant="outline" className="text-xs font-normal">
-                  All linked
-                </Badge>
-              )}
+                <button
+                  type="button"
+                  className="text-brand text-sm font-medium hover:underline"
+                  onClick={() => {
+                    const next = addSpottedToRows(rows, missing)
+                    expand(next.filter((r) => !rows.includes(r)).map((r) => r.key))
+                    setRows(next)
+                  }}
+                >
+                  + Add {missing.length === 1 ? `{{${missing[0]}}}` : `${missing.length} variables`}
+                </button>
+              ) : null}
             </div>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-2">
               {spottedIds.map((id) => {
-                // Case-insensitive to match the header "N new" count and dedup, which treat
+                // Case-insensitive to match the "Add N" count and dedup, which treat
                 // {{Email}} and {{email}} as the same binding (audit finding L-4).
                 const has = rows.some((r) => r.id.trim().toLowerCase() === id.toLowerCase())
                 return (
-                  <Badge
+                  <span
                     key={id}
-                    variant={has ? 'outline' : 'default'}
-                    className={cn('font-mono text-xs', has && 'text-muted-foreground font-normal')}
+                    title={has ? 'Linked to a variable below' : 'Not a variable yet'}
+                    className={cn(
+                      'rounded-full px-2.5 py-1 font-mono text-sm',
+                      has ? 'bg-brand/12 text-brand' : 'border-brand/50 text-brand border border-dashed',
+                    )}
                   >
-                    {`{{${id}}}`}
-                  </Badge>
+                    {id}
+                  </span>
                 )
               })}
             </div>
-            {missing.length > 0 ? (
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" variant="outline" className="h-8" onClick={() => setRows((r) => addSpottedToRows(r, missing))}>
-                  <Plus className="size-3.5" />
-                  Add {missing.length === 1 ? `{{${missing[0]}}}` : `${missing.length} variables`}
-                </Button>
-              </div>
-            ) : null}
           </div>
         ) : (
-          <p className="text-muted-foreground text-xs leading-relaxed">
+          <p className="text-muted-foreground text-sm leading-relaxed">
             Type <code className="bg-muted/60 rounded px-0.5">{'{{name}}'}</code> in any step field to create a variable.
           </p>
         )}
 
-        <div className="space-y-2">
+        <div className={cn('flex flex-col gap-2.5', spottedIds.length > 0 && 'border-t border-white/8 pt-5')}>
+          <div className="flex items-center justify-between">
+            <p className={SECTION_LABEL}>Variables</p>
+            <button
+              type="button"
+              className="text-brand text-sm font-medium hover:underline"
+              onClick={() => {
+                const row = newEmptyRow()
+                expand([row.key])
+                setRows((r) => [...r, row])
+              }}
+            >
+              + New variable
+            </button>
+          </div>
           {rows.length > 0 ? (
-            <>
-              <div className={cn(ROW_GRID, 'text-muted-foreground px-2.5 text-xs font-medium')}>
-                <span>Name</span>
-                <span>Label</span>
-                <span>Type</span>
-                <span>Default</span>
-                <span className="flex items-center justify-center gap-1">
-                  Optional
-                  <InfoHint
-                    size="sm"
-                    label="Optional"
-                    summary="The skill can run without this value. A variable with a default is always optional — the runtime fills the default in automatically."
-                  />
-                </span>
-                <span className="flex items-center justify-center gap-1">
-                  Sensitive
-                  <InfoHint
-                    size="sm"
-                    label="Sensitive"
-                    summary="Blanks this value out of saved test history, and helps pick the shipped bundle's authentication type from the variable's name."
-                  />
-                </span>
-                <span />
-              </div>
-              <div className="space-y-2">
-                {rows.map((row, i) => (
-                  <VariableRow
-                    key={row.key}
-                    row={row}
-                    usingSteps={usageByRowId.get(row.key) ?? []}
-                    onChange={(next) =>
-                      setRows((prev) => {
-                        const c = [...prev]
-                        c[i] = next
-                        return c
-                      })
-                    }
-                    onRemove={() => setRows((prev) => prev.filter((_, j) => j !== i))}
-                  />
-                ))}
-              </div>
-            </>
+            rows.map((row, i) => (
+              <VariableCard
+                key={row.key}
+                row={row}
+                usingSteps={usageByRowId.get(row.key) ?? []}
+                expanded={expandedKeys.has(row.key)}
+                onToggle={() => toggleExpanded(row.key)}
+                onChange={(next) =>
+                  setRows((prev) => {
+                    const c = [...prev]
+                    c[i] = next
+                    return c
+                  })
+                }
+                onRemove={() => setRows((prev) => prev.filter((_, j) => j !== i))}
+              />
+            ))
           ) : (
-            <p className="text-muted-foreground py-2 text-center text-xs">No variables yet.</p>
+            <p className="text-muted-foreground py-2 text-sm">No variables yet.</p>
           )}
-          <button
-            type="button"
-            onClick={() => setRows((r) => [...r, newEmptyRow()])}
-            className="border-border/50 text-muted-foreground hover:border-border hover:text-foreground flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed py-2.5 text-sm transition-colors"
-          >
-            <Plus className="size-3.5" />
-            New variable
-          </button>
         </div>
 
-        <div className="border-border/70 space-y-2.5 rounded-lg border bg-white/[0.02] p-3">
-          <h3 className="text-foreground/95 text-sm font-medium">Turn a recorded value into a variable</h3>
-          <p className="text-muted-foreground text-xs leading-relaxed">
-            Replaces a literal value inside typed step values only — selectors and other identity signals are left untouched.
+        <div className="flex flex-col gap-2.5 border-t border-white/8 pt-5">
+          <h3 className="text-base font-semibold">Turn a recorded value into a variable</h3>
+          <p className="text-muted-foreground text-sm leading-normal">
+            Replaces a literal value inside typed step values only, selectors are left untouched.
           </p>
-          <div className="grid gap-2.5 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label className="text-xs" htmlFor="param-replace-find">
-                Find this text in your steps
-              </Label>
-              <Input
-                id="param-replace-find"
-                className="h-8 font-mono text-sm"
-                value={replaceFind}
-                onChange={(e) => {
-                  setReplaceFind(e.target.value)
-                  setReplaceErr(null)
-                }}
-                spellCheck={false}
-                placeholder="conxa-db"
-                autoCapitalize="off"
-                autoCorrect="off"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs" htmlFor="param-replace-var">
-                Replace it with variable
-              </Label>
+          <div className="flex items-center gap-3">
+            <Input
+              id="param-replace-find"
+              aria-label="Find this text in your steps"
+              className="h-[42px] flex-1 font-mono text-sm"
+              value={replaceFind}
+              onChange={(e) => {
+                setReplaceFind(e.target.value)
+                setReplaceErr(null)
+              }}
+              spellCheck={false}
+              placeholder="conxa-db"
+              autoCapitalize="off"
+              autoCorrect="off"
+            />
+            <span className="text-sm text-zinc-500">to</span>
+            <div className="flex-1">
               <VariableNameField
                 id="param-replace-var"
+                ariaLabel="Replace it with variable"
                 value={replaceVariable}
                 onChange={(v) => {
                   setReplaceVariable(v)
@@ -483,8 +543,8 @@ export function ParameterizationInlinePanel({ workflow, onSaved, onClose }: Prop
           </div>
           {replaceErr ? <p className="text-destructive text-sm">{replaceErr}</p> : null}
           {replaceInfo ? <p className="text-muted-foreground text-sm">{replaceInfo}</p> : null}
-          <div className="flex justify-start">
-            <Button type="button" size="sm" variant="outline" className="h-8" disabled={replaceBusy} onClick={() => void replaceLiteralInWorkflow()}>
+          <div>
+            <Button type="button" variant="outline" disabled={replaceBusy} onClick={() => void replaceLiteralInWorkflow()}>
               {replaceBusy ? 'Replacing…' : 'Replace everywhere'}
             </Button>
           </div>
@@ -520,13 +580,12 @@ export function ParameterizationInlinePanel({ workflow, onSaved, onClose }: Prop
           </CollapsibleContent>
         </Collapsible>
       </div>
-      </ScrollArea>
-      {err ? <p className="text-destructive shrink-0 px-5 pt-2 text-sm">{err}</p> : null}
-      <div className="border-border/50 mx-5 mb-4 flex shrink-0 items-center justify-between gap-2 border-t pt-3">
-        <p className="text-muted-foreground text-xs">
+      {err ? <p className="text-destructive shrink-0 px-7 pt-2 text-sm">{err}</p> : null}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-white/8 px-7 py-4">
+        <p className="text-muted-foreground text-sm">
           {changedCount > 0 ? `${changedCount} unsaved change${changedCount === 1 ? '' : 's'}` : 'All changes saved'}
         </p>
-        <Button type="button" disabled={saving} onClick={save}>
+        <Button type="button" variant="brand" disabled={saving} onClick={save}>
           {saving ? 'Saving…' : 'Save variables'}
         </Button>
       </div>

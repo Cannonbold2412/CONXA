@@ -38,6 +38,8 @@ type Props = {
   /** Drop “No image” payload to detach screenshot and clear anchors. */
   onClearStepVisual?: (stepIndex: number) => void
   recordingShotDragActive?: boolean
+  /** compile_health.steps_below_threshold — shown as a warn dot on the matching row. */
+  stepsBelowThreshold?: number[]
 }
 
 export function WorkflowViewer({
@@ -49,7 +51,9 @@ export function WorkflowViewer({
   onDroppedRecordingScreenshot,
   onClearStepVisual,
   recordingShotDragActive,
+  stepsBelowThreshold,
 }: Props) {
+  const belowThresholdSet = new Set(stepsBelowThreshold ?? [])
   const selected = useEditorStore((s) => s.selectedStepIndex)
   const focusedBranchIndex = useEditorStore((s) => s.focusedBranchIndex)
   const dirty = useEditorStore((s) => s.dirtySteps)
@@ -147,6 +151,7 @@ export function WorkflowViewer({
                   step={step}
                   isSelected={selected === step.step_index}
                   isDirty={dirty.has(step.step_index)}
+                  belowThreshold={belowThresholdSet.has(step.step_index)}
                   isDragging={draggingIndex === step.step_index}
                   recordingShotDragActive={recordingShotDragActive}
                   draggingIndex={draggingIndex}

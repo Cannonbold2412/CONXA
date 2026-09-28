@@ -18,3 +18,6 @@ export const fieldTextareaClass = cn(
   'focus-visible:ring-ring/50 focus-visible:ring-[3px] focus-visible:outline-none',
   'disabled:cursor-not-allowed disabled:opacity-50',
 )
+
+/** Uppercase section label used across Human Edit's tool dialogs (step-editor redesign). */
+export const SECTION_LABEL = 'text-xs font-semibold tracking-wider text-zinc-500 uppercase'

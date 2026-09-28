@@ -5,7 +5,6 @@ import { useBackendEvents } from '@/hooks/usePythonCmd'
 import { useCompileStore } from '@/store/compileStore'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { useAuth, performLogout } from '@/contexts/AuthContext'
 import { WindowTitleBar } from '@/components/layout/WindowTitleBar'
 import { PageHeaderProvider, usePageHeaderContext } from '@/contexts/PageHeaderContext'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -13,9 +12,7 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  Layers,
   ListChecks,
-  LogOut,
   PackageCheck,
   PencilLine,
   RefreshCw,
@@ -52,12 +49,12 @@ const navGroups = [
 const settingsNavItem = { to: '/settings', label: 'Settings', icon: Settings } as const
 
 // The current page's title/description, registered by its <PageHeader> via
-// PageHeaderContext, rendered here so it sits next to the logout widget
-// instead of the page repeating its own header block.
+// PageHeaderContext, rendered here instead of the page repeating its own
+// header block.
 function HeaderPageTitle() {
   const { header } = usePageHeaderContext()
-  // Always occupies the flex-1 slot (even empty) so the user/logout widget
-  // stays pinned to the right regardless of whether a page has registered a
+  // Always occupies the flex-1 slot (even empty) so trailing header controls
+  // stay pinned to the right regardless of whether a page has registered a
   // header yet (e.g. during the initial render tick, or on chrome-only screens).
   // Title and description share one line — this bar is a fixed height
   // (HEADER_ROW_HEIGHT), not something a second line can grow.
@@ -106,15 +103,17 @@ function HeaderExtra() {
   return <div className="absolute inset-x-0 bottom-0">{header.extra}</div>
 }
 
+// Page toolbar placed in this row — see PageHeader's `inlineActions`.
+function HeaderActions() {
+  const { header } = usePageHeaderContext()
+  if (!header?.actions) return null
+  return <div className="flex shrink-0 items-center gap-2">{header.actions}</div>
+}
+
+const logoUrl = new URL('../../assets/conxa-icon.png', import.meta.url).href
+
 function ProductMark() {
-  return (
-    <span
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white shadow-sm"
-      aria-hidden
-    >
-      <Layers className="size-4" strokeWidth={2} />
-    </span>
-  )
+  return <img src={logoUrl} alt="" className="h-9 w-9 shrink-0 rounded-lg" draggable={false} />
 }
 
 function SidebarNavLink({
@@ -247,33 +246,6 @@ function HeaderRefreshButton() {
   )
 }
 
-function UserWidget() {
-  const { identity, setIdentity } = useAuth()
-  if (!identity) return null
-  return (
-    <div className="flex shrink-0 items-center gap-2">
-      <span className="mr-1 hidden h-5 w-px bg-white/8 sm:block" aria-hidden />
-      <span
-        className="hidden size-6 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.06] text-[0.6875rem] font-semibold uppercase text-zinc-300 sm:flex"
-        aria-hidden
-      >
-        {(identity.email || identity.name || '?').charAt(0)}
-      </span>
-      <span className="hidden max-w-[180px] truncate text-xs text-zinc-400 sm:block">{identity.email || identity.name || 'Unknown user'}</span>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        className="text-zinc-400 hover:bg-white/5 hover:text-white"
-        title="Sign out"
-        onClick={() => performLogout(setIdentity)}
-      >
-        <LogOut className="size-4" />
-      </Button>
-    </div>
-  )
-}
-
 /**
  * The single app-wide subscription to backend compile events. It lives here, not
  * on the compile page, so a compile keeps reporting progress after the user
@@ -323,8 +295,8 @@ export function AppChrome({ children }: { children: ReactNode }) {
                 <div className={cn('relative flex items-center gap-3 px-4 sm:px-6', HEADER_ROW_HEIGHT)}>
                   <HeaderBackButton />
                   <HeaderPageTitle />
+                  <HeaderActions />
                   <HeaderRefreshButton />
-                  <UserWidget />
                   <HeaderExtra />
                 </div>
               </header>

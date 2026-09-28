@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   fetchSkillPack,
   fetchSkillPackVersions,
+  fetchWorkflow,
   previewRelease,
   publishSkillPack,
   type SkillPackReleaseResult,
@@ -11,6 +12,7 @@ import { fetchEntitlements } from '@/api/usageApi'
 import { errorMessage } from '@/api/workflowApi'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { BuildLogPanel } from '@/components/BuildLogUi'
+import { WorkflowTestRow } from '@/components/WorkflowTests'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -25,7 +27,17 @@ import {
   suggestNextVersion,
   type PublishStage,
 } from '@/lib/releaseState'
-import { CheckCircle2, CloudUpload, Loader2, Rocket, UploadCloud, XCircle } from 'lucide-react'
+import {
+  ArrowRight,
+  CheckCircle2,
+  CircleDashed,
+  CloudUpload,
+  Loader2,
+  Lock,
+  Rocket,
+  UploadCloud,
+  XCircle,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export function PublishPage() {
@@ -58,6 +70,15 @@ export function PublishPage() {
 
   const pack = packQ.data?.skill_pack ?? null
   const allTestsPassed = Boolean(selectedWorkflow && selectedWorkflow.last_test_status === 'passed')
+
+  // Step 1 runs the test inline via WorkflowTestRow, which needs the full Workflow
+  // record (group_id, edited_at, last_test_inputs) that the pack summary omits.
+  const testWorkflowQ = useQuery({
+    queryKey: ['workflow', selectedWorkflow?.id],
+    queryFn: () => fetchWorkflow(selectedWorkflow!.id),
+    enabled: Boolean(selectedWorkflow) && !allTestsPassed,
+    staleTime: 5_000,
+  })
 
   const versionsQ = useQuery({
     queryKey: ['skill-pack-versions', selectedSkillSlug],
@@ -197,32 +218,50 @@ export function PublishPage() {
         ) : (
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[220px_1fr_340px]">
             {/* Left pane — skill list; every pane to the right is scoped to this one skill */}
-            <div className="scrollbar-none flex min-h-0 flex-col gap-1 overflow-y-auto rounded-xl border border-white/8 bg-white/[0.03] p-3">
-              <p className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Skills</p>
-              {workflows.map((w) => (
-                <button
-                  key={w.id}
-                  type="button"
-                  onClick={() => handleSelectSkill(w.slug)}
-                  className={cn(
-                    'flex items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs font-medium transition-colors',
-                    w.slug === selectedSkillSlug
-                      ? 'border-sky-500/40 bg-sky-500/[0.12] text-sky-300'
-                      : 'border-transparent text-zinc-400 hover:border-white/10 hover:bg-white/[0.03] hover:text-zinc-200',
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'inline-block size-1.5 shrink-0 rounded-full',
-                      w.last_test_status === 'passed' ? 'bg-emerald-400' : 'bg-amber-400',
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{w.name}</span>
-                </button>
-              ))}
-              <p className="mt-2 px-1 text-[11px] leading-relaxed text-zinc-600">
-                Each skill has its own version history and release — publishing one never requires or affects another.
-              </p>
+            <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card">
+              <div className="flex items-baseline justify-between px-3.5 pb-2 pt-3.5">
+                <p className="text-xs font-medium text-muted-foreground">Skills</p>
+                <span className="text-xs text-muted-foreground">{workflows.length}</span>
+              </div>
+              <div className="scrollbar-none flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2">
+                {workflows.map((w) => {
+                  const passed = w.last_test_status === 'passed'
+                  return (
+                    <button
+                      key={w.id}
+                      type="button"
+                      onClick={() => handleSelectSkill(w.slug)}
+                      aria-current={w.slug === selectedSkillSlug ? 'true' : undefined}
+                      className={cn(
+                        'flex items-center gap-2.5 rounded-md border px-2.5 py-2 text-left text-xs transition-colors',
+                        w.slug === selectedSkillSlug
+                          ? 'border-brand-ring bg-brand-subtle font-semibold text-foreground'
+                          : 'border-transparent font-medium text-muted-foreground hover:bg-white/[0.04] hover:text-foreground',
+                      )}
+                    >
+                      {passed ? (
+                        <CheckCircle2 aria-label="Test passed" className="size-3.5 shrink-0 text-status-ok" />
+                      ) : (
+                        <CircleDashed aria-label="Test not passed" className="size-3.5 shrink-0 text-status-warn" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{w.name}</span>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="border-t border-border-subtle px-3.5 py-2.5 text-xs text-muted-foreground">
+                <div className="flex gap-3.5">
+                  <span className="flex items-center gap-1.5">
+                    <CheckCircle2 className="size-3 text-status-ok" aria-hidden />
+                    Test passed
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <CircleDashed className="size-3 text-status-warn" aria-hidden />
+                    Not passed
+                  </span>
+                </div>
+                <p className="mt-1.5 leading-relaxed">Each skill releases on its own.</p>
+              </div>
             </div>
 
             {/* Middle pane — details for the selected skill */}
@@ -245,23 +284,56 @@ export function PublishPage() {
               </div>
             </div>
 
-            {!allTestsPassed && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
-                <XCircle className="mt-0.5 size-4 shrink-0 text-amber-400" />
+            {/* Step 1 — test gate. Runs inline; passing it unlocks step 2. */}
+            {allTestsPassed ? (
+              <div className="flex items-center gap-3 rounded-lg border border-status-ok-ring bg-status-ok-subtle px-5 py-3.5">
+                <CheckCircle2 className="size-5 shrink-0 text-status-ok" aria-hidden />
                 <div>
-                  <p className="text-sm font-medium text-amber-300">Test required before publish</p>
-                  <p className="mt-0.5 text-xs text-amber-400/80">
-                    {selectedWorkflow
-                      ? `${selectedWorkflow.name} must pass its test before it can be published.`
-                      : 'Select a skill to publish.'}
-                  </p>
+                  <p className="text-sm font-semibold text-foreground">Test passed</p>
+                  <p className="text-xs text-muted-foreground">{selectedWorkflow?.name} is ready to publish.</p>
                 </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-status-warn-ring bg-status-warn-subtle px-5 py-4">
+                <div className="mb-3 flex items-center gap-3">
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-status-warn text-xs font-semibold text-brand-foreground">
+                    1
+                  </span>
+                  <div>
+                    <p className="text-sm font-semibold text-status-warn">Run the test first</p>
+                    <p className="text-xs text-muted-foreground">
+                      {selectedWorkflow
+                        ? `${selectedWorkflow.name} has to pass its test before it can be published.`
+                        : 'Select a skill to publish.'}
+                    </p>
+                  </div>
+                </div>
+                {testWorkflowQ.data?.workflow && pack.build && (
+                  <WorkflowTestRow
+                    wf={testWorkflowQ.data.workflow}
+                    skillPackBuild={pack.build}
+                    onComplete={() => {
+                      void qc.invalidateQueries({ queryKey: ['skill-pack'] })
+                      void testWorkflowQ.refetch()
+                    }}
+                  />
+                )}
               </div>
             )}
 
-            {/* Release form */}
-            <div className="rounded-lg border border-white/8 bg-white/[0.02] p-4">
-              <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">Release Details</p>
+            {/* Step 2 — release form */}
+            <div className="rounded-lg border border-border-subtle bg-card p-5">
+              <div className="mb-4 flex items-center gap-3">
+                <span
+                  className={cn(
+                    'flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold',
+                    allTestsPassed ? 'border-brand-ring text-brand' : 'border-border text-muted-foreground',
+                  )}
+                >
+                  2
+                </span>
+                <p className="text-sm font-semibold text-foreground">Release details</p>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="grid gap-1.5">
                   <span className="text-xs font-medium text-zinc-300">Version</span>
@@ -300,8 +372,21 @@ export function PublishPage() {
                   </p>
                 </label>
               </div>
-              <div className="mt-3">
-                <Button size="sm" onClick={() => void handlePublish()} disabled={!readyToPublish}>
+              <div className="mt-4 flex items-center justify-between gap-4 border-t border-border-subtle pt-4">
+                {allTestsPassed ? (
+                  <span />
+                ) : (
+                  <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Lock className="size-3.5" aria-hidden />
+                    Locked until the test passes
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  variant={readyToPublish ? 'brand' : 'default'}
+                  onClick={() => void handlePublish()}
+                  disabled={!readyToPublish}
+                >
                   {publishing ? (
                     <>
                       <Loader2 className="size-4 animate-spin" />
@@ -322,16 +407,22 @@ export function PublishPage() {
 
             {/* Publish never deploys — see docs/App-Flow.md. Deployment status,
                 rollback, and audit history all live in Conxa Cloud now. */}
-            <div className="flex items-start gap-2.5 rounded-lg border border-white/8 bg-white/[0.02] px-4 py-3">
-              <CloudUpload className="mt-0.5 size-4 shrink-0 text-zinc-500" />
-              <div>
-                <p className="text-sm font-medium text-zinc-300">Publishing does not deploy</p>
-                <p className="mt-0.5 text-xs text-zinc-500">
-                  This uploads v{versionValid ? versionValue : '…'} as an immutable, versioned release. It stays
-                  "Ready for Release" until a Cloud admin reviews and explicitly releases it — open Skill Packages
-                  in Conxa Cloud to release, roll back, or check deployment/audit status.
+            <div className="rounded-lg border border-dashed border-border px-5 py-4">
+              <div className="mb-3 flex items-baseline gap-2.5">
+                <CloudUpload className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
+                <p className="text-sm font-semibold text-foreground">Publishing does not deploy</p>
+                <p className="text-xs text-muted-foreground">
+                  v{versionValid ? versionValue : '…'} is immutable and waits for a Cloud admin.
                 </p>
               </div>
+              <ol className="flex flex-wrap items-center gap-2.5 text-xs text-foreground">
+                {['Publish from Studio', 'Ready for Release', 'Admin releases in Conxa Cloud'].map((label, i) => (
+                  <li key={label} className="flex items-center gap-2.5">
+                    {i > 0 && <ArrowRight className="size-4 text-muted-foreground" aria-hidden />}
+                    <span className="rounded-md border border-border-subtle bg-card px-2.5 py-1">{label}</span>
+                  </li>
+                ))}
+              </ol>
             </div>
 
             {/* Publishing UX states */}
@@ -382,8 +473,10 @@ export function PublishPage() {
             {/* Right pane — publish log fills the remaining height, scrolls on its own */}
             <div className="flex min-h-0 flex-col">
               <div className="mb-1.5 flex items-center justify-between">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-zinc-600">Publish Log</p>
-                {logs.length > 0 && <span className="text-[10px] text-zinc-600">{logs.length} lines</span>}
+                <p className="text-xs font-medium text-muted-foreground">Publish log</p>
+                <span className="text-[11px] text-muted-foreground">
+                  {publishing ? 'Publishing…' : logs.length > 0 ? `${logs.length} lines` : 'Idle'}
+                </span>
               </div>
               <div
                 ref={logRef}

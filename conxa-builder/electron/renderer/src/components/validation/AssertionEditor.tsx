@@ -1,13 +1,17 @@
+import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { InfoHint } from '@/components/ui/info-hint'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { editorHelp } from '@/lib/editorHelp'
 import { fieldSelectClass } from '@/lib/fieldStyles'
 import { cn } from '@/lib/utils'
 import type { StepEditorDTO } from '@/types/workflow'
+
+/** The board's four one-tap check kinds — the rest stay reachable via "More check types". */
+const QUICK_ADD_TYPES = ['text_present', 'text_absent', 'url_changed', 'state_changed'] as const
 
 /** Runtime-recognized assertion types (see runtime/run.js verifyStep), grouped by what they
  *  observe. Groups are rendered as <optgroup>s in the order declared here. */
@@ -193,8 +197,8 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
   const removeRow = (index: number) => {
     onChange(assertions.filter((_, i) => i !== index))
   }
-  const addRow = () => {
-    onChange([...assertions, { type: 'selector_present', target: '', timeout_ms: 5000, required: false }])
+  const addRow = (type = 'selector_present') => {
+    onChange([...assertions, { type, target: '', timeout_ms: 5000, required: true }])
   }
 
   return (
@@ -219,20 +223,49 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
           return (
           <li key={i} className="border-border/50 bg-muted/15 hover:border-border rounded-lg border p-3 transition-colors">
             <div className="flex items-start justify-between gap-2">
-              <div className="flex min-w-0 items-start gap-2">
-                <span className="bg-muted text-muted-foreground mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-medium">
-                  {i + 1}
-                </span>
-                <p className={cn('text-sm', isAssertionRequired(a) ? 'text-zinc-100' : 'text-zinc-400')}>
-                  {isAssertionRequired(a) ? '' : '(informational) '}
-                  {describeAssertion(a as Record<string, unknown>)}
-                </p>
+              <div className="flex min-w-0 items-start gap-2.5">
+                <span
+                  className={cn(
+                    'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border',
+                    isAssertionRequired(a) ? 'border-status-ok' : 'border-white/20',
+                  )}
+                  aria-hidden
+                />
+                <div className="min-w-0 space-y-0.5">
+                  <p className={cn('text-sm', isAssertionRequired(a) ? 'text-zinc-100' : 'text-zinc-400')}>
+                    {isAssertionRequired(a) ? '' : '(informational) '}
+                    {describeAssertion(a as Record<string, unknown>)}
+                  </p>
+                  <p className="font-mono text-xs text-zinc-500">
+                    {a.type}
+                    {a.type !== 'state_changed' ? `: "${a.target ?? ''}"` : ''}
+                  </p>
+                </div>
               </div>
-              <Button type="button" size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive h-6 shrink-0 px-2" onClick={() => removeRow(i)}>
-                Remove
-              </Button>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  className={cn(
+                    'rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
+                    isAssertionRequired(a) ? 'bg-brand/14 text-brand' : 'text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-300',
+                  )}
+                  onClick={() => updateRow(i, { required: !isAssertionRequired(a) })}
+                >
+                  Blocks step
+                </button>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  className="text-muted-foreground hover:text-destructive h-7 w-7"
+                  onClick={() => removeRow(i)}
+                  aria-label="Remove check"
+                >
+                  <X className="size-3.5" />
+                </Button>
+              </div>
             </div>
-            <div className="mt-2.5 space-y-2.5 pl-7">
+            <div className="mt-2.5 space-y-2.5 pl-[30px]">
               <div className="flex flex-wrap items-end gap-2.5">
                 <div className="w-full space-y-1 sm:w-44">
                   <Label className="text-foreground text-xs" htmlFor={`assertion-type-${i}`}>
@@ -278,10 +311,6 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
                     onChange={(e) => updateRow(i, { timeout_ms: Number(e.target.value) || 0 })}
                   />
                 </div>
-                <label className="flex shrink-0 items-center gap-1.5 pb-1.5 text-xs text-zinc-300">
-                  <Checkbox checked={isAssertionRequired(a)} onCheckedChange={(checked) => updateRow(i, { required: Boolean(checked) })} />
-                  Blocks step
-                </label>
               </div>
               <p id={`assertion-type-help-${i}`} className="text-muted-foreground text-xs leading-snug">
                 {ASSERTION_TYPE_HELP[a.type] ?? ''}
@@ -312,15 +341,54 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
         })}
       </ul>
 
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        className="w-full border-dashed border-white/15 bg-transparent text-zinc-300 hover:border-white/25 hover:bg-white/[0.04]"
-        onClick={addRow}
-      >
-        + Add check
-      </Button>
+      <div className="rounded-lg border border-white/8 bg-white/[0.02] p-3.5">
+        <p className="mb-2.5 text-sm font-medium text-zinc-200">Add a check</p>
+        <div className="flex flex-wrap items-center gap-2">
+          {QUICK_ADD_TYPES.map((type) => (
+            <Button
+              key={type}
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-9 border-white/12 bg-white/[0.03] text-xs text-zinc-200 hover:bg-white/[0.07]"
+              onClick={() => addRow(type)}
+            >
+              {ASSERTION_TYPES.find((t) => t.value === type)?.label ?? type}
+            </Button>
+          ))}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-9 text-xs text-zinc-400 hover:text-zinc-200"
+              >
+                More check types
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 p-1.5">
+              {ASSERTION_TYPE_GROUPS.map((g) => (
+                <div key={g.label}>
+                  <div className="px-2.5 pt-2 pb-1 text-[0.65rem] font-semibold tracking-wide text-zinc-500 uppercase first:pt-1">
+                    {g.label}
+                  </div>
+                  {g.options.map((t) => (
+                    <button
+                      key={t.value}
+                      type="button"
+                      className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-sm text-zinc-200 hover:bg-white/[0.06]"
+                      onClick={() => addRow(t.value)}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </PopoverContent>
+          </Popover>
+        </div>
+      </div>
     </div>
   )
 }

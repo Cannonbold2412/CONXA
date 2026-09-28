@@ -523,9 +523,10 @@ export function GroupPage() {
         ]
           .filter(Boolean)
           .join(' · ')}
-        leading={<UsageCards />}
+        inlineActions
         actions={
           <>
+            <UsageCards />
             {!isDefault && (
               <Dialog open={renaming} onOpenChange={(v) => { setRenaming(v); if (v) setRenameValue(group.name) }}>
                 <DialogTrigger asChild>

@@ -1,9 +1,7 @@
 import { useCallback, useState } from 'react'
 import { toast } from 'sonner'
-import { BoxSelect, Image as ImageIcon } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { Image as ImageIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { Bbox } from '@/api/workflowApi'
 import type { StepEditorDTO } from '@/types/workflow'
 import { ScreenshotViewer, isWeakVisualBbox, type VisualBboxToolbarUi } from '../ScreenshotViewer'
@@ -26,6 +24,10 @@ function currentBboxOf(step: StepEditorDTO): Bbox | null {
   if (isWeakVisualBbox(raw, step.flags.is_scroll)) return null
   return { x: Number(raw.x ?? 0), y: Number(raw.y ?? 0), w: Number(raw.w ?? 0), h: Number(raw.h ?? 0) }
 }
+
+// Height cap for the full-width screenshot — leaves room for the heading, stepper, copy above
+// and the action row below so the phase fits without scrolling (ScreenshotViewer's --shot-max-h).
+const SHOT_MAX_H = 'clamp(300px, calc(100vh - 380px), 75vh)'
 
 export function RetargetPhasePick({
   step,
@@ -80,79 +82,66 @@ export function RetargetPhasePick({
   const displayScreenshot = pendingBbox ? { ...step.screenshot, bbox: pendingBbox } : step.screenshot
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-muted-foreground text-sm">
-          This is the element the step currently targets. Draw a new box only if you want to
-          change it — otherwise just continue.
-        </p>
-        {onOpenScreenshots ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="shrink-0 gap-1.5"
-            onClick={onOpenScreenshots}
-          >
-            <ImageIcon className="size-3.5 shrink-0" aria-hidden />
-            Recording screenshots
-            {screenshotCount !== undefined && (
-              <Badge variant="outline" className="shrink-0 px-1.5 text-[0.65rem] font-semibold">
-                {screenshotCount}
-              </Badge>
-            )}
-          </Button>
-        ) : null}
-        {toolbarUi ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                size="sm"
-                variant={toolbarUi.active ? 'default' : 'outline'}
-                disabled={toolbarUi.saving}
-                className="shrink-0 gap-1"
-                aria-pressed={toolbarUi.active}
-                onClick={() => toolbarUi.onToggle()}
-              >
-                <BoxSelect className="size-3.5 shrink-0" aria-hidden />
-                Visual bbox
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              Draw a rectangle on the screenshot to save the visual region and recompute anchors
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
+    <div className="space-y-4">
+      {/* Stacked, per the "Click" design board: copy, then the full-width screenshot, then one
+          action row with the primary choice last on the right. */}
+      <p className="-mt-2 text-[15px] leading-relaxed text-zinc-100">
+        {hasDrawnNew
+          ? 'This is the element the step will click. If it looks right, continue.'
+          : 'This is the element the step currently targets. If it looks right, continue.'}
+        {' '}Otherwise, draw a new box around the right one.
+      </p>
+
+      {/* Sizing only — ScreenshotViewer supplies its own border/rounded/background chrome. */}
+      <div className="w-full" style={{ ['--shot-max-h' as string]: SHOT_MAX_H }}>
+        <ScreenshotViewer
+          screenshot={displayScreenshot}
+          label={step.human_readable_description}
+          stepIndex={step.step_index}
+          isScrollStep={false}
+          autoActivateDraw
+          onSaveVisualBbox={handleDrawn}
+          onDrawTooSmall={handleTooSmall}
+          hideToolbar
+          onToolbarUiChange={setToolbarUi}
+        />
       </div>
-      <ScreenshotViewer
-        screenshot={displayScreenshot}
-        label={step.human_readable_description}
-        stepIndex={step.step_index}
-        isScrollStep={false}
-        autoActivateDraw
-        onSaveVisualBbox={handleDrawn}
-        onDrawTooSmall={handleTooSmall}
-        hideToolbar
-        onToolbarUiChange={setToolbarUi}
-      />
-      {!sessionMissing ? (
-        <div className="border-brand/30 bg-brand-subtle flex items-center justify-between gap-3 rounded-lg border p-3 text-sm text-zinc-100">
-          <span>
-            {hasDrawnNew && pendingBbox
-              ? `Region selected (${pendingBbox.w}×${pendingBbox.h}px). Redraw to adjust, or continue.`
-              : pendingBbox
-                ? 'Using the current target — draw above to change it, or continue.'
-                : 'Draw a box on the screenshot above to select the element.'}
+
+      {loading ? <p className="text-muted-foreground text-sm">Finding this element in the recorded page…</p> : null}
+
+      {!sessionMissing || onOpenScreenshots ? (
+        <div className="flex items-center gap-2.5">
+          <span className="flex-1 whitespace-nowrap text-sm text-zinc-500">
+            {pendingBbox ? `Box size ${pendingBbox.w} × ${pendingBbox.h}` : null}
           </span>
-          <Button size="sm" disabled={!pendingBbox || loading} onClick={() => pendingBbox && onDrawn(pendingBbox, hasDrawnNew)}>
-            Continue →
-          </Button>
+          {!sessionMissing && toolbarUi ? (
+            <Button
+              variant="outline"
+              disabled={toolbarUi.saving}
+              aria-pressed={toolbarUi.active}
+              onClick={() => toolbarUi.onToggle()}
+            >
+              Draw a new box
+            </Button>
+          ) : null}
+          {onOpenScreenshots ? (
+            <Button variant="outline" onClick={onOpenScreenshots}>
+              <ImageIcon className="size-3.5 shrink-0" aria-hidden />
+              View recording screenshots{screenshotCount !== undefined ? ` (${screenshotCount})` : ''}
+            </Button>
+          ) : null}
+          {!sessionMissing ? (
+            <Button
+              variant="brand"
+              disabled={!pendingBbox || loading}
+              onClick={() => pendingBbox && onDrawn(pendingBbox, hasDrawnNew)}
+            >
+              Yes, continue
+            </Button>
+          ) : null}
         </div>
       ) : null}
-      {loading ? (
-        <p className="text-muted-foreground text-sm">Finding this element in the recorded page…</p>
-      ) : null}
+
       {sessionMissing ? (
         <div className="border-status-warn/30 bg-status-warn/10 text-status-warn rounded-lg border p-3 text-sm">
           <p>

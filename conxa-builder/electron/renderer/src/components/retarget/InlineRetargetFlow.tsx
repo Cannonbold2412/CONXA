@@ -1,6 +1,6 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import { type ComponentProps, forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { ArrowLeft, ArrowRight } from 'lucide-react'
+import { ArrowLeft, ArrowRight, ChevronRight } from 'lucide-react'
 import { CmdError } from '@/lib/ipc'
 import { errorMessage, retargetApply, retargetPreview, type Bbox } from '@/api/workflowApi'
 import type { StepEditorDTO, WorkflowResponse } from '@/types/workflow'
@@ -11,15 +11,102 @@ import { RetargetPhaseValidation } from './RetargetPhaseValidation'
 import { BranchBodyEditor } from '@/components/branch/BranchBodyEditor'
 import { ForEachBodyViewer } from '@/components/loop/ForEachBodyViewer'
 import { RecoveryAnchorsCard } from '@/components/RecoveryAnchorsCard'
-import { BuildPipelineStepper, type PipelineStep } from '@/components/build/BuildPipelineStepper'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { makeCandidateId, useRetargetStore } from '@/store/retargetStore'
 import { useEditorStore } from '@/store/editorStore'
 import { cn } from '@/lib/utils'
 
-const PHASE_LABELS = ['Pick element', 'Review selectors', 'Validation'] as const
+const PHASE_LABELS = ['Element', 'Selectors', 'Check'] as const
 type Phase = 1 | 2 | 3
+
+/** "Step N · Go to a page" style eyebrow label — same words used in Add step's menu categories
+ *  where they overlap, otherwise a plain human name for the action_type. */
+const ACTION_TYPE_LABELS: Record<string, string> = {
+  navigate: 'Go to a page',
+  click: 'Click',
+  fill: 'Type text',
+  type: 'Type text',
+  select: 'Select an option',
+  scroll: 'Scroll',
+  upload: 'Upload a file',
+  upload_intent: 'Upload a file',
+  check: 'Check',
+  ai_review: 'AI review',
+  marker: 'Marker',
+  if_present: 'If present',
+  try_dismiss: 'Dismiss if shown',
+  wait_for_one_of: 'Wait for one of',
+}
+
+function actionTypeLabel(actionType: string): string {
+  const t = actionType.trim().toLowerCase().replace(/-/g, '_')
+  return ACTION_TYPE_LABELS[t] ?? t.replace(/_/g, ' ')
+}
+
+/** Eyebrow + plain-language question heading atop every step editor layout — the "one plain
+ *  question per step" pattern the redesign is built around, in place of the old dense form
+ *  header. `question` defaults to the generic prompt; the wizard passes a phase-specific one. */
+function StepEditorHeading({ step, question }: { step: StepEditorDTO; question: string }) {
+  return (
+    <div>
+      <div className="text-sm text-zinc-500">
+        Step {step.step_index + 1} · {actionTypeLabel(step.action_type)}
+      </div>
+      <h2 className="mt-1.5 text-2xl font-semibold tracking-tight text-zinc-100">{question}</h2>
+    </div>
+  )
+}
+
+/** "1 Element — 2 Selectors — 3 Check" numbered-circle stepper for the 3-phase re-target
+ *  wizard — brand outline + fill on the current phase, done phases stay outlined without fill. */
+function WizardStepper({ phase }: { phase: Phase }) {
+  return (
+    <div className="flex items-center gap-4">
+      {PHASE_LABELS.map((label, i) => {
+        const idx = ((i + 1) as Phase)
+        const active = idx === phase
+        const done = idx < phase
+        return (
+          <div key={label} className="flex items-center gap-4">
+            {i > 0 && <span className="h-px w-8 bg-white/15" aria-hidden />}
+            <div className={cn('flex items-center gap-2 text-sm font-medium', active ? 'text-brand' : 'text-zinc-500')}>
+              <span
+                className={cn(
+                  'flex size-[22px] shrink-0 items-center justify-center rounded-full border text-xs',
+                  active ? 'border-brand bg-brand text-white' : done ? 'border-brand/60 text-brand' : 'border-white/25',
+                )}
+              >
+                {idx}
+              </span>
+              {label}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Collapsed-by-default wrapper for RecoveryAnchorsCard on the non-wizard step layouts — kept
+ *  out of the way until someone actually wants to see recovery search hints. */
+function RecoveryHintsDisclosure(props: ComponentProps<typeof RecoveryAnchorsCard>) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <CollapsibleTrigger asChild>
+        <button type="button" className="flex items-center gap-1 py-1 text-sm text-zinc-500 hover:text-zinc-300">
+          Recovery hints
+          <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} aria-hidden />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="pt-2">
+        <RecoveryAnchorsCard {...props} />
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
 
 type Props = {
   step: StepEditorDTO | null
@@ -241,15 +328,18 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     return (
       <div className={PANEL_CLASS}>
         <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-2 p-3">
-            <StepConfigForm
-              ref={formRef}
-              step={step}
-              skillId={skillId}
-              onWorkflowUpdated={onWorkflowUpdated}
-              onHistoryUpdate={onHistoryUpdate}
-            />
-            <ForEachBodyViewer step={step} />
+          <div className="space-y-7 px-8 py-9">
+            <StepEditorHeading step={step} question={step.human_readable_description || 'Repeat for each item'} />
+            <div className="max-w-[680px] space-y-7">
+              <StepConfigForm
+                ref={formRef}
+                step={step}
+                skillId={skillId}
+                onWorkflowUpdated={onWorkflowUpdated}
+                onHistoryUpdate={onHistoryUpdate}
+              />
+              <ForEachBodyViewer step={step} />
+            </div>
           </div>
         </ScrollArea>
       </div>
@@ -280,24 +370,27 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     return (
       <div className={PANEL_CLASS}>
         <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-2 p-3">
-            <StepConfigForm
-              ref={formRef}
-              step={effectiveStep}
-              skillId={skillId}
-              onWorkflowUpdated={onWorkflowUpdated}
-              onHistoryUpdate={onHistoryUpdate}
-              path={nestedPath}
-              parentStepIndex={step.step_index}
-            />
-            <RecoveryAnchorsCard
-              stepIndex={step.step_index}
-              path={nestedPath}
-              skillId={skillId}
-              anchors={effectiveStep.anchors_recovery}
-              onWorkflowUpdated={onWorkflowUpdated}
-              onHistoryUpdate={onHistoryUpdate}
-            />
+          <div className="space-y-7 px-8 py-9">
+            <StepEditorHeading step={effectiveStep} question="What should this step do?" />
+            <div className="max-w-[680px] space-y-7">
+              <StepConfigForm
+                ref={formRef}
+                step={effectiveStep}
+                skillId={skillId}
+                onWorkflowUpdated={onWorkflowUpdated}
+                onHistoryUpdate={onHistoryUpdate}
+                path={nestedPath}
+                parentStepIndex={step.step_index}
+              />
+              <RecoveryHintsDisclosure
+                stepIndex={step.step_index}
+                path={nestedPath}
+                skillId={skillId}
+                anchors={effectiveStep.anchors_recovery}
+                onWorkflowUpdated={onWorkflowUpdated}
+                onHistoryUpdate={onHistoryUpdate}
+              />
+            </div>
           </div>
         </ScrollArea>
       </div>
@@ -318,51 +411,51 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
     return (
       <div className={PANEL_CLASS}>
         <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-2 p-3">
-            <StepConfigForm
-              ref={formRef}
-              step={effectiveStep}
-              skillId={skillId}
-              onWorkflowUpdated={onWorkflowUpdated}
-              onHistoryUpdate={onHistoryUpdate}
-            />
-            {effectiveStep.branch_summary.kind === 'if_present' ? (
-              <BranchBodyEditor
+          <div className="space-y-7 px-8 py-9">
+            <StepEditorHeading step={effectiveStep} question="What should this step do?" />
+            <div className="max-w-[680px] space-y-7">
+              <StepConfigForm
+                ref={formRef}
                 step={effectiveStep}
                 skillId={skillId}
                 onWorkflowUpdated={onWorkflowUpdated}
                 onHistoryUpdate={onHistoryUpdate}
               />
-            ) : null}
-            <RecoveryAnchorsCard
-              stepIndex={step.step_index}
-              skillId={skillId}
-              anchors={effectiveStep.anchors_recovery}
-              onWorkflowUpdated={onWorkflowUpdated}
-              onHistoryUpdate={onHistoryUpdate}
-            />
+              {effectiveStep.branch_summary.kind === 'if_present' ? (
+                <BranchBodyEditor
+                  step={effectiveStep}
+                  skillId={skillId}
+                  onWorkflowUpdated={onWorkflowUpdated}
+                  onHistoryUpdate={onHistoryUpdate}
+                />
+              ) : null}
+              <RecoveryHintsDisclosure
+                stepIndex={step.step_index}
+                skillId={skillId}
+                anchors={effectiveStep.anchors_recovery}
+                onWorkflowUpdated={onWorkflowUpdated}
+                onHistoryUpdate={onHistoryUpdate}
+              />
+            </div>
           </div>
         </ScrollArea>
       </div>
     )
   }
 
-  const pipelineSteps: PipelineStep[] = PHASE_LABELS.map((label, i) => {
-    const idx = i + 1
-    return { label, state: idx < phase ? 'done' : idx === phase ? 'active' : 'pending' }
-  })
+  const wizardQuestion =
+    phase === 1
+      ? 'Is this the right element?'
+      : phase === 2
+        ? 'Will this keep finding the right element?'
+        : `How do we know this ${actionTypeLabel(effectiveStep.action_type).toLowerCase()} worked?`
 
   return (
     <div className={PANEL_CLASS}>
-      {/* Fixed-height header (matches WorkflowHeader's h-14 on the left pane) so the two panes'
-          border-bottoms line up in the same row instead of this stepper scrolling with the content. */}
-      <div className="border-border/80 flex h-14 items-center justify-center border-b bg-muted/5 px-3">
-        <div className="mx-auto w-full max-w-md">
-          <BuildPipelineStepper steps={pipelineSteps} />
-        </div>
-      </div>
       <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-3.5 p-3">
+        <div className="space-y-7 px-8 py-9">
+          <StepEditorHeading step={effectiveStep} question={wizardQuestion} />
+          <WizardStepper phase={phase} />
           {phase === 1 ? (
             <RetargetPhasePick
               step={effectiveStep}
@@ -375,15 +468,15 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               screenshotCount={screenshotCount}
             />
           ) : null}
-          {/* Kept mounted (just hidden) across phases so in-progress edits and the ref survive
-              phase changes instead of being lost on unmount. Visible during phase 2 only, per
-              the "review selectors doubles as the step editor" design. hideSelectorTools also
-              suppresses the form's own Validation panel — that's the job of phase 3
-              (RetargetPhaseValidation) here, and showing both would let a user save assertions
-              via two different, inconsistent paths (instant patchStep vs. staged retargetApply).
-              hideSubmitButton: the wizard's own Continue button already calls submitIfDirty(),
-              so a second manual "Save step" button here would be redundant. */}
-          <div className={phase === 2 ? '' : 'hidden'}>
+          <div className={cn('max-w-[720px] space-y-7', phase === 2 ? '' : 'hidden')}>
+            {/* Kept mounted (just hidden) across phases so in-progress edits and the ref survive
+                phase changes instead of being lost on unmount. Visible during phase 2 only, per
+                the "review selectors doubles as the step editor" design. hideSelectorTools also
+                suppresses the form's own Validation panel — that's the job of phase 3
+                (RetargetPhaseValidation) here, and showing both would let a user save assertions
+                via two different, inconsistent paths (instant patchStep vs. staged retargetApply).
+                hideSubmitButton: the wizard's own Continue button already calls submitIfDirty(),
+                so a second manual "Save step" button here would be redundant. */}
             <StepConfigForm
               ref={formRef}
               step={effectiveStep}
@@ -395,68 +488,71 @@ export const InlineRetargetFlow = forwardRef<InlineRetargetFlowHandle, Props>(fu
               path={nestedPath}
               parentStepIndex={step.step_index}
             />
-          </div>
-          {phase === 2 && preview ? (
-            <RetargetPhaseSelectors
-              pickQuality={preview.pick_quality}
-              candidates={candidates}
-              onCandidatesChange={(next) => {
-                setCandidates(next)
-                markDirty()
-              }}
-              onBack={() => setPhase(1)}
-              compileConfidence={preview.compile_confidence}
-            />
-          ) : null}
-          {phase === 2 ? (
-            <>
-              <RecoveryAnchorsCard
-                stepIndex={step.step_index}
-                path={nestedPath}
-                skillId={skillId}
-                anchors={effectiveStep.anchors_recovery}
-                onWorkflowUpdated={onWorkflowUpdated}
-                onHistoryUpdate={onHistoryUpdate}
+            {phase === 2 && preview ? (
+              <RetargetPhaseSelectors
+                pickQuality={preview.pick_quality}
+                candidates={candidates}
+                onCandidatesChange={(next) => {
+                  setCandidates(next)
+                  markDirty()
+                }}
+                onBack={() => setPhase(1)}
+                compileConfidence={preview.compile_confidence}
               />
-              <div className="flex items-center justify-between gap-3">
-                <Button variant="outline" onClick={() => setPhase(1)} className="gap-1.5">
-                  <ArrowLeft className="size-3.5" aria-hidden />
-                  Re-pick element
-                </Button>
-                <div className="flex items-center gap-2.5">
-                  {!candidates[0]?.selector.trim() ? (
-                    <span className="text-muted-foreground text-xs">Add a primary selector to continue</span>
-                  ) : null}
-                  <Button
-                    onClick={() => void handleContinueToConfirm()}
-                    disabled={!candidates[0]?.selector.trim()}
-                    className="gap-1.5"
-                  >
-                    Continue
-                    <ArrowRight className="size-3.5" aria-hidden />
+            ) : null}
+            {phase === 2 ? (
+              <>
+                <RecoveryAnchorsCard
+                  stepIndex={step.step_index}
+                  path={nestedPath}
+                  skillId={skillId}
+                  anchors={effectiveStep.anchors_recovery}
+                  onWorkflowUpdated={onWorkflowUpdated}
+                  onHistoryUpdate={onHistoryUpdate}
+                />
+                <div className="flex items-center justify-between gap-3 border-t border-white/8 pt-7">
+                  <Button variant="ghost" onClick={() => setPhase(1)} className="gap-1.5 text-zinc-400 hover:text-zinc-200">
+                    <ArrowLeft className="size-3.5" aria-hidden />
+                    Back to element
                   </Button>
+                  <div className="flex items-center gap-2.5">
+                    {!candidates[0]?.selector.trim() ? (
+                      <span className="text-muted-foreground text-xs">Add a primary selector to continue</span>
+                    ) : null}
+                    <Button
+                      variant="brand"
+                      onClick={() => void handleContinueToConfirm()}
+                      disabled={!candidates[0]?.selector.trim()}
+                      className="gap-1.5"
+                    >
+                      Continue to check
+                      <ArrowRight className="size-3.5" aria-hidden />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            </>
-          ) : null}
+              </>
+            ) : null}
+          </div>
           {phase === 3 && preview ? (
-            <RetargetPhaseValidation
-              step={effectiveStep}
-              preview={preview}
-              keepValidation={keepValidation}
-              onKeepValidationChange={(v) => {
-                setKeepValidation(v)
-                markDirty()
-              }}
-              editedAssertions={editedAssertions}
-              onEditedAssertionsChange={(a) => {
-                setEditedAssertions(a)
-                markDirty()
-              }}
-              onBack={() => setPhase(2)}
-              onApply={() => void handleApply()}
-              applying={applying}
-            />
+            <div className="max-w-[720px]">
+              <RetargetPhaseValidation
+                step={effectiveStep}
+                preview={preview}
+                keepValidation={keepValidation}
+                onKeepValidationChange={(v) => {
+                  setKeepValidation(v)
+                  markDirty()
+                }}
+                editedAssertions={editedAssertions}
+                onEditedAssertionsChange={(a) => {
+                  setEditedAssertions(a)
+                  markDirty()
+                }}
+                onBack={() => setPhase(2)}
+                onApply={() => void handleApply()}
+                applying={applying}
+              />
+            </div>
           ) : null}
         </div>
       </ScrollArea>

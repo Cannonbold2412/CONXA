@@ -14,9 +14,9 @@ export function WorkflowHeader({ onAddAction }: WorkflowHeaderProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false)
 
   return (
-    <div className="border-border/80 flex h-14 items-center justify-between gap-2 border-b bg-muted/5 px-3 py-3">
+    <div className="flex h-12 items-center justify-between gap-2 px-3 py-2.5">
       <div className="flex items-center gap-1.5">
-        <h2 className="text-foreground text-base font-semibold tracking-tight">Workflow</h2>
+        <h2 className="text-xs font-semibold tracking-wide text-zinc-500 uppercase">Steps</h2>
         <InfoHint {...editorHelp.workflowTips} side="bottom" align="start" />
       </div>
       <div className="flex items-center gap-2">
@@ -25,13 +25,13 @@ export function WorkflowHeader({ onAddAction }: WorkflowHeaderProps) {
             <Button
               type="button"
               size="sm"
-              variant="outline"
-              className="h-8 gap-1.5 border-white/12 bg-white/[0.04] px-2.5 text-xs text-zinc-200 hover:bg-white/[0.08] hover:text-white"
+              variant="ghost"
+              className="h-7 gap-1 px-1.5 text-xs font-medium text-brand hover:bg-brand/10 hover:text-brand"
               aria-label="Add action after the selected step"
             >
               <Plus className="size-3.5" />
-              Add
-              <ChevronDown className="size-3.5" />
+              Add step
+              <ChevronDown className="size-3" />
             </Button>
           </PopoverTrigger>
           <PopoverContent align="end" side="bottom" className="max-h-96 w-52 overflow-y-auto p-1">
