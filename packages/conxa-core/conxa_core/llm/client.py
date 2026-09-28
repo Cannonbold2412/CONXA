@@ -225,6 +225,43 @@ def _openai_messages_for_task(task: str, payload: dict[str, Any]) -> list[dict[s
             },
             {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},
         ]
+    if task == "loop_suggestion_copy":
+        # Compile-time: rewrite a deterministically-built "generalize this to a loop"
+        # suggestion (compiler/loop_suggestion.py) into one or two short, plain-English
+        # sentences for the mandatory Human Edit review popup — never the deciding logic,
+        # purely the copy a reviewer reads before answering Yes/No. See
+        # conxa_compile/llm/loop_suggestion_copy.py for the deterministic fallback used
+        # when this call fails, and for how `input.steps` is built (role-tagged, no
+        # selectors) — an earlier version of this prompt got only a bare filename and a
+        # boolean, with no picture of what the workflow does, and produced confidently
+        # wrong descriptions (e.g. a delete) for what is always a download-then-upload
+        # pattern. `input.steps[].role` is one of "acquire" (a step that gets hold of the
+        # file — typically a navigate to the file's page, then the download itself) or
+        # "upload" (the step that re-uploads that same file). A separate, deterministic
+        # (no LLM) question asks about removing a leftover click, if one exists — this
+        # prompt's own text never mentions it.
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You write one short, friendly explanation for a non-technical reviewer "
+                    "approving a recorded browser automation. The pattern is ALWAYS: the "
+                    "recording downloads one specific file, then later uploads that same file "
+                    "somewhere else. `input.steps` lists the real steps involved, each tagged "
+                    "with a `role` (\"acquire\" = getting hold of the file, \"upload\" = "
+                    "sending that file elsewhere) plus that step's own `action` and "
+                    "`description`. Describe ONLY the download-then-upload mechanism these "
+                    "steps show — never invent a different action (never a delete/remove, "
+                    "never anything the steps don't support) even if a step's own wording is "
+                    "ambiguous, and never mention anything not in `input.steps`. They will see "
+                    "your text next to Yes/No buttons for turning this single fixed file into "
+                    "a loop over any number of caller-named files. Plain words, no jargon, 1-2 "
+                    "short sentences, end with a question the Yes/No buttons answer. Return "
+                    "strict JSON with key: text (string)."
+                ),
+            },
+            {"role": "user", "content": json.dumps(data or payload, ensure_ascii=False)},
+        ]
     if task == "recovery_resolve":
         # Runtime tier 3: locate one element on current DOM given semantic description.
         return [

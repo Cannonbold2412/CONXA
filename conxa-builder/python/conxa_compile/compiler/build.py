@@ -48,7 +48,7 @@ from conxa_compile.compiler.second_opinion import (
     archive_flagged_steps,
     rewrite_placeholder,
 )
-from conxa_compile.compiler.step_key import step_keys
+from conxa_compile.compiler.step_key import step_key_index_map, step_keys
 from conxa_compile.compiler.identity_bundle import generate_deterministic_signals
 from conxa_compile.compiler.selector_grammar import display_to_signal, signal_to_display
 from conxa_compile.compiler.state_validation import capture_state_snapshot, compare_state, merge_dom_diff_evidence, optimize_scroll, scroll_payload, validation_from_diff
@@ -1926,7 +1926,9 @@ def compile_skill_package(
     # which would shift step_keys). Advisory only; a reviewer already-rejected suggestion is
     # filtered out later by skill_id-aware code in handlers/compile.py, same layering
     # filter_runtime_only_inputs already uses there.
-    compile_report["for_each_suggestions"] = detect_download_upload_loop_candidates(steps)
+    loop_suggestions = detect_download_upload_loop_candidates(steps)
+    _rewrite_loop_suggestions_for_review(loop_suggestions, steps)
+    compile_report["for_each_suggestions"] = loop_suggestions
 
     now = datetime.now(timezone.utc).isoformat()
     structural_fp = _build_structural_fingerprint(steps)
@@ -2262,3 +2264,66 @@ def _apply_second_opinion(
     if archived:
         fresh["archived_steps"] = archived
     return steps, fresh, graph
+
+
+def _rewrite_loop_suggestions_for_review(suggestions: list[dict[str, Any]], steps: list[Any]) -> None:
+    """Best-effort in-place rewrite of each suggestion's `why` into plain, friendly language
+    for the mandatory Human Edit review popup (ReviewQuestionsDialog.tsx) — see
+    llm/loop_suggestion_copy.py. Copy-only: never touches `wrap_start_key`/`wrap_end_key`/
+    `upload_step_key`/`template_literal`/`redundant_click_key`, so a failed or skipped call
+    changes nothing but the sentence a reviewer reads; the deterministic `why` already there
+    is the fallback, not a placeholder that needs a working provider to be usable. Doesn't
+    touch compile_report["degraded"]/status — unlike second_opinion, a failure here is a
+    worse sentence, never a worse compile.
+
+    Passes the LLM the actual steps involved (role-tagged: acquiring the file vs. uploading
+    it, each with its own compile-time intent/semantic_description, never a selector, via
+    `compiler/step_description.py::describe_step`) rather than a bare filename + boolean —
+    the earlier bare-facts version of this prompt had the model guessing at what the workflow
+    even does and inventing a wrong mechanism (e.g. describing a delete when the pattern is
+    download-then-upload). The key→step lookup (`step_key_index_map`) and the description
+    shape (`describe_step`) are both generic, reusable by any future step that needs to hand
+    an LLM copy-rewrite real grounding — this function is just the loop-suggestion-specific
+    glue: which steps play which role.
+
+    Deliberately excludes the redundant click (when present) from this context: whether to
+    remove it is a SEPARATE Yes/No question (`redundant_click_why`, built deterministically in
+    `compiler/loop_suggestion.py` — no LLM rewrite, it's one factual sentence) that
+    ReviewQuestionsDialog.tsx asks as its own popup, only after this loop question is answered
+    Yes. Rewriting the loop's own `why` has no reason to mention it at all."""
+    from conxa_compile.compiler.step_description import describe_step  # noqa: PLC0415
+    from conxa_compile.llm.loop_suggestion_copy import friendly_loop_suggestion_text  # noqa: PLC0415
+
+    key_to_index = step_key_index_map(steps)
+
+    for suggestion in suggestions:
+        error_detail: list[str] = []
+        try:
+            steps_context: list[dict[str, Any]] = []
+            redundant_key = str(suggestion.get("redundant_click_key") or "")
+            wrap_start_idx = key_to_index.get(str(suggestion.get("wrap_start_key") or ""))
+            wrap_end_idx = key_to_index.get(str(suggestion.get("wrap_end_key") or ""))
+            if wrap_start_idx is not None and wrap_end_idx is not None:
+                for idx in range(wrap_start_idx, wrap_end_idx + 1):
+                    if key_to_index.get(redundant_key) == idx:
+                        continue  # the redundant click, if absorbed into the wrap range — its
+                        # own separate question, not part of this one's context (see above)
+                    steps_context.append(describe_step(steps[idx], role="acquire"))
+            upload_idx = key_to_index.get(str(suggestion.get("upload_step_key") or ""))
+            if upload_idx is not None:
+                steps_context.append(describe_step(steps[upload_idx], role="upload"))
+
+            suggestion["why"] = friendly_loop_suggestion_text(
+                str(suggestion.get("template_literal") or ""),
+                steps_context=steps_context,
+                fallback=str(suggestion.get("why") or ""),
+                error_detail=error_detail,
+            )
+        except Exception as exc:  # noqa: BLE001 — advisory copy only, never fail compile over this
+            error_detail.append(f"{type(exc).__name__}: {exc}")
+        if error_detail:
+            _compile_log(
+                "compile_phase",
+                "Loop suggestion copy rewrite failed — kept the deterministic wording.",
+                {"phase": "loop_suggestion_copy_failed", "detail": "; ".join(error_detail)},
+            )

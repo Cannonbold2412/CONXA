@@ -58,6 +58,15 @@ def step_keys(steps: list[Any]) -> list[str]:
     return [step_key(s, seen) for s in steps]
 
 
+def step_key_index_map(steps: list[Any]) -> dict[str, int]:
+    """The companion lookup to step_keys(): maps each step's key back to its position in
+    `steps`, for any code that holds a step_key (from a stored suggestion/finding/edit-log
+    entry) and needs the real step behind it — not just to recompute the key list itself.
+    Shared rather than re-derived per caller (`{k: i for i, k in enumerate(step_keys(...))}`
+    was starting to get copy-pasted — see build.py::_rewrite_loop_suggestions_for_review)."""
+    return {k: i for i, k in enumerate(step_keys(steps))}
+
+
 if __name__ == "__main__":
     click_a = {"action": {"action": "click"}, "url": "https://x", "identity_bundle": {"stable_hash": "h1"}}
     click_b = {"action": {"action": "click"}, "url": "https://x", "identity_bundle": {"stable_hash": "h1"}}

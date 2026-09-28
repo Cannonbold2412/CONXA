@@ -13,6 +13,11 @@ Findings are advisory only, stored under compile_report["for_each_suggestions"] 
 mutates a step. Applying one is `editor/workflow_mutations.py::apply_for_each_loop_suggestion`,
 gated behind an explicit Human Edit "Accept" click (`handlers/copilot.py`), same governance model
 as BUILD-25's second-opinion findings and BUILD-26's Copilot proposals.
+
+The `why` string built below is later, optionally, rewritten into friendlier prose by
+`build.py::_rewrite_loop_suggestions_for_review` (LLM task `llm/loop_suggestion_copy.py`) before
+it reaches the Human Edit review popup — copy-only, runs after this module returns, and never
+changes anything this module decided. This module's own "no LLM" claim above still holds.
 """
 
 from __future__ import annotations
@@ -162,12 +167,15 @@ def detect_download_upload_loop_candidates(steps: list[Step]) -> list[dict[str, 
             "preview": {"before": "1 fixed file", "after": "Any number of caller-named files"},
         }
         if redundant_idx is not None:
+            # Its own separate Yes/No question (ReviewQuestionsDialog.tsx asks it as a second,
+            # distinct popup right after the loop question is answered Yes) — never folded into
+            # `why`/`preview` above, which describe the loop alone. See
+            # apply_for_each_loop_suggestion's `remove_redundant_click` param.
             suggestion["redundant_click_key"] = keys[redundant_idx]
-            suggestion["why"] += " (Also removes a leftover click pinned to that one file.)"
-            suggestion["preview"] = {
-                "before": "1 fixed file, plus a click pinned to its name",
-                "after": "Any number of caller-named files",
-            }
+            suggestion["redundant_click_why"] = (
+                f"There's also a leftover click that just opens {filename!r}'s page — the "
+                "loop's own step already does that. Remove this leftover click?"
+            )
         out.append(suggestion)
 
     return out
