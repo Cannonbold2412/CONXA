@@ -2,6 +2,10 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+## Reopening a finished compile no longer throws you into the editor — 2026-09-28
+Clicking a workflow's card after its compile finished used to jump straight to the editor instead of showing the log. Now the card just shows the log, and you only get taken to the editor automatically the moment a compile you were watching completes.
+— 2026-09-28
+
 ## Compile progress now opens right under the workflow card — 2026-09-28
 Clicking Compile or Re-compile used to whisk you away to a separate full-screen page. Now the progress log slides open beneath the workflow, just like the Test log does, and only one of the two is open at a time. Clicking the workflow's card folds that log away or brings it back, so you never lose your place.
 — 2026-09-28

@@ -73,8 +73,13 @@ export function CompilePanel({
 
   // Compile finishing is the end of this panel's job — go straight to Human Edit
   // rather than waiting for a click. `replace` so Back doesn't bounce into a finished compile.
+  // Only when the run finishes while this panel is watching it: re-opening the
+  // panel on an already-finished compile (card click) must just show the logs.
+  const sawRunning = useRef(false);
   useEffect(() => {
-    if (isThisRun && overallStatus === "done" && skillId) {
+    if (isThisRun && overallStatus === "running") sawRunning.current = true;
+    if (isThisRun && overallStatus === "done" && skillId && sawRunning.current) {
+      sawRunning.current = false;
       goToEditor(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

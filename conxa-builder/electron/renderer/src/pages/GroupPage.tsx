@@ -298,7 +298,7 @@ function WorkflowRow({
   function handleCardClick(e: React.MouseEvent) {
     if ((e.target as HTMLElement).closest('button')) return
     if (panel) return setCollapsed((c) => !c)
-    if (compileRun?.workflowId === wf.id) openCompile(hasSkill ? 'recompile' : 'compile')
+    if (compileRun?.workflowId === wf.id) openCompile(compileRun.mode) // same mode = same key, so it re-attaches instead of starting a second compile
     else if (hasSkill && packBuilt) toggleTest()
   }
 
