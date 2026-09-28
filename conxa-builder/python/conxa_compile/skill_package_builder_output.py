@@ -99,12 +99,20 @@ def _write_skill_packs_format(
 
     skill_packs.mkdir(parents=True, exist_ok=True)
 
+    # Directory name for each group — its stable, human-readable slug (e.g. "sales-257c9ff0")
+    # rather than the raw group_id, so a customer poking around skill-packs/ sees a name, not
+    # a UUID. Auth resolution never uses this: manifest.group_id below stays the raw id.
+    group_dir_by_id = {
+        g.get("id"): g.get("slug") for g in (groups or []) if isinstance(g, dict) and g.get("id") and g.get("slug")
+    }
+
     written_slugs: list[str] = []
     skill_groups: dict[str, str] = {}
     for slug in skill_slugs:
         src_dir  = bundle_root / "skills" / slug
         group_id = (skill_group_ids or {}).get(slug) or "_default"
-        dest_dir = skill_packs / group_id / slug
+        dir_group = group_dir_by_id.get(group_id) or group_id
+        dest_dir = skill_packs / dir_group / slug
         if not src_dir.is_dir():
             continue
 
@@ -254,7 +262,7 @@ def _write_skill_packs_format(
             dumps_safe(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
         )
         written_slugs.append(slug)
-        skill_groups[slug] = group_id
+        skill_groups[slug] = dir_group
 
     # pack.json at company root. Merge `skills`/`skill_groups`/`groups` with
     # whatever's already there rather than replacing wholesale — a scoped

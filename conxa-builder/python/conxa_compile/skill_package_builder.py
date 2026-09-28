@@ -219,6 +219,7 @@ def build_skill_package(
     groups_payload = [
         {
             "id": group.id,
+            "slug": getattr(group, "slug", "") or group.id,
             "name": group.name,
             "apps": [
                 {
