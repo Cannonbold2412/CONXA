@@ -6,7 +6,6 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { HumanEditPoolBadge } from '@/components/EntitlementMeters'
 import type { WorkflowResponse, WorkflowRevalidationResponse } from '@/types/workflow'
 import {
-  confirmOptionalInterstitial,
   deleteStep,
   errorMessage,
   fetchMetrics,
@@ -22,13 +21,14 @@ import {
   redoWorkflow,
   undoWorkflow,
 } from '@/api/workflowApi'
+import { fetchWorkflows, normalizeWorkflowList } from '@/api/workflowsApi'
 import { CopilotLauncher } from '@/components/copilot/CopilotLauncher'
 
 const COPILOT_ENABLED = true
 import { RecordingScreenshotsPanel } from '@/components/RecordingScreenshotsPanel'
 import { WorkflowPlanPanel } from '@/components/WorkflowPlanPanel'
 import { CompileHealthBanner } from '@/components/CompileHealthBanner'
-import { ForEachSuggestionBanner } from '@/components/ForEachSuggestionBanner'
+import { ReviewQuestionsDialog } from '@/components/ReviewQuestionsDialog'
 import { DiagnosticsPanel } from '@/components/DiagnosticsPanel'
 import { WorkflowViewer } from '@/components/WorkflowViewer'
 import { InlineRetargetFlow, type InlineRetargetFlowHandle } from '@/components/retarget/InlineRetargetFlow'
@@ -341,20 +341,6 @@ export function HumanEditPage() {
       })
   }
 
-  const onConfirmOptionalHint = (index: number) => {
-    if (!skillId) return
-    confirmOptionalInterstitial(skillId, index)
-      .then((r) => {
-        onWorkflowUpdated(r.workflow)
-        if (r.can_undo !== undefined) setHistoryState(r.can_undo, r.can_redo ?? false)
-        toast.success('Step converted to an optional try-dismiss branch')
-      })
-      .catch((err) => {
-        toast.error(errorMessage(err, 'Could not confirm this step as optional'))
-        void q.refetch()
-      })
-  }
-
   const onAddAction = async (actionKind: string) => {
     if (!skillId) return
     const savedOk = await (stepEditorRef.current?.submitIfDirty() ?? Promise.resolve(true))
@@ -405,11 +391,8 @@ export function HumanEditPage() {
     setFlowStatus('Approved; your skill stays the same id and title on disk.')
     void qc.invalidateQueries({ queryKey: ['skillList'] })
     if (signOff.built) {
-      toast.success(`${skillId} approved and built — ready to test.`)
-      navigate('/test')
-      return
-    }
-    if (signOff.build_error) {
+      toast.success(`${skillId} approved and built — test it from the group page.`)
+    } else if (signOff.build_error) {
       toast.error(`Approved, but the package failed to build: ${signOff.build_error}`)
     } else {
       // Sign-off now always attempts a build scoped to this one workflow (see
@@ -418,7 +401,15 @@ export function HumanEditPage() {
       // this workflow itself has no matching skill yet.
       toast.success(`${skillId} saved in place — same skill id as when you compiled from the recording.`)
     }
-    navigate(fromPath ?? '/edit')
+    // Land on the workflow's group page — testing lives there (WorkflowTestRow), not on a
+    // dedicated Test Skill page anymore.
+    try {
+      const list = normalizeWorkflowList(await fetchWorkflows())
+      const owner = list.find((wf) => wf.skill_id === skillId)
+      navigate(owner ? `/groups/${encodeURIComponent(owner.group_id)}` : '/workflows')
+    } catch {
+      navigate(fromPath ?? '/workflows')
+    }
   }
 
   const onDroppedRecordingScreenshot = useCallback(
@@ -967,7 +958,7 @@ export function HumanEditPage() {
                 Approve
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Sign off this workflow — builds the package and moves to Test Skill</TooltipContent>
+            <TooltipContent>Sign off this workflow — builds the package and returns to its group</TooltipContent>
           </Tooltip>
           </div>
         </div>
@@ -975,13 +966,9 @@ export function HumanEditPage() {
       className="py-3.5"
     />
     <CompileHealthBanner compileHealth={wf.compile_health} onOpenDiagnostics={() => setOpenTool('diagnostics')} />
-    {skillId && wf.compile_health.for_each_suggestions?.length ? (
-      <ForEachSuggestionBanner
-        skillId={skillId}
-        suggestions={wf.compile_health.for_each_suggestions}
-        onAccepted={onCopilotProposalAccepted}
-      />
-    ) : null}
+    {skillId && (
+      <ReviewQuestionsDialog skillId={skillId} wf={wf} onWorkflowUpdated={onWorkflowUpdated} />
+    )}
     <div
       ref={splitPaneRef}
         className="relative grid flex-1 min-h-0 w-full min-w-0 grid-cols-1 overflow-hidden border-t border-white/8 md:min-h-0 md:[grid-template-columns:var(--workflow-pane-width)_minmax(0,1fr)] md:items-stretch"
@@ -992,7 +979,6 @@ export function HumanEditPage() {
           steps={wf.steps}
           onReorder={onReorder}
           onDelete={onDelete}
-          onConfirmOptionalHint={onConfirmOptionalHint}
           onAddAction={(actionKind) => void onAddAction(actionKind)}
           onDroppedRecordingScreenshot={(stepIndex, eventIndex) =>
             void onDroppedRecordingScreenshot(stepIndex, eventIndex)

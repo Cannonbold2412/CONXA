@@ -18,7 +18,6 @@ import {
   LogOut,
   PackageCheck,
   PencilLine,
-  PlayCircle,
   RefreshCw,
   Settings,
   UploadCloud,
@@ -30,19 +29,20 @@ const HEADER_ROW_HEIGHT = 'h-16'
 
 const SIDEBAR_KEY = 'conxa-sidebar-collapsed'
 
-// One button per stage of Workflows -> Human Edit -> Test Skill -> Publish
-// Skill Package -> Build Installer, so the sidebar mirrors the flow itself
-// instead of the compiler's internal pipeline stages. Workflows is the app
-// home — it owns groups, workflow create/delete/search, and compile (each
-// workflow's own page owns Compile/Recompile — there is no standalone
-// Compile page or nav entry).
+// One button per stage of Workflows -> Human Edit -> Publish Skill Package ->
+// Build Installer, so the sidebar mirrors the flow itself instead of the
+// compiler's internal pipeline stages. Workflows is the app home — it owns
+// groups, workflow create/delete/search, and compile (each workflow's own
+// page owns Compile/Recompile — there is no standalone Compile page or nav
+// entry). There is no standalone Test Skill page either — testing happens
+// from a workflow's row on its group page (WorkflowTestRow), reached right
+// after Human Edit's Approve.
 const navGroups = [
   {
     label: 'Operate',
     items: [
       { to: '/workflows', label: 'Workflows', icon: ListChecks },
       { to: '/human-edit', label: 'Human Edit', icon: PencilLine },
-      { to: '/test', label: 'Test Skill', icon: PlayCircle },
       { to: '/publish', label: 'Publish Skill Package', icon: UploadCloud },
       { to: '/build-installer', label: 'Build Installer', icon: PackageCheck },
     ],

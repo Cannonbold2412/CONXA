@@ -368,14 +368,16 @@ export function postReorderBranchSteps(
   return cmd('reorder_branch_steps', { skill_id: skillId, step_index: stepIndex, new_order: newOrder })
 }
 
-/** Human confirms a recorder-flagged optional interstitial (recording-next-steps.md Priority 2)
- * should be treated as one — converts the step into a real try_dismiss branch. See
+/** Human resolves a recorder-flagged optional interstitial (recording-next-steps.md Priority 2).
+ * `keepAsStep=false` (default) converts the step into a real try_dismiss branch; `true` is the
+ * reviewer's "No, it's not optional" answer — clears the hint, leaves the step untouched. See
  * StepEditorDTO.optional_hint and cmd_confirm_optional_interstitial. */
 export function confirmOptionalInterstitial(
   skillId: string,
   stepIndex: number,
+  keepAsStep = false,
 ): Promise<WorkflowStepMutationResponse> {
-  return cmd('confirm_optional_interstitial', { skill_id: skillId, step_index: stepIndex })
+  return cmd('confirm_optional_interstitial', { skill_id: skillId, step_index: stepIndex, keep_as_step: keepAsStep })
 }
 
 export function undoWorkflow(skillId: string): Promise<WorkflowUndoRedoResponse> {
@@ -681,12 +683,21 @@ export function loadLastCopilotSession(skillId: string): Promise<{ messages: Cop
  *  suggestion (deterministic, no LLM). One atomic document write server-side
  *  (`apply_for_each_loop_suggestion`), one undo entry, logged with source="for_each_suggestion"
  *  in the same edits.jsonl every other proposal decision uses. Refuses with `suggestion_stale`
- *  if the workflow changed since this was shown. */
+ *  if the workflow changed since this was shown.
+ *
+ *  `removeRedundantClick` (default true) answers the SEPARATE "remove this leftover click
+ *  too?" popup — only relevant, and only ever shown, when `suggestion.redundant_click_key` is
+ *  set. Ignored server-side otherwise. */
 export function acceptForEachSuggestion(
   skillId: string,
   suggestion: ForEachSuggestion,
+  removeRedundantClick = true,
 ): Promise<WorkflowRevalidationResponse> {
-  return cmd('accept_for_each_suggestion', { skill_id: skillId, suggestion })
+  return cmd('accept_for_each_suggestion', {
+    skill_id: skillId,
+    suggestion,
+    remove_redundant_click: removeRedundantClick,
+  })
 }
 
 /** Changes nothing in the compiled skill — logs the dismissal so this exact suggestion is

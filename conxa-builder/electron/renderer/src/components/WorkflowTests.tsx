@@ -251,16 +251,6 @@ function isStaleTest(wf: Workflow, skillPackBuild: SkillPackBuild | null) {
   )
 }
 
-export function workflowTestSummary(workflows: Workflow[]) {
-  const passed = workflows.filter((w) => w.last_test_status === 'passed').length
-  const total = workflows.length
-  return {
-    passed,
-    total,
-    allPassed: total > 0 && passed === total,
-  }
-}
-
 export function WorkflowTestRow({
   wf,
   skillPackBuild,
@@ -634,29 +624,3 @@ export function WorkflowTestRow({
   )
 }
 
-export function WorkflowTestList({
-  workflows,
-  skillPackBuild,
-  onComplete,
-}: {
-  workflows: Workflow[]
-  skillPackBuild: SkillPackBuild | null
-  onComplete: () => void
-}) {
-  if (workflows.length === 0) {
-    return <p className="py-4 text-xs text-zinc-500">No workflows recorded yet.</p>
-  }
-
-  return (
-    <div className="space-y-2">
-      {workflows.map((wf) => (
-        <WorkflowTestRow
-          key={wf.id}
-          wf={wf}
-          skillPackBuild={skillPackBuild}
-          onComplete={onComplete}
-        />
-      ))}
-    </div>
-  )
-}

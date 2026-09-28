@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import type { StepEditorDTO } from '@/types/workflow'
 import { RECORDING_SCREENSHOT_DRAG_MIME } from '@/api/workflowApi'
-import { BoxSelect, GitBranch, GripVertical, MousePointer2, Repeat, ShieldAlert, Sparkles, Trash2 } from 'lucide-react'
+import { BoxSelect, GitBranch, GripVertical, MousePointer2, Repeat, ShieldAlert, Trash2 } from 'lucide-react'
 import { compactStepLabel, handleRecordingScreenshotDrop, visualBboxState, type BboxState } from '@/lib/workflowViewerHelpers'
 
 type WorkflowStepItemProps = {
@@ -17,9 +17,6 @@ type WorkflowStepItemProps = {
   draggingIndex: number | null
   onSelect: (index: number) => void
   onDeleteRequest: (index: number) => void
-  /** Human confirms a recorder-flagged optional interstitial should become a real try_dismiss
-   * branch (recording-next-steps.md Priority 2). See StepEditorDTO.optional_hint. */
-  onConfirmOptionalHint: (index: number) => void
   onDragStart: (index: number) => void
   onDragEnd: () => void
   onMove: (from: number, to: number) => void
@@ -36,7 +33,6 @@ export function WorkflowStepItem({
   draggingIndex,
   onSelect,
   onDeleteRequest,
-  onConfirmOptionalHint,
   onDragStart,
   onDragEnd,
   onMove,
@@ -110,12 +106,7 @@ export function WorkflowStepItem({
           {step.branch_summary ? <BranchSummaryBadge summary={step.branch_summary} /> : null}
           {step.for_each_summary ? <ForEachSummaryBadge summary={step.for_each_summary} /> : null}
         </span>
-        <StepBadges
-          step={step}
-          isDirty={isDirty}
-          onDeleteRequest={onDeleteRequest}
-          onConfirmOptionalHint={onConfirmOptionalHint}
-        />
+        <StepBadges step={step} isDirty={isDirty} onDeleteRequest={onDeleteRequest} />
       </div>
     </li>
   )
@@ -197,38 +188,13 @@ function StepBadges({
   step,
   isDirty,
   onDeleteRequest,
-  onConfirmOptionalHint,
 }: {
   step: StepEditorDTO
   isDirty: boolean
   onDeleteRequest: (index: number) => void
-  onConfirmOptionalHint: (index: number) => void
 }) {
   return (
     <span className="flex shrink-0 items-start gap-1">
-      {step.optional_hint ? (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="h-6 gap-1 border-amber-400/25 bg-amber-400/[0.06] px-2 text-[0.65rem] leading-none text-amber-300/90 hover:bg-amber-400/[0.12]"
-              onClick={(event) => {
-                event.stopPropagation()
-                onConfirmOptionalHint(step.step_index)
-              }}
-            >
-              <Sparkles className="size-3" aria-hidden />
-              treat as optional?
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            This looked like an optional pop-up (cookie banner / dialog) during recording. Confirm
-            to convert this step into a try-dismiss branch instead of a required step.
-          </TooltipContent>
-        </Tooltip>
-      ) : null}
       {isDirty ? (
         <Badge variant="secondary" className="text-[0.65rem]">
           edited

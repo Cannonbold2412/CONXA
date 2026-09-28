@@ -21,7 +21,6 @@ import { InspectorPage } from '@/pages/InspectorPage'
 import { HumanEditListPage } from '@/pages/HumanEditListPage'
 import { PublishPage } from '@/pages/PublishPage'
 import { BuildInstallerPage } from '@/pages/BuildInstallerPage'
-import { TestSkillPage } from '@/pages/TestSkillPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 
 // Studio-exclusive pages (keep existing)
@@ -293,7 +292,6 @@ export function App() {
             <Route path="/edit" element={<HumanEditPage />} />
             <Route path="/edit/:skillId" element={<HumanEditPage />} />
             <Route path="/human-edit" element={<HumanEditListPage />} />
-            <Route path="/test" element={<TestSkillPage />} />
             <Route path="/publish" element={<PublishPage />} />
             <Route path="/build-installer" element={<BuildInstallerPage />} />
             <Route path="/settings" element={<SettingsPage />} />

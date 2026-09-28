@@ -221,9 +221,15 @@ export type ForEachSuggestion = {
   why: string
   preview: { before: string; after: string }
   /** Set when a hardcoded click on the recorded file (immediately before the loop's per-item
-   *  navigate) is being removed as part of this suggestion, not wrapped into the loop body —
-   *  the navigate already overrides whatever it picked. See workflow_mutations.py. */
+   *  navigate) is never wrapped into the loop body — the navigate already overrides whatever
+   *  it picked. Whether it's also removed (vs. left as an inert standalone step) is a
+   *  SEPARATE Yes/No question, asked only once this suggestion's own loop question is
+   *  answered Yes — see ReviewQuestionsDialog.tsx and workflow_mutations.py's
+   *  `remove_redundant_click` param. */
   redundant_click_key?: string
+  /** Deterministic (no LLM), one-sentence copy for that second question — set only
+   *  alongside redundant_click_key. */
+  redundant_click_why?: string
 }
 
 export type WorkflowResponse = {

@@ -66,11 +66,21 @@ export function CompileProgress() {
     }
   }, [logs.length]);
 
-  function goToEditor() {
+  function goToEditor(replace = false) {
     if (!skillId) return;
     const fromParam = workflowId ? `?from=${encodeURIComponent(`/workflows/${workflowId}`)}` : "";
-    navigate(`/edit/${encodeURIComponent(skillId)}${fromParam}`);
+    navigate(`/edit/${encodeURIComponent(skillId)}${fromParam}`, { replace });
   }
+
+  // Compile finishing is the end of this page's job — go straight to Human Edit rather
+  // than waiting for a click, so there's no intermediate stop between compile and review.
+  // `replace` so Back from the editor doesn't bounce into a finished compile screen.
+  useEffect(() => {
+    if (isThisRun && overallStatus === "done" && skillId) {
+      goToEditor(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isThisRun, overallStatus, skillId]);
 
   function goToWorkflow() {
     if (!workflowId) return;
@@ -133,7 +143,7 @@ export function CompileProgress() {
             {overallStatus === "done" && skillId && (
               <button
                 type="button"
-                onClick={goToEditor}
+                onClick={() => goToEditor()}
                 style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--accent)", font: "inherit" }}
               >
                 Review steps →

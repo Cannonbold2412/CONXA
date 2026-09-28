@@ -32,9 +32,6 @@ type Props = {
   steps: StepEditorDTO[]
   onReorder: (newOrder: number[]) => void
   onDelete: (index: number) => void
-  /** Human confirms a recorder-flagged optional interstitial should become a real try_dismiss
-   * branch (recording-next-steps.md Priority 2). See StepEditorDTO.optional_hint. */
-  onConfirmOptionalHint: (index: number) => void
   onAddAction: (actionKind: AddActionKind) => void
   /** Drop a recording screenshot (custom drag payload) onto a step to swap visuals and refresh anchors. */
   onDroppedRecordingScreenshot?: (stepIndex: number, eventIndex: number) => void
@@ -48,7 +45,6 @@ export function WorkflowViewer({
   steps,
   onReorder,
   onDelete,
-  onConfirmOptionalHint,
   onAddAction,
   onDroppedRecordingScreenshot,
   onClearStepVisual,
@@ -156,7 +152,6 @@ export function WorkflowViewer({
                   draggingIndex={draggingIndex}
                   onSelect={handleSelect}
                   onDeleteRequest={setDeleteIndex}
-                  onConfirmOptionalHint={onConfirmOptionalHint}
                   onDragStart={setDraggingIndex}
                   onDragEnd={() => setDraggingIndex(null)}
                   onMove={move}
