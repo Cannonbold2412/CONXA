@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { ChartTooltip, TooltipRow, useChartWidth, type TooltipState } from './ChartFrame'
-import { HEAT_LEGEND, STATUS_COLORS, heatColor } from './chartTheme'
+import { STATUS_COLORS, volumeInk } from './chartTheme'
 
 export type HeatCell = {
   weekday: number
@@ -16,14 +16,15 @@ export type HeatCell = {
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 const GUTTER = 34
 const ROW_GAP = 3
+/** Share of an hour's runs that must fail before the hour is painted red. */
+export const FLAKY_SHARE = 0.05
 
 /**
  * When does automation actually run, and when does it break?
  *
- * Two channels, deliberately kept separate rather than blended into one colour: cell
- * brightness is volume, and a failure marker is correctness. A single compound scale would
- * make a quiet-but-perfect hour and a busy-but-broken hour hard to tell apart, which is the
- * exact comparison this grid exists to support.
+ * Two channels, deliberately kept separate rather than blended into one scale: neutral
+ * brightness is volume, and red means an hour where more than FLAKY_SHARE of runs failed.
+ * Healthy hours stay grey, so the only colour on the grid is the pattern worth acting on.
  *
  * Buckets are UTC, matching how the runtime stamps its events.
  */
@@ -47,13 +48,14 @@ export function Heatmap({ cells, maxRuns }: { cells: HeatCell[]; maxRuns: number
                   x={0}
                   y={weekday * (cellSize + ROW_GAP) + cellSize / 2}
                   dy="0.32em"
-                  className="fill-zinc-600 text-[11px]"
+                  className="fill-zinc-400 text-[11px]"
                 >
                   {day}
                 </text>
                 {Array.from({ length: 24 }, (_, hour) => {
                   const cell = lookup.get(`${weekday}:${hour}`)
                   const runs = cell?.runs ?? 0
+                  const flaky = !!cell && cell.failed > 0 && cell.failed / Math.max(1, cell.runs) > FLAKY_SHARE
                   const x = GUTTER + hour * (cellSize + ROW_GAP)
                   const y = weekday * (cellSize + ROW_GAP)
                   return (
@@ -64,7 +66,7 @@ export function Heatmap({ cells, maxRuns }: { cells: HeatCell[]; maxRuns: number
                         width={cellSize}
                         height={cellSize}
                         rx={3}
-                        fill={runs ? heatColor(maxRuns ? runs / maxRuns : 0) : 'transparent'}
+                        fill={flaky ? STATUS_COLORS.error : runs ? volumeInk(maxRuns ? runs / maxRuns : 0) : 'transparent'}
                         stroke={runs ? 'none' : 'rgba(255,255,255,0.05)'}
                         onMouseEnter={() =>
                           setTooltip({
@@ -86,37 +88,28 @@ export function Heatmap({ cells, maxRuns }: { cells: HeatCell[]; maxRuns: number
                         }
                         onMouseLeave={() => setTooltip(null)}
                       />
-                      {cell && cell.failed > 0 ? (
-                        <circle
-                          cx={x + cellSize - 3.5}
-                          cy={y + 3.5}
-                          r={2}
-                          fill={STATUS_COLORS.error}
-                          pointerEvents="none"
-                        />
-                      ) : null}
                     </g>
                   )
                 })}
               </g>
             ))}
-            <text x={GUTTER} y={height + 12} className="fill-zinc-600 text-[11px] tabular-nums">00:00</text>
-            <text x={width} y={height + 12} textAnchor="end" className="fill-zinc-600 text-[11px] tabular-nums">
+            <text x={GUTTER} y={height + 12} className="fill-zinc-400 text-[11px] tabular-nums">00:00</text>
+            <text x={width} y={height + 12} textAnchor="end" className="fill-zinc-400 text-[11px] tabular-nums">
               23:00
             </text>
           </svg>
 
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-zinc-600">
+          <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-zinc-400">
             <span className="flex items-center gap-1.5">
               Fewer runs
-              {HEAT_LEGEND.map((step) => (
-                <span key={step} className="size-2.5 rounded-[2px]" style={{ background: step }} aria-hidden />
+              {[0, 0.33, 0.66, 1].map((step) => (
+                <span key={step} className="size-2.5 rounded-[2px]" style={{ background: volumeInk(step) }} aria-hidden />
               ))}
               More
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="size-2 rounded-full" style={{ background: STATUS_COLORS.error }} aria-hidden />
-              Hour contained a failure
+              <span className="size-2.5 rounded-[2px]" style={{ background: STATUS_COLORS.error }} aria-hidden />
+              More than 5% of that hour&apos;s runs failed
             </span>
           </div>
         </>

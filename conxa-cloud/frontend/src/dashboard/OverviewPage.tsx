@@ -1,20 +1,36 @@
 'use client'
 
+import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, AlertTriangle, HeartPulse, Radio, TrendingUp, Waypoints } from 'lucide-react'
 import { fetchTrackingDashboard } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
+import { HealthArc } from '@/components/viz/HealthArc'
+import { SplitBar } from '@/components/viz/SplitBar'
 import { TrendChart } from '@/components/viz/TrendChart'
+import { RECOVERY_COLORS, STATUS_COLORS } from '@/components/viz/chartTheme'
 import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry, UpgradeRequired, isUpgradeRequiredError } from './DashboardStates'
-import { SectionCard } from './SectionCard'
+import { SectionCard, Sentence } from './SectionCard'
 import { FootprintStrip } from './sections/FootprintStrip'
 import { HealthPanel } from './sections/HealthPanel'
 import { InsightsPanel } from './sections/InsightsPanel'
 import { KpiStrip } from './sections/KpiStrip'
-import { LiveActivity } from './sections/LiveActivity'
 import { RiskQueue } from './sections/RiskQueue'
-import { RoiSummary } from './sections/RoiSummary'
+import { failingAnswer, healingAnswer, overviewSentence, trendAnswer, workflowStatus } from './narrative'
 import { rangeLongLabel, useRange } from './useRange'
+
+const TWO_COLUMN = 'grid gap-14 xl:grid-cols-[minmax(0,1fr)_25rem] xl:gap-16'
+
+function StatusPill({ href, color, text, children }: { href: string; color: string; text: string; children: string }) {
+  return (
+    <Link
+      href={href}
+      className={`inline-flex min-h-9 items-center gap-2 rounded-full bg-white/[0.05] px-3.5 text-sm ${text} transition-colors hover:bg-white/[0.09] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70`}
+    >
+      <span className="size-1.5 rounded-full" style={{ background: color }} aria-hidden />
+      {children}
+    </Link>
+  )
+}
 
 export function OverviewPage() {
   const [range] = useRange()
@@ -31,9 +47,8 @@ export function OverviewPage() {
 
   const data = dashboard.data
   const label = rangeLongLabel(range)
-  const hasTelemetry = data.metrics.total_executions > 0
 
-  if (!hasTelemetry) {
+  if (data.metrics.total_executions === 0) {
     return (
       <DashboardPageBody>
         <NoTelemetry />
@@ -42,93 +57,109 @@ export function OverviewPage() {
   }
 
   const cascade = data.recovery_cascade
+  const statuses = data.workflows.map(workflowStatus)
+  const failing = statuses.filter((s) => s === 'failing').length
+  const slipping = statuses.filter((s) => s === 'slipping').length
+  const workflowsHref = `/dashboard/workflows?range=${range}`
 
   return (
     <DashboardPageBody>
-      <KpiStrip kpis={data.kpis} rangeLabel={label} />
-      <FootprintStrip data={data} />
+      <section aria-label="Summary" className={`${TWO_COLUMN} items-center`}>
+        <div className="space-y-6">
+          <p className="text-sm text-zinc-400">The {label.toLowerCase()}, in one sentence</p>
+          <p className="max-w-3xl text-2xl leading-snug tracking-[-0.02em] text-zinc-400 sm:text-3xl">
+            <Sentence parts={overviewSentence(data.metrics.total_executions, data.metrics.success_rate, cascade)} />
+          </p>
+          {failing || slipping || data.stale_runtimes ? (
+            <div className="flex flex-wrap gap-2.5">
+              {failing ? (
+                <StatusPill href={workflowsHref} color={STATUS_COLORS.error} text="text-red-300">
+                  {`${failing} workflow${failing === 1 ? '' : 's'} failing`}
+                </StatusPill>
+              ) : null}
+              {slipping ? (
+                <StatusPill href={workflowsHref} color={STATUS_COLORS.warn} text="text-amber-300">
+                  {`${slipping} workflow${slipping === 1 ? '' : 's'} slipping`}
+                </StatusPill>
+              ) : null}
+              {data.stale_runtimes ? (
+                <StatusPill href="/fleet" color="rgba(244,245,247,0.45)" text="text-zinc-400">
+                  {`${data.stale_runtimes} runtime${data.stale_runtimes === 1 ? '' : 's'} gone quiet`}
+                </StatusPill>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex flex-col items-center gap-3">
+          <HealthArc score={data.health.score} grade={data.health.grade} />
+          <p className="max-w-[16rem] text-center text-xs leading-relaxed text-zinc-400">{data.health.summary}</p>
+        </div>
+      </section>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_25rem]">
+      <section aria-label="Key numbers" className="space-y-4">
+        <KpiStrip kpis={data.kpis} rangeLabel={label} />
+        <FootprintStrip data={data} />
+      </section>
+
+      <div className={TWO_COLUMN}>
         <SectionCard
           question="Is the platform healthy?"
-          context={`One score across reliability, checks, drift, healing cost, and runtime freshness — ${label.toLowerCase()}.`}
-          icon={<HeartPulse className="size-4" />}
+          answer={
+            data.health.score === null
+              ? 'Not scored yet.'
+              : `${data.health.grade}, ${data.health.score} out of 100.`
+          }
         >
           <HealthPanel health={data.health} />
         </SectionCard>
-
-        <SectionCard
-          question="What needs attention?"
-          context="Computed from the numbers on this page. Every item links to its evidence."
-          icon={<AlertTriangle className="size-4" />}
-        >
+        <SectionCard question="What needs attention?" answer={data.insights.length ? 'Most urgent first.' : 'Nothing right now.'}>
           <InsightsPanel insights={data.insights} />
         </SectionCard>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_25rem]">
+      <div className={TWO_COLUMN}>
         <SectionCard
           question="How much is running, and how much of it works?"
-          context={`Successful and failed runs per ${data.granularity === 'hour' ? 'hour' : 'day'}. Self-healed runs are a subset of successful ones, shown on hover.`}
-          icon={<Activity className="size-4" />}
-          href={`/dashboard/workflows?range=${range}`}
+          answer={trendAnswer(data.series, data.granularity)}
+          href={workflowsHref}
           hrefLabel="By workflow"
         >
           <TrendChart buckets={data.series} granularity={data.granularity} />
         </SectionCard>
-
-        <SectionCard
-          question="What is running right now?"
-          context="Newest executions across every workspace, refreshing every 10 seconds."
-          icon={<Radio className="size-4" />}
-        >
-          <LiveActivity />
-        </SectionCard>
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_25rem]">
         <SectionCard
           question="What is failing most?"
-          context="Workflows and the exact steps inside them, ranked by failure count."
-          icon={<AlertTriangle className="size-4" />}
+          answer={failingAnswer(
+            data.most_failed_workflows.map((w) => w.failed_executions),
+            data.metrics.failed_executions,
+          )}
         >
-          <RiskQueue data={data} />
-        </SectionCard>
-
-        <SectionCard
-          question="What is this worth?"
-          context="Time returned to the business, and the healing that cost nothing."
-          icon={<TrendingUp className="size-4" />}
-          href={`/dashboard/impact?range=${range}`}
-          hrefLabel="Full breakdown"
-        >
-          <RoiSummary roi={data.roi} />
+          <RiskQueue data={data} range={range} />
         </SectionCard>
       </div>
 
       <SectionCard
         question="Is self-healing keeping up?"
-        context={
-          cascade.entered_recovery > 0
-            ? `${cascade.entered_recovery} step${cascade.entered_recovery === 1 ? '' : 's'} needed recovery and ${cascade.heal_rate}% were healed. ${cascade.resolved_directly.toLocaleString()} resolved on the first try.`
-            : 'No step needed recovery in this period.'
-        }
-        icon={<Waypoints className="size-4" />}
+        answer={healingAnswer(cascade)}
         href={`/dashboard/healing?range=${range}`}
         hrefLabel="Recovery detail"
       >
-        <div className="grid gap-x-8 gap-y-4 sm:grid-cols-3">
-          {[
-            ['Steps healed', cascade.healed, 'text-emerald-300'],
-            ['Steps still failed', cascade.failed, 'text-red-300'],
-            ['Healed at zero token cost', cascade.zero_token_heals, 'text-cyan-300'],
-          ].map(([label_, value, tone]) => (
-            <div key={String(label_)}>
-              <p className="text-[11px] font-medium text-zinc-500">{label_}</p>
-              <p className={`mt-1 text-2xl font-semibold tabular-nums ${tone}`}>{Number(value).toLocaleString()}</p>
-            </div>
-          ))}
-        </div>
+        {cascade.entered_recovery > 0 ? (
+          <div className="space-y-3">
+            <SplitBar
+              segments={[
+                { label: 'Healed instantly, at zero AI cost', value: cascade.zero_token_heals, color: RECOVERY_COLORS.free },
+                { label: 'Healed with help from an AI agent', value: Math.max(0, cascade.healed - cascade.zero_token_heals), color: RECOVERY_COLORS.agent },
+                { label: 'Could not be healed', value: cascade.failed, color: RECOVERY_COLORS.failed },
+              ]}
+            />
+            <p className="text-xs text-zinc-400">
+              Only the {cascade.entered_recovery.toLocaleString()} steps that needed recovery.{' '}
+              {cascade.resolved_directly.toLocaleString()} others worked first time.
+            </p>
+          </div>
+        ) : (
+          <p className="border-t border-white/8 pt-5 text-sm text-zinc-400">Every step worked first time.</p>
+        )}
       </SectionCard>
     </DashboardPageBody>
   )

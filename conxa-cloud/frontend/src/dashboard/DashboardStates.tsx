@@ -16,7 +16,7 @@ export function isUpgradeRequiredError(error: unknown): boolean {
 
 /** Page container — same rhythm on every dashboard section. */
 export function DashboardPageBody({ children }: { children: ReactNode }) {
-  return <div className="mx-auto w-full max-w-[92rem] space-y-4 px-4 py-5 sm:px-6">{children}</div>
+  return <div className="w-full space-y-14 px-4 py-8 sm:px-6 xl:space-y-16 xl:py-10">{children}</div>
 }
 
 /**

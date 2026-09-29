@@ -61,14 +61,6 @@
   --tier-3: #06b6d4;
   --tier-4: #22d3ee;
 
-  /* Sequential ramp for heatmap density. Monotonic in OKLCH lightness so a darker
-     cell is always a smaller number — on a near-black canvas "more" has to mean
-     brighter, or the busiest cells disappear into the background. */
-  --heat-0: #0f1b24;
-  --heat-1: #134152;
-  --heat-2: #0e7490;
-  --heat-3: #06b6d4;
-  --heat-4: #67e8f9;
   --radius: 0.625rem;
   --sidebar: oklch(0.14 0.01 285);
   --sidebar-foreground: oklch(0.96 0 0);

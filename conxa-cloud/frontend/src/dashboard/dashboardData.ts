@@ -1,12 +1,14 @@
 import type { TrackingDashboardResponse } from '@/api/workflowsApi'
+import { failureLabel } from './narrative'
 
 export type RiskRow = {
   id: string
   type: 'Workflow' | 'Step'
   name: string
-  context: string
+  workflow: string
   failedExecutions: number
-  failureCode: string
+  /** Plain-language failure reason (`narrative.ts::failureLabel`). */
+  reason: string
   lastSeen: number
 }
 
@@ -46,19 +48,20 @@ export function buildRiskRows(data?: TrackingDashboardResponse): RiskRow[] {
     id: `workflow:${row.workflow}`,
     type: 'Workflow' as const,
     name: row.workflow,
-    context: 'Workflow failure',
+    workflow: row.workflow,
     failedExecutions: row.failed_executions,
-    failureCode: row.last_failure_code || 'unknown failure',
+    reason: failureLabel(row.last_failure_code),
     lastSeen: row.last_seen,
   }))
 
+  // Step labels are the generic "Step N", so the workflow name carries the meaning.
   const stepRows = data.most_failed_steps.map((row) => ({
     id: `step:${row.workflow}:${row.step_index ?? 'unknown'}:${row.step_label}`,
     type: 'Step' as const,
-    name: row.step_label,
-    context: `${row.workflow}${row.step_index === null ? '' : ` / step ${row.step_index + 1}`}`,
+    name: `${row.workflow} · ${row.step_label}`,
+    workflow: row.workflow,
     failedExecutions: row.failed_executions,
-    failureCode: row.last_failure_code || 'unknown failure',
+    reason: failureLabel(row.last_failure_code),
     lastSeen: row.last_seen,
   }))
 

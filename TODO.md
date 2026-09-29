@@ -1199,7 +1199,7 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 - **Complexity:** M — needs a fresh recording of a react-datepicker (or similar) field with intervening month/year `<select>` use to confirm whether `_lastFocusedEditableForDate` is being cleared/overwritten by the select interactions, or never set for this widget shape at all.
 - **Success criteria:** recompiling a react-datepicker Date of Birth field recorded via the month/year `<select>` path yields `handler_hints.date_picker.strategy: "typed_first"` with `open` naming the real anchored input.
 
-## P3 — Valuable, Sequence Around Other Work (16 remaining; +4 more in "P3 Discovered Items" below)
+## P3 — Valuable, Sequence Around Other Work (17 remaining; +4 more in "P3 Discovered Items" below)
 
 ### PROD-2 — Recordability pre-check (green/yellow/red compile-time score)
 - **Category:** Product Strategy & Business-Risk Mitigation
@@ -1846,6 +1846,16 @@ https://claude.ai/code/artifact/eb3fdd7c-d73e-46fa-b146-18c8e491829c
 - **Suggested order:** opportunistic — pick up alongside the next change that actually touches one of these files, rather than a dedicated sweep.
 - **Complexity:** S per router.
 - **Success criteria:** each listed router has at least one characterization test per endpoint (happy path + one auth/validation failure), matching the style already used for every other router in `tests/`.
+
+### CLOUD-24 — Impact page shows "Change hourly rate" to people who cannot save
+- **Category:** Cloud
+- **Description:** Discovered during the 2026-09-29 Operations dashboard redesign. The Impact tab's "Change hourly rate" control is shown to every signed-in member, but `PUT /api/v1/tracking/roi-assumptions` requires `require_admin`, so a non-admin fills in the form and only then sees "Could not save. Updating these values requires an admin or owner role." `workflowsApi.ts`'s comment already claims "the UI hides the control for everyone else" — it doesn't.
+- **Why required:** a control that always fails for a role is worse than no control; it also makes the comment in the API client wrong.
+- **Technical value:** read the member's role (as Team/Settings already do) and hide the control for non-admins.
+- **Dependencies:** none.
+- **Suggested order:** opportunistic — next time the Impact tab or role plumbing is touched.
+- **Complexity:** S.
+- **Success criteria:** a non-admin sees the hourly rate as text with no "Change hourly rate" control; an admin's flow is unchanged.
 
 ---
 

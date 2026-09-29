@@ -1,0 +1,97 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Healing.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Self-healing",
+      "w": 1440,
+      "x": 3040,
+      "y": 0
+    },
+    "Impact.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Impact",
+      "w": 1440,
+      "x": 4560,
+      "y": 0
+    },
+    "Main.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Overview",
+      "w": 1440,
+      "x": 0,
+      "y": 0
+    },
+    "RunDetail.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Run detail — failed run",
+      "w": 1440,
+      "x": 1520,
+      "y": 1320
+    },
+    "WorkflowDetail.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Workflow detail — Reconcile payouts",
+      "w": 1440,
+      "x": 0,
+      "y": 1320
+    },
+    "Workflows.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Workflows",
+      "w": 1440,
+      "x": 1520,
+      "y": 0
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-09-29T10:00:00Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "s1": {
+      "fill": "gray",
+      "text": "All numbers are illustrative sample data, kept consistent across every screen.\n\nEach screen is a 1440×900 window: the sidebar stays put and the content scrolls. In Play, the tabs, workflow rows and runs link between screens.",
+      "w": 440,
+      "x": -560,
+      "y": 0
+    },
+    "t1": {
+      "kind": "title1",
+      "maxW": 6000,
+      "text": "Operations dashboard — the four tabs",
+      "w": 240,
+      "x": 0,
+      "y": -300
+    },
+    "t2": {
+      "kind": "title1",
+      "maxW": 2960,
+      "text": "Drill-downs — one workflow, one run",
+      "w": 240,
+      "x": 0,
+      "y": 1020
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Workflows.dc.html",
+    "Healing.dc.html",
+    "Impact.dc.html",
+    "WorkflowDetail.dc.html",
+    "RunDetail.dc.html"
+  ],
+  "pages": [],
+  "title": "Conxa Dashboard Redesign"
+}

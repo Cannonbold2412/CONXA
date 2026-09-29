@@ -216,3 +216,31 @@ The Settings screen was one long stack of wide boxes with small grey labels, whi
 **Rebuilt the Settings screen to be easier to scan — 2026-09-29**
 The Settings screen used to be four wide boxes with tiny grey labels, and the version and update button lived in a separate box at the bottom. It now has a short menu on the left, your name and sign-out on one line, big usage numbers, and the version and update button together under About. Nothing about how accounts, usage or updates work has changed — only how they are laid out.
 — 2026-09-29
+
+**Designed a simpler, easier-to-read Operations dashboard — 2026-09-29**
+The online dashboard showed many charts and numbers in boxes. It did not say what they meant. The new design opens every section with a plain-English answer, like "1,284 runs, 96% finished on their own", and then shows one simple chart. It covers all four tabs and the pages for a single workflow and a single run. This is only a design mock-up for now; the live dashboard has not changed yet.
+— 2026-09-29
+
+**Trimmed the Overview tab of the dashboard design — 2026-09-29**
+The Overview tab had a live list of running workflows and a box showing how much time was saved. Both were removed, since the Impact tab already covers the time saved. The Overview now sticks to health, trends, what is failing, and self-repair. This is still only a design mock-up.
+— 2026-09-29
+
+**Lined up the Overview tab of the dashboard design — 2026-09-29**
+Parts of the Overview tab had uneven edges, so the page looked ragged. Every row now follows the same two-column grid: a wide main column and a narrower column on the right. The first key number now lines up with the headings, and the self-repair summary moved into the right column next to "What is failing most?".
+— 2026-09-29
+
+**Put the run chart and the failure list side by side — 2026-09-29**
+On the Overview tab of the dashboard design, the daily runs chart and the "What is failing most?" list used to be stacked one above the other. They now sit side by side, with the chart on the left and the failure list on the right. The self-repair summary now runs across the full width below them.
+— 2026-09-29
+
+**Rebuilt the online Operations dashboard to explain itself in plain words — 2026-09-29**
+The dashboard used to show many boxed charts and technical error codes without saying what they meant. Every section now opens with a one-line answer, like "96% of runs finished on their own", and then shows one simple chart. Error codes are written as plain reasons, like "Could not find a button or field". The workflow page now marks when a new version started running, and the checks list shows last week's pass rate next to this week's.
+— 2026-09-29
+
+**Simplified how the dashboard works out time saved, and tidied the page layout — 2026-09-29**
+The Impact page used to ask people to guess how many minutes each run would take by hand. It now uses the time each workflow took when it was recorded in the Build Studio, times the runs it finished on its own, valued at your hourly rate. The hourly rate is the only thing left to set. The dashboard also lost its extra empty space on the right. The design mockup now keeps the sidebar still while only the page content scrolls, like the real app.
+— 2026-09-29
+
+**Made a one-minute narrated demo video for CONXA — 2026-09-29**
+We had no short video that explains in plain terms what CONXA is for. There is now a 57-second film with a woman's voiceover. It opens with the problem: repetitive work spread across many tools. It then shows the real product end to end: recording a task once, turning it into a skill, running it on your own computer, and seeing the run on the online dashboard. It closes on the one idea to remember: show CONXA how the work is done once, and AI can repeat it whenever you need.
+— 2026-09-29

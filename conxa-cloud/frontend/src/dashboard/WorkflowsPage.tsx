@@ -2,124 +2,69 @@
 
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowDownRight, ArrowUpRight, GitBranch, Network, Timer } from 'lucide-react'
 import { fetchTrackingDashboard, type TrackingWorkflowRow } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
-import { FleetTopology } from '@/components/viz/FleetTopology'
-import { Sparkline } from '@/components/viz/Sparkline'
-import { cn } from '@/lib/utils'
+import { RATE_FLOOR, RateShift } from '@/components/viz/RateShift'
+import { SplitBar } from '@/components/viz/SplitBar'
+import { INK, STATUS_COLORS, WORKFLOW_STATUS } from '@/components/viz/chartTheme'
 import { DashboardError, DashboardPageBody, DashboardSkeleton, NoTelemetry, UpgradeRequired, isUpgradeRequiredError } from './DashboardStates'
-import { SectionCard } from './SectionCard'
-import { fmtDuration, fmtNumber, fmtPercent, fmtRelative } from './dashboardData'
-import { rangeLongLabel, useRange } from './useRange'
+import { SectionCard, Sentence } from './SectionCard'
+import { fmtNumber, fmtPercent } from './dashboardData'
+import {
+  FAILING_BELOW,
+  SLIPPING_DROP,
+  failureLabel,
+  failureReasonsAnswer,
+  volumeAnswer,
+  workflowStatus,
+  workflowsAnswer,
+  workflowsSummary,
+  type WorkflowStatus,
+} from './narrative'
+import { useRange } from './useRange'
 
-function rateTone(rate: number): string {
-  if (rate >= 95) return 'text-emerald-300'
-  if (rate >= 85) return 'text-amber-300'
-  return 'text-red-300'
-}
+const ROW_GRID = 'md:grid-cols-[minmax(0,17rem)_minmax(0,1fr)_4.5rem_6rem_4.5rem]'
+const STATUS_ORDER: Record<WorkflowStatus, number> = { failing: 0, slipping: 1, healthy: 2 }
+/** Healthy workflows share neutral ink, lightest for the busiest, so the bar stays calm. */
+const HEALTHY_SHADES = ['rgba(244,245,247,0.7)', 'rgba(244,245,247,0.5)', 'rgba(244,245,247,0.34)', 'rgba(244,245,247,0.22)', 'rgba(244,245,247,0.14)']
 
-function DeltaChip({ delta }: { delta: number | null }) {
-  if (delta === null) {
-    return <span className="text-[11px] text-zinc-700">new</span>
-  }
-  if (delta === 0) {
-    return <span className="text-[11px] tabular-nums text-zinc-600">±0</span>
-  }
-  const good = delta > 0
-  const Arrow = good ? ArrowUpRight : ArrowDownRight
-  return (
-    <span className={cn('flex items-center gap-0.5 text-[11px] tabular-nums', good ? 'text-emerald-300' : 'text-red-300')}>
-      <Arrow className="size-3" aria-hidden />
-      {Math.abs(delta)}
-    </span>
-  )
-}
-
-/**
- * Version chips.
- *
- * The newest version sits first and carries its own success rate, because the question a
- * release owner actually has is "did the version I just shipped make things worse" — a
- * blended per-workflow rate hides exactly that.
- */
-function VersionChips({ versions }: { versions: TrackingWorkflowRow['versions'] }) {
-  if (versions.length < 2) return null
-  return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-1">
-      {versions.slice(0, 3).map((version, index) => (
-        <span
-          key={version.version}
-          className={cn(
-            'rounded-full border px-1.5 py-0.5 text-[11px] tabular-nums',
-            index === 0 ? 'border-white/12 text-zinc-300' : 'border-white/8 text-zinc-600',
-          )}
-          title={`${version.runs} run${version.runs === 1 ? '' : 's'} on v${version.version}`}
-        >
-          v{version.version} · {fmtPercent(version.success_rate)}
-        </span>
-      ))}
-    </div>
-  )
+function changeText(delta: number | null): string {
+  if (delta === null) return 'new'
+  if (delta === 0) return 'no change'
+  return `${delta > 0 ? '+' : '−'}${Math.abs(delta)} pts`
 }
 
 function WorkflowRow({ row, range }: { row: TrackingWorkflowRow; range: string }) {
+  const status = WORKFLOW_STATUS[workflowStatus(row)]
+  const dropped = row.success_rate_delta !== null && row.success_rate_delta <= -SLIPPING_DROP
   return (
     <li>
       <Link
         href={`/dashboard/workflows/${encodeURIComponent(row.company)}/${encodeURIComponent(row.workflow)}?range=${range}`}
-        className={cn(
-          'grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 rounded-lg px-3 py-3 transition-colors',
-          'hover:bg-white/[0.045] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70',
-          'md:grid-cols-[minmax(0,1.6fr)_5rem_7rem_5.5rem_6.5rem_5rem]',
-        )}
+        className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-6 gap-y-2 border-b border-white/6 py-4 transition-colors hover:bg-white/[0.025] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70 ${ROW_GRID}`}
       >
-        <div className="min-w-0">
-          <p className="truncate text-[13px] font-medium text-zinc-100">{row.workflow}</p>
-          <p className="truncate text-[11px] text-zinc-600">{row.company}</p>
-          <VersionChips versions={row.versions} />
-        </div>
-
-        <div className="hidden md:block">
-          <p className="text-[11px] text-zinc-600">Runs</p>
-          <p className="text-sm tabular-nums text-zinc-200">{fmtNumber(row.runs)}</p>
-        </div>
-
-        <div className="hidden md:block">
-          <p className="text-[11px] text-zinc-600">Success</p>
-          <p className="flex items-center gap-1.5">
-            <span className={cn('text-sm tabular-nums', rateTone(row.success_rate))}>
-              {fmtPercent(row.success_rate)}
-            </span>
-            <DeltaChip delta={row.success_rate_delta} />
-          </p>
-        </div>
-
-        <div className="hidden md:block">
-          <p className="text-[11px] text-zinc-600">Self-healed</p>
-          <p className="text-sm tabular-nums text-zinc-300">{fmtPercent(row.recovery_rate)}</p>
-        </div>
-
-        <div className="hidden md:block">
-          <p className="text-[11px] text-zinc-600">p50 · p95</p>
-          <p className="text-sm tabular-nums text-zinc-300">
-            {fmtDuration(row.p50_duration)}
-            <span className="text-zinc-600"> · {fmtDuration(row.p95_duration)}</span>
-          </p>
-        </div>
-
-        <div className="text-right md:text-left">
-          <p className="hidden text-[11px] text-zinc-600 md:block">Last run</p>
-          <p className="text-[11px] tabular-nums text-zinc-500">{fmtRelative(row.last_seen)}</p>
-          <div className="mt-1 flex justify-end md:justify-start">
-            <Sparkline
-              values={[row.previous_success_rate ?? row.success_rate, row.success_rate]}
-              width={44}
-              height={16}
-              color={row.success_rate >= 95 ? 'var(--status-ok)' : 'var(--status-warn)'}
-            />
-          </div>
-        </div>
+        <span className="min-w-0 space-y-1">
+          <span className="block truncate text-sm text-zinc-100">{row.workflow}</span>
+          <span className={`flex items-center gap-1.5 text-xs ${status.text}`}>
+            <span className="size-1.5 rounded-full" style={{ background: status.color }} aria-hidden />
+            {status.label} · {fmtPercent(row.success_rate)}
+            <span className="truncate text-zinc-400">· {row.company}</span>
+          </span>
+        </span>
+        <span className="hidden md:block">
+          <RateShift
+            current={row.success_rate}
+            previous={row.previous_success_rate}
+            color={workflowStatus(row) === 'healthy' ? '#f4f5f7' : status.color}
+          />
+        </span>
+        <span className="text-right text-sm tabular-nums text-zinc-100">{fmtNumber(row.runs)}</span>
+        <span className={`hidden text-right text-sm tabular-nums md:block ${dropped ? status.text : 'text-zinc-400'}`}>
+          {changeText(row.success_rate_delta)}
+        </span>
+        <span className="hidden truncate text-sm text-zinc-400 md:block">
+          {row.versions[0] ? `v${row.versions[0].version}` : '—'}
+        </span>
       </Link>
     </li>
   )
@@ -139,7 +84,6 @@ export function WorkflowsPage() {
   if (dashboard.isError || !dashboard.data) return <DashboardError error={dashboard.error} onRetry={() => dashboard.refetch()} />
 
   const data = dashboard.data
-  const label = rangeLongLabel(range)
 
   if (!data.workflows.length) {
     return (
@@ -149,78 +93,119 @@ export function WorkflowsPage() {
     )
   }
 
-  const regressing = data.workflows.filter((w) => (w.success_rate_delta ?? 0) <= -5)
+  const rows = [...data.workflows].sort(
+    (a, b) => STATUS_ORDER[workflowStatus(a)] - STATUS_ORDER[workflowStatus(b)] || b.runs - a.runs,
+  )
+  const count = { healthy: 0, slipping: 0, failing: 0 }
+  for (const row of rows) count[workflowStatus(row)] += 1
+
+  const totalRuns = rows.reduce((sum, r) => sum + r.runs, 0)
+  let shade = 0
+  const volume = [...rows]
+    .sort((a, b) => b.runs - a.runs)
+    .map((row) => {
+      const status = workflowStatus(row)
+      return {
+        label: row.workflow,
+        value: totalRuns ? Math.round((row.runs / totalRuns) * 100) : 0,
+        color: status === 'healthy' ? HEALTHY_SHADES[Math.min(shade++, HEALTHY_SHADES.length - 1)] : WORKFLOW_STATUS[status].color,
+      }
+    })
+
+  const maxFailure = Math.max(1, ...data.failure_codes.map((f) => f.count))
 
   return (
     <DashboardPageBody>
-      <SectionCard
-        question="Which workflows are succeeding, and which are slipping?"
-        context={
-          regressing.length
-            ? `${regressing.length} workflow${regressing.length === 1 ? '' : 's'} lost 5 points or more against the previous period.`
-            : `Every workflow held its success rate against the previous period · ${label.toLowerCase()}.`
-        }
-        icon={<GitBranch className="size-4" />}
-        bodyClassName="px-1.5 py-2"
-      >
-        <ul className="space-y-0.5">
-          {data.workflows.map((row) => (
-            <WorkflowRow key={`${row.company}/${row.workflow}`} row={row} range={range} />
-          ))}
-        </ul>
+      <section aria-label="Summary" className="space-y-8">
+        <div className="space-y-6">
+          <p className="text-sm text-zinc-400">Which workflows are succeeding, and which are slipping?</p>
+          <p className="max-w-3xl text-2xl leading-snug tracking-[-0.02em] text-zinc-400 sm:text-3xl">
+            <Sentence parts={workflowsSummary(rows)} />
+          </p>
+        </div>
+        <SplitBar
+          segments={[
+            { label: 'Healthy', value: count.healthy, color: WORKFLOW_STATUS.healthy.color },
+            { label: 'Slipping', value: count.slipping, color: WORKFLOW_STATUS.slipping.color },
+            { label: 'Failing', value: count.failing, color: WORKFLOW_STATUS.failing.color },
+          ]}
+        />
+        <p className="text-xs text-zinc-400">
+          Failing: below {FAILING_BELOW}% success. Slipping: down {SLIPPING_DROP}+ points on the previous period.
+        </p>
+      </section>
+
+      <SectionCard question="How is each workflow doing?" answer={workflowsAnswer(rows)}>
+        <div>
+          <div className={`hidden items-end gap-x-6 border-b border-white/8 pb-3 text-xs text-zinc-400 md:grid ${ROW_GRID}`}>
+            <span>Workflow</span>
+            <span className="space-y-2">
+              <span className="flex items-center gap-4">
+                Success rate
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full border-[1.5px] border-zinc-500" aria-hidden />
+                  last period
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="size-2 rounded-full bg-zinc-100" aria-hidden />
+                  this period
+                </span>
+              </span>
+              <span className="flex justify-between tabular-nums">
+                {[RATE_FLOOR, 70, 80, 90, 100].map((tick) => (
+                  <span key={tick}>{tick}%</span>
+                ))}
+              </span>
+            </span>
+            <span className="text-right">Runs</span>
+            <span className="text-right">Change</span>
+            <span>Version</span>
+          </div>
+          <ul>
+            {rows.map((row) => (
+              <WorkflowRow key={`${row.company}/${row.workflow}`} row={row} range={range} />
+            ))}
+          </ul>
+        </div>
       </SectionCard>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_25rem]">
-        <SectionCard
-          question="What does the automation estate look like?"
-          context="Every skill, sized by run volume and coloured by success rate. Click through to a skill."
-          icon={<Network className="size-4" />}
-        >
-          <FleetTopology
-            nodes={data.workflows.map((w) => ({
-              company: w.company,
-              workflow: w.workflow,
-              runs: w.runs,
-              successRate: w.success_rate,
-            }))}
-          />
-        </SectionCard>
+      <SectionCard question="Where does the volume go?" answer={volumeAnswer(rows.map((r) => r.runs))}>
+        <div className="space-y-3">
+          <SplitBar segments={volume} legend="grid" unit="%" />
+          <p className="text-xs text-zinc-400">
+            Each block is sized by its share of runs. Amber and red blocks are the slipping and failing workflows.
+          </p>
+        </div>
+      </SectionCard>
 
-        <SectionCard
-          question="Why are runs failing?"
-          context="Failures grouped by the reason code the runtime reported."
-          icon={<Timer className="size-4" />}
-        >
-          {data.failure_codes.length ? (
-            <ul className="space-y-2.5">
-              {data.failure_codes.map((row) => {
-                const max = Math.max(...data.failure_codes.map((f) => f.count))
-                return (
-                  <li key={row.code}>
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="truncate text-[13px] text-zinc-300">{row.code}</span>
-                      <span className="shrink-0 text-[11px] tabular-nums text-zinc-400">{row.count}</span>
-                    </div>
-                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
-                      <div
-                        className="h-full rounded-full bg-red-400/70"
-                        style={{ width: `${(row.count / max) * 100}%` }}
-                      />
-                    </div>
-                    <p className="mt-1 text-[11px] text-zinc-600">
-                      across {row.workflow_count} workflow{row.workflow_count === 1 ? '' : 's'}
-                    </p>
-                  </li>
-                )
-              })}
-            </ul>
-          ) : (
-            <p className="py-8 text-center text-[11px] leading-relaxed text-zinc-600">
-              No failures in this period.
-            </p>
-          )}
-        </SectionCard>
-      </div>
+      <SectionCard
+        question="Why are runs failing?"
+        answer={failureReasonsAnswer(data.failure_codes, data.metrics.failed_executions)}
+      >
+        {data.failure_codes.length ? (
+          <ol className="space-y-5">
+            {data.failure_codes.map((row) => (
+              <li key={row.code} className="grid grid-cols-[minmax(0,1fr)_3rem] items-center gap-x-5 gap-y-2 md:grid-cols-[minmax(0,20rem)_minmax(0,1fr)_3rem]">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm text-zinc-100">{failureLabel(row.code)}</span>
+                  <span className="block truncate text-xs text-zinc-400">
+                    Reported as {row.code} · across {row.workflow_count} workflow{row.workflow_count === 1 ? '' : 's'}
+                  </span>
+                </span>
+                <span className="col-span-2 row-start-2 h-2 rounded-full md:col-span-1 md:row-start-auto" style={{ background: INK.track }}>
+                  <span
+                    className="block h-full rounded-full"
+                    style={{ width: `${(row.count / maxFailure) * 100}%`, background: STATUS_COLORS.error, opacity: 0.75 }}
+                  />
+                </span>
+                <span className="text-right text-sm font-medium tabular-nums text-zinc-100">{fmtNumber(row.count)}</span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="border-t border-white/8 pt-5 text-sm text-zinc-400">No runs failed in this period.</p>
+        )}
+      </SectionCard>
     </DashboardPageBody>
   )
 }

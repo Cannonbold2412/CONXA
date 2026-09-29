@@ -1,62 +1,69 @@
 import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { ArrowUpRight } from 'lucide-react'
-import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
+import type { Phrase } from './narrative'
+
+/** Renders a narrative `Phrase`, lifting its emphasised spans to full-strength text. */
+export function Sentence({ parts }: { parts: Phrase }) {
+  return (
+    <>
+      {parts.map((part, index) =>
+        typeof part === 'string' ? (
+          part
+        ) : (
+          <span key={index} className="font-medium text-zinc-100">
+            {part.strong}
+          </span>
+        ),
+      )}
+    </>
+  )
+}
 
 /**
- * The one card shell every dashboard panel uses.
+ * The one section shell every dashboard panel uses.
  *
- * `question` is the heading and it is phrased as a question on purpose — a panel titled
- * "Recovery" makes the reader work out why they should care, while "Where does recovery
- * spend its budget?" states the job the panel is doing. `context` carries the one-line
- * answer or scope note underneath.
+ * `question` stays small and grey; `answer` is the large line underneath that answers it in
+ * plain words, so a reader gets the conclusion before the chart. No box around it — sections
+ * are separated by space and hairlines, not by cards.
  */
 export function SectionCard({
   question,
+  answer,
   context,
-  icon,
-  action,
   href,
   hrefLabel = 'View all',
   children,
   className,
-  bodyClassName,
 }: {
   question: string
+  answer?: ReactNode
   context?: ReactNode
-  icon?: ReactNode
-  action?: ReactNode
   href?: string
   hrefLabel?: string
   children: ReactNode
   className?: string
-  bodyClassName?: string
 }) {
   return (
-    <Card className={cn('gap-0 border-white/8 bg-white/[0.025] py-0 shadow-none', className)}>
-      <CardHeader className="flex flex-wrap items-start gap-x-3 gap-y-2 border-b border-white/6 px-4 py-3.5">
-        <div className="flex min-w-0 flex-1 items-start gap-2.5">
-          {icon ? <span className="mt-0.5 shrink-0 text-zinc-500" aria-hidden>{icon}</span> : null}
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-zinc-100">{question}</h2>
-            {context ? <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{context}</p> : null}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {action}
-          {href ? (
-            <Link
-              href={href}
-              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70"
-            >
-              {hrefLabel}
-              <ArrowUpRight className="size-3" aria-hidden />
-            </Link>
+    <section className={cn('flex min-w-0 flex-col gap-6', className)}>
+      <div className="flex items-end justify-between gap-6">
+        <div className="min-w-0 space-y-1.5">
+          <h2 className="text-sm font-medium text-zinc-400">{question}</h2>
+          {answer ? (
+            <p className="text-lg font-medium leading-snug tracking-[-0.01em] text-zinc-100 sm:text-xl">{answer}</p>
           ) : null}
+          {context ? <p className="text-xs leading-relaxed text-zinc-400">{context}</p> : null}
         </div>
-      </CardHeader>
-      <CardContent className={cn('px-4 py-4', bodyClassName)}>{children}</CardContent>
-    </Card>
+        {href ? (
+          <Link
+            href={href}
+            className="shrink-0 whitespace-nowrap rounded-md text-sm text-zinc-400 transition-colors hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70"
+          >
+            {hrefLabel} →
+          </Link>
+        ) : null}
+      </div>
+      {children}
+    </section>
   )
 }

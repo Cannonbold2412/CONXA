@@ -133,6 +133,8 @@ The scale above is the **brand** scale — fluid `clamp()` sizes for the marketi
 - **Page title** (600, 1.125rem / `text-lg`, 1rem below `sm`): `PageHeader`'s title. One per screen.
 - **Section title** (600, 0.875rem / `text-sm`): Card and panel headers.
 - **Body / data** (400, 0.875rem / `text-sm`): Table cells, list rows, descriptions.
+- **Summary sentence** (400, 1.5rem / `text-2xl`, 1.875rem / `text-3xl` from `sm`, tracking -0.02em): the one plain-language sentence that opens each Operations dashboard tab. Grey, with its key figures lifted to Paper White. One per screen.
+- **Answer line** (500, 1.125rem / `text-lg`, 1.25rem / `text-xl` from `sm`): the sentence under a dashboard section's question that answers it before the chart does (`SectionCard`'s `answer`).
 - **Metric value** (600, 1.25–1.875rem, `tabular-nums`): KPI numbers. Always tabular so digits don't jitter between refreshes.
 - **Meta** (400–500, 0.6875rem / `text-[11px]`): Captions, cell sublabels, axis ticks, legend text, tooltip rows. This is the dashboard's densest step and the floor — nothing goes below it. Never used for prose, only for labels attached to a value.
 

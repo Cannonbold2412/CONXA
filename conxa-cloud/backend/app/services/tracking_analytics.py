@@ -503,6 +503,8 @@ def workflow_analytics(
                 "success_rate": _success_rate(bucket),
                 "recovery_rate": round((sum(1 for r in bucket if _run_has_recovery(r)) / len(bucket)) * 100, 1),
                 "last_seen": max(_record_time_ms(r) for r in bucket),
+                # First run seen inside the window — not a publish time.
+                "first_seen": min(_record_time_ms(r) for r in bucket),
             }
             for version, bucket in by_version.items()
         ]
@@ -1202,6 +1204,21 @@ def run_step_flow(record: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _with_previous_pass_rate(
+    rows: list[dict[str, Any]],
+    previous_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach last period's pass rate to each assertion row, so decay reads as a change."""
+    previous = {
+        (r["company"], r["workflow"], r["step_index"]): r["pass_rate"]
+        for r in _assertion_health_by_step(previous_records, limit=None)
+    }
+    return [
+        {**row, "previous_pass_rate": previous.get((row["company"], row["workflow"], row["step_index"]))}
+        for row in rows
+    ]
+
+
 def dashboard(principal: Principal, range_value: str) -> dict[str, Any]:
     """The full Executive Overview payload.
 
@@ -1223,7 +1240,7 @@ def dashboard(principal: Principal, range_value: str) -> dict[str, Any]:
     stale_runtimes = _stale_runtime_count(registrations, now_ms)
 
     series = bucket_series(current, end_ms=now_ms, spec=spec)
-    assertion_rows = base.get("assertion_health_by_step") or []
+    assertion_rows = _with_previous_pass_rate(base.get("assertion_health_by_step") or [], previous)
     drift_rows = _drift_review_queue(current)
     workflows = workflow_analytics(current, previous)
     failure_rows = failure_codes(current)
@@ -1235,6 +1252,7 @@ def dashboard(principal: Principal, range_value: str) -> dict[str, Any]:
         "granularity": spec["granularity"],
         "generated_at": now_ms,
         "series": series,
+        "assertion_health_by_step": assertion_rows,
         "kpis": kpi_strip(current, previous, series),
         "health": health_score(
             current,
@@ -1313,6 +1331,6 @@ def workflow_detail(
         "steps": step_analytics(current),
         "recovery_cascade": recovery_cascade(current),
         "failure_codes": failure_codes(current),
-        "assertion_health": _assertion_health_by_step(current),
+        "assertion_health": _with_previous_pass_rate(_assertion_health_by_step(current), previous),
         "recent_runs": [_activity_row(record) for record in current[:20]],
     }

@@ -2,17 +2,21 @@
 
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, ListOrdered } from 'lucide-react'
 import { fetchTrackingRun } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
 import { ExecutionFlow } from '@/components/viz/ExecutionFlow'
-import { cn } from '@/lib/utils'
+import { STATUS_COLORS } from '@/components/viz/chartTheme'
 import { DashboardError, DashboardPageBody, DashboardSkeleton } from './DashboardStates'
 import { SectionCard } from './SectionCard'
 import { fmtDuration, fmtNumber, fmtRelative } from './dashboardData'
+import { failureLabel, runAnswer, runTitle } from './narrative'
 import { useRange } from './useRange'
 
-const STATUS_LABEL = { ok: 'Succeeded', fail: 'Failed', running: 'Running' } as const
+const STATUS = {
+  ok: { label: 'Finished', text: 'text-zinc-100', dot: 'rgba(244,245,247,0.5)' },
+  fail: { label: 'Failed', text: 'text-red-300', dot: STATUS_COLORS.error },
+  running: { label: 'Running', text: 'text-cyan-300', dot: 'var(--tier-4)' },
+} as const
 
 export function RunDetailPage({ company, runId }: { company: string; runId: string }) {
   const [range] = useRange()
@@ -27,92 +31,101 @@ export function RunDetailPage({ company, runId }: { company: string; runId: stri
 
   const data = run.data
   const summary = data.summary
-  const status = STATUS_LABEL[summary?.status ?? 'running'] ?? 'Running'
+  const status = STATUS[summary?.status ?? 'running'] ?? STATUS.running
+  const workflowHref = `/dashboard/workflows/${encodeURIComponent(company)}/${encodeURIComponent(data.workflow_id)}?range=${range}`
+  const repaired = data.steps.filter((s) => s.status === 'recovered').length
+  const reached = data.steps.filter((s) => s.status !== 'not_reached' && s.status !== 'failed').length
 
   return (
     <DashboardPageBody>
-      <div className="min-w-0">
-        <Link
-          href={`/dashboard/workflows/${encodeURIComponent(company)}/${encodeURIComponent(data.workflow_id)}?range=${range}`}
-          className="inline-flex items-center gap-1 text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
-        >
-          <ArrowLeft className="size-3" aria-hidden />
-          {data.workflow_id}
-        </Link>
-        <h1 className="mt-1 flex flex-wrap items-center gap-2 text-lg font-semibold text-zinc-100">
-          <span className="truncate">{data.workflow_id}</span>
-          <span
-            className={cn(
-              'rounded-full px-2 py-0.5 text-[11px] font-medium',
-              summary?.status === 'ok'
-                ? 'bg-emerald-500/10 text-emerald-300'
-                : summary?.status === 'fail'
-                  ? 'bg-red-500/10 text-red-300'
-                  : 'bg-cyan-500/10 text-cyan-300',
-            )}
-          >
-            {status}
-          </span>
-        </h1>
-        <p className="truncate text-[11px] text-zinc-600">
-          {company} · v{data.workflow_ver} · runtime {data.runtime_ver} ·{' '}
-          {summary?.started_at ? fmtRelative(summary.started_at) : 'unknown time'}
-        </p>
-      </div>
-
-      <div className="grid grid-cols-2 divide-x divide-y divide-white/6 overflow-hidden rounded-xl border border-white/8 bg-white/[0.02] lg:grid-cols-4 lg:divide-y-0">
-        {[
-          ['Duration', summary?.duration_ms ? fmtDuration(summary.duration_ms) : '—'],
-          ['Steps', fmtNumber(summary?.total_steps ?? data.steps.length)],
-          ['Steps self-healed', fmtNumber(summary?.recovered_steps ?? 0)],
-          ['Failure reason', summary?.failure_code ?? '—'],
-        ].map(([title, value]) => (
-          <div key={String(title)} className="min-w-0 px-4 py-3.5">
-            <p className="truncate text-[11px] font-medium text-zinc-500">{title}</p>
-            <p className="mt-1.5 truncate text-lg font-semibold tabular-nums text-zinc-100">{value}</p>
+      <section aria-label="Summary" className="space-y-9">
+        <div className="space-y-5">
+          <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
+            <Link href={`/dashboard/workflows?range=${range}`} className="transition-colors hover:text-zinc-100">
+              Workflows
+            </Link>
+            <span aria-hidden>/</span>
+            <Link href={workflowHref} className="truncate transition-colors hover:text-zinc-100">
+              {data.workflow_id}
+            </Link>
+            <span aria-hidden>/</span>
+            <span className="text-zinc-100">Run {data.run_id.slice(0, 8)}</span>
+          </nav>
+          <div className="flex flex-wrap items-center gap-3">
+            <h2 className="text-2xl font-semibold tracking-[-0.02em] text-zinc-100 sm:text-3xl">{runTitle(data)}</h2>
+            <span className={`inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-2.5 py-1 text-xs ${status.text}`}>
+              <span className="size-1.5 rounded-full" style={{ background: status.dot }} aria-hidden />
+              {status.label}
+            </span>
           </div>
-        ))}
-      </div>
+          <p className="text-sm text-zinc-400">
+            {data.workflow_id} v{data.workflow_ver} · {company} · runtime {data.runtime_ver} ·{' '}
+            {summary?.started_at ? fmtRelative(summary.started_at) : 'unknown time'}
+          </p>
+          <p className="max-w-3xl text-xl leading-snug tracking-[-0.015em] text-zinc-100 sm:text-2xl">{runAnswer(data)}</p>
+        </div>
+
+        <div className="grid grid-cols-2 border-y border-white/8 lg:grid-cols-4 lg:divide-x lg:divide-white/8">
+          {[
+            ['Took', summary?.duration_ms ? fmtDuration(summary.duration_ms) : '—'],
+            ['Steps completed', `${fmtNumber(reached)} of ${fmtNumber(summary?.total_steps ?? data.steps.length)}`],
+            ['Steps repaired', fmtNumber(summary?.recovered_steps ?? repaired)],
+            ['Why it stopped', summary?.status === 'fail' ? failureLabel(summary.failure_code) : '—'],
+          ].map(([title, value]) => (
+            <div key={title} className="min-w-0 space-y-2 py-5 pr-6 lg:px-6 lg:first:pl-0">
+              <p className="truncate text-sm text-zinc-400">{title}</p>
+              <p className="text-xl font-semibold leading-snug text-zinc-100 tabular-nums">{value}</p>
+              {title === 'Why it stopped' && summary?.failure_code ? (
+                <p className="truncate text-xs text-zinc-400">Reported as {summary.failure_code}</p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </section>
 
       <SectionCard
         question="What happened, step by step?"
-        context="Each step's outcome and the recovery tier that resolved it, in execution order."
-        icon={<ListOrdered className="size-4" />}
+        answer={
+          repaired
+            ? `${fmtNumber(repaired)} step${repaired === 1 ? ' was' : 's were'} repaired along the way.`
+            : 'Each step, in the order it ran.'
+        }
       >
         <ExecutionFlow steps={data.steps} />
       </SectionCard>
 
-      <SectionCard
-        question="What did the runtime report?"
-        context={`${data.timeline.length} raw events, oldest first.`}
-        icon={<ListOrdered className="size-4" />}
-      >
-        {data.timeline.length ? (
-          <div className="max-h-80 overflow-y-auto">
-            <ul className="space-y-0.5">
+      <section className="space-y-4">
+        <details className="group border-t border-white/8 pt-5">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-6 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70">
+            <span className="space-y-1">
+              <span className="block text-sm font-medium text-zinc-400">What did the runtime report?</span>
+              <span className="block text-lg font-medium text-zinc-100">
+                {fmtNumber(data.timeline.length)} raw events, for engineers who want the detail.
+              </span>
+            </span>
+            <span className="shrink-0 rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-100 group-open:hidden">Show</span>
+            <span className="hidden shrink-0 rounded-lg border border-white/10 px-3.5 py-2 text-sm text-zinc-100 group-open:inline">Hide</span>
+          </summary>
+          {data.timeline.length ? (
+            <ol className="mt-5 max-h-96 space-y-1.5 overflow-y-auto rounded-xl border border-white/6 bg-[#0b0f14] p-4">
               {data.timeline.map((event, index) => (
-                <li
-                  key={`${event.e}-${event.ts}-${index}`}
-                  className="flex items-baseline gap-3 rounded px-2 py-1 text-[11px] hover:bg-white/[0.03]"
-                >
-                  <span className="w-32 shrink-0 truncate font-medium text-zinc-300">{event.e}</span>
-                  <span className="min-w-0 flex-1 truncate text-zinc-600">
+                <li key={`${event.e}-${event.ts}-${index}`} className="flex items-baseline gap-4 text-xs">
+                  <span className="w-44 shrink-0 truncate font-medium text-zinc-100">{event.e}</span>
+                  <span className="min-w-0 flex-1 truncate text-zinc-400">
                     {Object.entries(event)
                       .filter(([key]) => key !== 'e' && key !== 'ts')
                       .map(([key, value]) => `${key}=${String(value)}`)
                       .join(' · ') || '—'}
                   </span>
-                  <span className="shrink-0 tabular-nums text-zinc-700">
-                    {event.si !== undefined ? `step ${event.si + 1}` : ''}
-                  </span>
+                  <span className="shrink-0 tabular-nums text-zinc-400">{event.si !== undefined ? `step ${event.si + 1}` : ''}</span>
                 </li>
               ))}
-            </ul>
-          </div>
-        ) : (
-          <p className="py-6 text-center text-[11px] text-zinc-600">This run reported no events.</p>
-        )}
-      </SectionCard>
+            </ol>
+          ) : (
+            <p className="mt-5 text-sm text-zinc-400">This run reported no events.</p>
+          )}
+        </details>
+      </section>
     </DashboardPageBody>
   )
 }

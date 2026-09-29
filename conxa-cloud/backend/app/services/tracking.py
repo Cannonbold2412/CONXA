@@ -688,7 +688,7 @@ def _event_step_index(evt: dict[str, Any]) -> int | None:
         return None
 
 
-def _assertion_health_by_step(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _assertion_health_by_step(records: list[dict[str, Any]], limit: int | None = 12) -> list[dict[str, Any]]:
     """Aggregate runtime `verify_result` events into a per-step assertion pass-rate view.
 
     `verify_result` carries `{si, ok, n, advFail}` for every step that ran post-condition
@@ -731,7 +731,7 @@ def _assertion_health_by_step(records: list[dict[str, Any]]) -> list[dict[str, A
         for entry in by_key.values()
     ]
     rows.sort(key=lambda r: (r["pass_rate"], -r["total"]))
-    return rows[:12]
+    return rows if limit is None else rows[:limit]
 
 
 def _dashboard_metrics(

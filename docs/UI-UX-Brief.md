@@ -521,32 +521,34 @@ with a muted dash instead of a cyan tick — a tick beside a negative statement 
 
 **Purpose:** The enterprise AI-operations control center — the landing surface after login.
 **Inputs:** Clerk auth context; `?range=` in the URL (`24h` / `7d` / `30d` / `90d`).
-**User goal:** Answer, in order — is the platform healthy, what needs attention, what is running now, which workflows are slipping, is self-healing keeping up, and what is this worth.
+**User goal:** Answer, in order — is the platform healthy, what needs attention, how much is running and what is failing, which workflows are slipping, is self-healing keeping up, and what is this worth.
 
 **Structure (2026-08 redesign).** One sidebar entry, five routes behind a sub-navigation tab row. The range picker and refresh live in the shared shell (`src/dashboard/DashboardShell.tsx`) and the selected range is held in the URL so a link shows the recipient the same window.
 
 | Route | Answers |
 |---|---|
-| `/dashboard` | Health score + factors, KPI strip, execution trend, live activity, insights, risk queue, ROI summary |
-| `/dashboard/workflows` | Per-skill volume, success rate + period delta, p50/p95, version comparison, fleet topology, failure codes |
-| `/dashboard/workflows/[company]/[slug]` | Step-level reliability, version breakdown, recovery cascade, recent runs |
-| `/dashboard/healing` | Recovery cascade Sankey, tier ladder, reliability heatmap, drift queue, assertion health |
-| `/dashboard/impact` | Hours saved, value returned, measured reliability counts, editable ROI assumptions |
-| `/dashboard/runs/[company]/[runId]` | One execution step by step, with the recovery tier that resolved each step |
+| `/dashboard` | One-sentence summary + health dial and status pills, KPI strip, reach line, [health factors \| insights], [execution trend \| what is failing most], self-healing outcome bar |
+| `/dashboard/workflows` | Status-mix summary, per-skill list with last-period → this-period success dot-plot, share-of-runs bar, failure reasons in plain words |
+| `/dashboard/workflows/[company]/[slug]` | Verdict sentence + "Fix in Studio", stat strip, trend with "vX first ran" marker, version comparison, step list, recent runs, recovery outcome bar |
+| `/dashboard/healing` | Summary sentence + 4 stats, repair-method ladder (Tier A → Tier B), flaky-hours heatmap, drift queue, check pass rates vs last period |
+| `/dashboard/impact` | Hours/value sentence, one-line method (recorded Build Studio time × unattended runs × hourly rate) with a "Change hourly rate" control, Estimate/Measured stats, hours by workflow, measured reliability cost |
+| `/dashboard/runs/[company]/[runId]` | "Run X stopped at step N" + plain-language cause, step timeline with the recovery path each repaired/failed step took, raw events collapsed |
+
+**Plain-language redesign (2026-09-29).** Every section keeps its question and adds a large *answer* sentence under it, computed by fixed rules in `src/dashboard/narrative.ts` (tested in `frontend/test/narrative.test.mjs`) — the reader gets the conclusion before the chart. Sections are unboxed (question, answer, visual, separated by space and hairlines), laid out on one two-column grid (`minmax(0,1fr) 25rem`). Colour is reserved for what needs attention: healthy data is neutral ink (`INK` in `chartTheme.ts`), slipping is amber, failing is red, and cyan marks AI (Tier B) or the one signal per screen. Runtime failure codes are shown in plain words (`failureLabel`) with the raw code as a subline. The Overview no longer carries the live-activity feed or the ROI summary (Impact covers value); the Sankey and fleet-topology charts were replaced by proportional `SplitBar`s, and per-skill success uses the `RateShift` dot-plot. Workflow status thresholds: failing below 80% success, slipping when down 3+ points on the previous period.
 
 **Prior state.** The dashboard was a single 631-line page (`src/DashboardPage.tsx`, now removed) with six metric tiles, a hand-drawn bar chart, and four ranked lists. It answered "what broke" but not whether the platform was healthy, which workflows were degrading, or what any of it was worth. Its sections were re-homed: risk queue → Overview, recovery/assertion/drift panels → Self-healing, trend → the shared `TrendChart`.
 
 **Design decisions worth keeping.**
-- **KPIs are one divided strip, not a tile grid.** Five boxed hero-metric cards is the marketing reflex; a strip with hairline dividers reads as one instrument panel. Each cell carries value, sparkline, and a delta against the prior equal period, with per-KPI `direction` so a rising failure count is never painted green.
+- **KPIs are one divided strip, not a tile grid.** Five boxed hero-metric cards is the marketing reflex; a strip with hairline dividers reads as one instrument panel. Each cell carries value, sparkline, and a delta against the prior equal period followed by its meaning in words ("fewer failures"), with per-KPI `direction` so a rising failure count is never painted green.
 - **Health score is decomposed on screen.** The arc is the headline; the five weighted factors (success rate, assertion pass rate, drift resistance, zero-token healing, runtime freshness) are listed beside it with their own values and contributions. A score nobody can decompose is a score nobody acts on. No telemetry yields `score: null` / grade "No telemetry" — never a red zero for a workspace that has done nothing wrong.
 - **Section headings are questions.** "Where does recovery spend its budget?" rather than "Recovery" — each panel states the job it does.
-- **Estimates are visibly separated from measurements.** Hours saved depends on an admin-supplied minutes-per-run baseline (telemetry has no such signal); it renders beside the assumption that produced it, with an inline editor, and is tagged "Estimate". Counts derived purely from telemetry are tagged "Measured".
+- **Estimates are visibly separated from measurements.** Hours saved uses each workflow's recorded time in Build Studio (seeded into the ROI baseline on first publish) as the manual-time baseline — nobody types minutes per run (2026-09-29: the minutes field was removed; workflows with no recording fall back to the workspace default and say so). The only input a person supplies is the hourly rate, editable inline. Estimates are tagged "Estimate"; counts derived purely from telemetry are tagged "Measured".
 - **Insights are rule-derived, never model-generated.** Each carries the metric behind it and links to the evidence.
-- **Chart palette is separate from the status palette** (`--chart-1..4` plus an "Other" slot, `--tier-1..4`, `--heat-0..4` in `src/index.css`). A series painted emerald would read as "healthy" when it only means "workflow 4". Four categorical hues, not six — six do not survive the all-pairs colour-vision check on this surface.
+- **Chart palette is separate from the status palette** (`--chart-1..4` plus an "Other" slot and `--tier-1..4` in `src/index.css`; the heatmap now uses neutral ink for volume and red for flaky hours). A series painted emerald would read as "healthy" when it only means "workflow 4". Four categorical hues, not six — six do not survive the all-pairs colour-vision check on this surface.
 
-**Visualizations** live in `src/components/viz/`: `Sparkline`, `TrendChart` (stacked outcome bars), `HealthArc`, `TierLadder`, `RecoverySankey` (d3-sankey), `Heatmap`, `FleetTopology` (deterministic radial layout — never force-directed, so nodes stay where the operator left them), `ExecutionFlow`. d3 supplies layout maths only; all markup is local so theming stays in the design system.
+**Visualizations** live in `src/components/viz/`: `Sparkline`, `TrendChart` (stacked outcome bars, optional version marker), `HealthArc`, `SplitBar` (one whole split into parts), `RateShift` (last period → this period dot-plot), `TierLadder` (repair methods grouped by tier), `Heatmap` (hour-of-week, red = more than 5% of runs failed), `ExecutionFlow` (step timeline with recovery path). d3 supplies scale/arc maths only; all markup is local so theming stays in the design system.
 
-**Assertion health (2026-07, post-condition validation):** sourced from `assertion_health_by_step` (`app.services.tracking._assertion_health_by_step`, aggregating the runtime's `verify_result` event). Steps worst-pass-rate-first with a pass-rate bar (green ≥95%, amber ≥80%, red below), check count, and advisory-failure count — the fleet-wide early warning for an assertion decaying before it becomes a hard step failure. Now lives on `/dashboard/healing`.
+**Assertion health (2026-07, post-condition validation):** sourced from `assertion_health_by_step` (`app.services.tracking._assertion_health_by_step`, aggregating the runtime's `verify_result` event). Steps worst-pass-rate-first with this period's pass-rate bar (neutral ≥95%, amber ≥80%, red below) above last period's (`previous_pass_rate`, grey), check count, and advisory-failure count — the fleet-wide early warning for an assertion decaying before it becomes a hard step failure. Now lives on `/dashboard/healing`.
 
 ---
 

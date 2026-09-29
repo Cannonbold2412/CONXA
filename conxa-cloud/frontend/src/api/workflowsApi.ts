@@ -217,6 +217,8 @@ export type TrackingAssertionRow = {
   total: number
   passed: number
   pass_rate: number
+  /** Same step's pass rate in the previous period; null when it didn't report then. */
+  previous_pass_rate?: number | null
   advisory_failures: number
   last_seen: number
 }
@@ -270,6 +272,8 @@ export type TrackingWorkflowVersion = {
   success_rate: number
   recovery_rate: number
   last_seen: number
+  /** First run of this version seen inside the window — not its publish time. */
+  first_seen: number
 }
 
 export type TrackingWorkflowRow = {
@@ -385,12 +389,6 @@ export type TrackingActivityRow = {
   at: number
 }
 
-export type TrackingActivityResponse = {
-  runs: TrackingActivityRow[]
-  next_cursor: number | null
-  generated_at: number
-}
-
 export type TrackingStepRow = {
   step_index: number | null
   step_label: string
@@ -459,16 +457,6 @@ export type TrackingDriftResponse = {
 
 export function fetchTrackingDrift(): Promise<TrackingDriftResponse> {
   return apiFetch('/tracking/drift').then((r) => json<TrackingDriftResponse>(r))
-}
-
-/**
- * Recent runs across every visible company.
- *
- * Separate from the dashboard payload so the live feed can poll on its own cadence without
- * re-running the full aggregation on every tick.
- */
-export function fetchTrackingActivity(limit = 40): Promise<TrackingActivityResponse> {
-  return apiFetch(`/tracking/activity?limit=${limit}`).then((r) => json<TrackingActivityResponse>(r))
 }
 
 export function fetchTrackingWorkflow(

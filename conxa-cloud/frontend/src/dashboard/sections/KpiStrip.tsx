@@ -1,10 +1,11 @@
 'use client'
 
-import { ArrowDownRight, ArrowRight, ArrowUpRight } from 'lucide-react'
 import type { TrackingKpi } from '@/api/workflowsApi'
 import { Sparkline } from '@/components/viz/Sparkline'
+import { INK, STATUS_COLORS } from '@/components/viz/chartTheme'
 import { cn } from '@/lib/utils'
 import { fmtDuration, fmtNumber, fmtPercent } from '../dashboardData'
+import { kpiMeaning } from '../narrative'
 
 function formatValue(kpi: TrackingKpi): string {
   if (kpi.unit === 'percent') return fmtPercent(kpi.value)
@@ -24,50 +25,45 @@ function deltaTone(kpi: TrackingKpi): 'good' | 'bad' | 'flat' {
   return rising === goodWhenRising ? 'good' : 'bad'
 }
 
-const TONE_CLASS = {
-  good: 'text-emerald-300',
-  bad: 'text-red-300',
-  flat: 'text-zinc-500',
-} as const
+const TONE_CLASS = { good: 'text-teal-300', bad: 'text-red-300', flat: 'text-zinc-400' } as const
 
 /**
- * The headline numbers, as one divided strip rather than a row of bordered tiles.
- *
- * Six boxed hero-metric cards is the SaaS-marketing reflex; it wastes vertical space and
- * makes five equally-weighted numbers all shout. A strip with hairline dividers reads as a
- * single instrument panel, which is what it is.
+ * The headline numbers, as one strip between two hairlines rather than a row of boxed tiles.
+ * Each delta is followed by what it means in words ("fewer failures"), so the reader never
+ * has to work out whether up is good for that metric.
  */
 export function KpiStrip({ kpis, rangeLabel }: { kpis: TrackingKpi[]; rangeLabel: string }) {
   if (!kpis.length) return null
-
   return (
-    <div className="grid grid-cols-2 divide-x divide-y divide-white/6 overflow-hidden rounded-xl border border-white/8 bg-white/[0.02] sm:grid-cols-3 lg:grid-cols-5 lg:divide-y-0">
+    <div className="grid grid-cols-2 border-y border-white/8 sm:grid-cols-3 lg:grid-cols-5 lg:divide-x lg:divide-white/8">
       {kpis.map((kpi) => {
         const tone = deltaTone(kpi)
-        const Arrow = tone === 'flat' ? ArrowRight : kpi.delta > 0 ? ArrowUpRight : ArrowDownRight
+        const arrow = tone === 'flat' ? '' : kpi.delta > 0 ? '↑ ' : '↓ '
         return (
-          <div key={kpi.key} className="min-w-0 px-4 py-3.5">
-            <p className="truncate text-[11px] font-medium text-zinc-500">{kpi.label}</p>
-            <div className="mt-1.5 flex items-end justify-between gap-2">
-              <span className="truncate text-2xl font-semibold tabular-nums text-zinc-100">
+          <div key={kpi.key} className="flex min-w-0 flex-col gap-2.5 py-5 pr-6 lg:px-6 lg:first:pl-0">
+            <p className="truncate text-sm text-zinc-400">{kpi.label}</p>
+            <div className="flex items-end justify-between gap-3">
+              <span className="truncate text-3xl font-semibold leading-none tracking-[-0.02em] tabular-nums text-zinc-100">
                 {formatValue(kpi)}
               </span>
               <Sparkline
                 values={kpi.series}
-                width={64}
-                height={22}
-                color={tone === 'bad' ? 'var(--status-error)' : 'var(--tier-4)'}
-                className="mb-1 shrink-0"
+                width={76}
+                height={28}
+                color={tone === 'bad' ? STATUS_COLORS.error : INK.mid}
+                className="shrink-0"
               />
             </div>
-            <p className={cn('mt-1 flex items-center gap-1 text-[11px] tabular-nums', TONE_CLASS[tone])}>
-              <Arrow className="size-3 shrink-0" aria-hidden />
+            <p className="truncate text-xs tabular-nums text-zinc-400" title={`vs prior ${rangeLabel.toLowerCase()}`}>
               {kpi.delta_pct === null ? (
-                <span className="text-zinc-600">No prior data</span>
+                kpiMeaning(kpi)
               ) : (
                 <>
-                  {Math.abs(kpi.delta_pct)}%
-                  <span className="truncate text-zinc-600">vs prior {rangeLabel.toLowerCase()}</span>
+                  <span className={cn('font-medium', TONE_CLASS[tone])}>
+                    {arrow}
+                    {Math.abs(kpi.delta_pct)}%
+                  </span>{' '}
+                  · {kpiMeaning(kpi)}
                 </>
               )}
             </p>

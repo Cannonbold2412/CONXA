@@ -2,28 +2,24 @@
 
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, GitCompare, ListOrdered, Radio, Waypoints } from 'lucide-react'
 import { fetchTrackingWorkflow } from '@/api/workflowsApi'
 import { queryKeys } from '@/lib/queryKeys'
-import { RecoverySankey } from '@/components/viz/RecoverySankey'
+import { OpenInStudioButton } from '@/components/OpenInStudioButton'
+import { SplitBar } from '@/components/viz/SplitBar'
 import { TrendChart } from '@/components/viz/TrendChart'
-import { tierColor } from '@/components/viz/chartTheme'
-import { cn } from '@/lib/utils'
-import { DashboardError, DashboardPageBody, DashboardSkeleton } from './DashboardStates'
-import { SectionCard } from './SectionCard'
+import { INK, RECOVERY_COLORS, STATUS_COLORS, WORKFLOW_STATUS } from '@/components/viz/chartTheme'
+import { DashboardError, DashboardPageBody, DashboardSkeleton, UpgradeRequired, isUpgradeRequiredError } from './DashboardStates'
+import { SectionCard, Sentence } from './SectionCard'
 import { fmtDuration, fmtNumber, fmtPercent, fmtRelative } from './dashboardData'
+import { failureLabel, healingAnswer, stepAnswer, versionAnswer, workflowStatus, workflowVerdict } from './narrative'
 import { rangeLongLabel, useRange } from './useRange'
 
-function rateTone(rate: number): string {
-  if (rate >= 95) return 'text-emerald-300'
-  if (rate >= 85) return 'text-amber-300'
-  return 'text-red-300'
-}
+const TWO_COLUMN = 'grid gap-14 xl:grid-cols-[minmax(0,1fr)_25rem] xl:gap-16'
 
-function barTone(rate: number): string {
-  if (rate >= 95) return 'bg-emerald-400/70'
-  if (rate >= 85) return 'bg-amber-400/70'
-  return 'bg-red-400/70'
+function rateColor(rate: number): string {
+  if (rate < 80) return STATUS_COLORS.error
+  if (rate < 95) return STATUS_COLORS.warn
+  return INK.mid
 }
 
 export function WorkflowDetailPage({ company, slug }: { company: string; slug: string }) {
@@ -35,197 +31,206 @@ export function WorkflowDetailPage({ company, slug }: { company: string; slug: s
   })
 
   if (detail.isPending) return <DashboardSkeleton />
+  if (isUpgradeRequiredError(detail.error)) return <DashboardPageBody><UpgradeRequired /></DashboardPageBody>
   if (detail.isError || !detail.data) return <DashboardError error={detail.error} onRetry={() => detail.refetch()} />
 
   const data = detail.data
   const summary = data.summary
   const label = rangeLongLabel(range)
+  const status = summary ? WORKFLOW_STATUS[workflowStatus(summary)] : null
+  const versions = summary?.versions ?? []
+  // Mark when the current version first ran — only meaningful when the version changed in-window.
+  const marker = versions.length > 1 ? { at: versions[0].first_seen, label: `v${versions[0].version} first ran` } : undefined
+  const cascade = data.recovery_cascade
 
   return (
     <DashboardPageBody>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <Link
-            href={`/dashboard/workflows?range=${range}`}
-            className="inline-flex items-center gap-1 text-[11px] text-zinc-500 transition-colors hover:text-zinc-300"
-          >
-            <ArrowLeft className="size-3" aria-hidden />
-            All workflows
-          </Link>
-          <h1 className="mt-1 truncate text-lg font-semibold text-zinc-100">{slug}</h1>
-          <p className="truncate text-[11px] text-zinc-600">
-            {company} · {label.toLowerCase()}
-          </p>
+      <section aria-label="Summary" className="space-y-9">
+        <div className="space-y-5">
+          <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-zinc-400">
+            <Link href={`/dashboard/workflows?range=${range}`} className="transition-colors hover:text-zinc-100">
+              Workflows
+            </Link>
+            <span aria-hidden>/</span>
+            <span className="truncate text-zinc-100">{slug}</span>
+          </nav>
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            <div className="min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <h2 className="truncate text-2xl font-semibold tracking-[-0.02em] text-zinc-100 sm:text-3xl">{slug}</h2>
+                {status ? (
+                  <span className={`inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-2.5 py-1 text-xs ${status.text}`}>
+                    <span className="size-1.5 rounded-full" style={{ background: status.color }} aria-hidden />
+                    {status.label}
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-sm text-zinc-400">
+                {company}
+                {versions[0] ? ` · version ${versions[0].version}` : ''} · {label.toLowerCase()}
+              </p>
+              {summary ? (
+                <p className="max-w-3xl text-xl leading-snug tracking-[-0.015em] text-zinc-400 sm:text-2xl">
+                  <Sentence parts={workflowVerdict(summary, data.steps)} />
+                </p>
+              ) : null}
+            </div>
+            <OpenInStudioButton workflowId={slug} primary label="Fix in Studio" />
+          </div>
         </div>
-      </div>
 
-      {!summary ? (
-        <div className="rounded-xl border border-white/8 bg-white/[0.02] px-6 py-14 text-center">
-          <p className="text-sm font-medium text-zinc-200">No runs in this period</p>
-          <p className="mx-auto mt-1.5 max-w-md text-[11px] leading-relaxed text-zinc-500">
-            This skill has not executed in the selected window. Widen the range, or check that the
-            customer&apos;s runtime is still installed and reporting.
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-2 divide-x divide-y divide-white/6 overflow-hidden rounded-xl border border-white/8 bg-white/[0.02] lg:grid-cols-5 lg:divide-y-0">
+        {summary ? (
+          <div className="grid grid-cols-2 border-y border-white/8 lg:grid-cols-5 lg:divide-x lg:divide-white/8">
             {[
+              ['Success rate', fmtPercent(summary.success_rate), status?.text ?? 'text-zinc-100'],
               ['Runs', fmtNumber(summary.runs), 'text-zinc-100'],
-              ['Success rate', fmtPercent(summary.success_rate), rateTone(summary.success_rate)],
-              ['Self-healed', fmtPercent(summary.recovery_rate), 'text-cyan-300'],
-              ['p50 duration', fmtDuration(summary.p50_duration), 'text-zinc-200'],
-              ['p95 duration', fmtDuration(summary.p95_duration), 'text-zinc-200'],
+              ['Runs self-healed', fmtPercent(summary.recovery_rate), 'text-zinc-100'],
+              ['Typical run', fmtDuration(summary.p50_duration), 'text-zinc-100'],
+              ['Last run', fmtRelative(summary.last_seen), 'text-zinc-100'],
             ].map(([title, value, tone]) => (
-              <div key={String(title)} className="min-w-0 px-4 py-3.5">
-                <p className="truncate text-[11px] font-medium text-zinc-500">{title}</p>
-                <p className={cn('mt-1.5 text-2xl font-semibold tabular-nums', tone)}>{value}</p>
+              <div key={title} className="min-w-0 space-y-2 py-5 pr-6 lg:px-6 lg:first:pl-0">
+                <p className="truncate text-sm text-zinc-400">{title}</p>
+                <p className={`truncate text-2xl font-semibold tabular-nums sm:text-3xl ${tone}`}>{value}</p>
               </div>
             ))}
           </div>
+        ) : (
+          <p className="border-t border-white/8 pt-5 text-sm leading-relaxed text-zinc-400">
+            This skill has not run in the selected window. Widen the range, or check that the customer&apos;s
+            runtime is still installed and reporting.
+          </p>
+        )}
+      </section>
 
+      {summary ? (
+        <div className={TWO_COLUMN}>
           <SectionCard
-            question="How has this skill behaved over time?"
-            context={`Successful and failed runs per ${data.granularity === 'hour' ? 'hour' : 'day'}.`}
-            icon={<Waypoints className="size-4" />}
+            question="How has it behaved over time?"
+            answer={`Successful and failed runs per ${data.granularity === 'hour' ? 'hour' : 'day'}.`}
           >
-            <TrendChart buckets={data.series} granularity={data.granularity} />
+            <TrendChart buckets={data.series} granularity={data.granularity} marker={marker} />
           </SectionCard>
-
-          {summary.versions.length > 1 ? (
-            <SectionCard
-              question="Did the latest version make things better or worse?"
-              context="Newest first. A drop here is the fastest signal that a release regressed."
-              icon={<GitCompare className="size-4" />}
-            >
-              <ul className="space-y-2.5">
-                {summary.versions.map((version, index) => (
-                  <li key={version.version}>
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="truncate text-[13px] text-zinc-200">
-                        v{version.version}
-                        {index === 0 ? (
-                          <span className="ml-2 rounded-full bg-cyan-500/10 px-1.5 py-0.5 text-[11px] text-cyan-300">
-                            current
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className={cn('shrink-0 text-[11px] tabular-nums', rateTone(version.success_rate))}>
-                        {fmtPercent(version.success_rate)}
-                      </span>
-                    </div>
-                    <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
-                      <div
-                        className={cn('h-full rounded-full', barTone(version.success_rate))}
-                        style={{ width: `${Math.max(1, version.success_rate)}%` }}
-                      />
-                    </div>
-                    <p className="mt-1 text-[11px] text-zinc-600">
-                      {fmtNumber(version.runs)} runs · {fmtPercent(version.recovery_rate)} self-healed ·{' '}
-                      {fmtRelative(version.last_seen)}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            </SectionCard>
-          ) : null}
-        </>
-      )}
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_25rem]">
-        <SectionCard
-          question="Which step is the weak link?"
-          context="Every step in this skill, worst success rate first."
-          icon={<ListOrdered className="size-4" />}
-        >
-          {data.steps.length ? (
-            <ul className="space-y-3">
-              {data.steps.map((step) => (
-                <li key={`${step.step_index}`}>
+          <SectionCard
+            question="Did the latest version help or hurt?"
+            answer={versionAnswer(versions) ?? 'Only one version ran in this period.'}
+          >
+            <ul className="space-y-6">
+              {versions.slice(0, 4).map((version, index) => (
+                <li key={version.version} className="space-y-2.5">
                   <div className="flex items-baseline justify-between gap-3">
-                    <span className="truncate text-[13px] text-zinc-200">{step.step_label}</span>
-                    <span className={cn('shrink-0 text-[11px] tabular-nums', rateTone(step.success_rate))}>
-                      {fmtPercent(step.success_rate)}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
-                    <div
-                      className={cn('h-full rounded-full', barTone(step.success_rate))}
-                      style={{ width: `${Math.max(1, step.success_rate)}%` }}
-                    />
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-600">
-                    <span>
-                      {fmtNumber(step.attempts)} attempts · {fmtNumber(step.failures)} failed
-                    </span>
-                    {step.assertion_pass_rate !== null ? (
-                      <span>checks {fmtPercent(step.assertion_pass_rate)}</span>
-                    ) : null}
-                    {step.dominant_failure_code ? (
-                      <span className="text-red-300/80">{step.dominant_failure_code}</span>
-                    ) : null}
-                    {step.tier_counts.map((tier) => (
-                      <span key={tier.tier} className="inline-flex items-center gap-1">
-                        <span className="size-1.5 rounded-full" style={{ background: tierColor(tier.tier) }} aria-hidden />
-                        {tier.tier} ×{tier.count}
+                    <span className="truncate text-sm text-zinc-100">
+                      v{version.version}
+                      <span className="text-xs text-zinc-400">
+                        {index === 0 ? ' · current' : ''} · {fmtNumber(version.runs)} runs
                       </span>
-                    ))}
+                    </span>
+                    <span className="shrink-0 text-sm font-medium tabular-nums text-zinc-100">{fmtPercent(version.success_rate)}</span>
+                  </div>
+                  <div className="h-2.5 rounded-full" style={{ background: INK.track }}>
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${Math.max(1, version.success_rate)}%`, background: rateColor(version.success_rate) }}
+                    />
                   </div>
                 </li>
               ))}
             </ul>
+          </SectionCard>
+        </div>
+      ) : null}
+
+      <div className={TWO_COLUMN}>
+        <SectionCard question="Which step is the weak link?" answer={stepAnswer(data.steps)}>
+          {data.steps.length ? (
+            <ol className="border-t border-white/6">
+              {data.steps.map((step) => {
+                const weak = step.success_rate < 90
+                return (
+                  <li
+                    key={`${step.step_index}`}
+                    className="grid grid-cols-[minmax(0,1fr)_4rem] items-center gap-x-5 gap-y-2 border-b border-white/6 py-3.5 md:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_4rem]"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm text-zinc-100">{step.step_label}</span>
+                      <span className="block truncate text-xs text-zinc-400">
+                        {fmtNumber(step.attempts)} attempts · {fmtNumber(step.failures)} failed
+                        {step.recoveries ? ` · repaired ${fmtNumber(step.recoveries)}×` : ''}
+                        {step.failures && step.dominant_failure_code ? ` · ${failureLabel(step.dominant_failure_code).toLowerCase()}` : ''}
+                      </span>
+                    </span>
+                    <span className="col-span-2 row-start-2 h-1.5 rounded-full md:col-span-1 md:row-start-auto" style={{ background: INK.track }}>
+                      <span
+                        className="block h-full rounded-full"
+                        style={{ width: `${Math.max(1, step.success_rate)}%`, background: rateColor(step.success_rate) }}
+                      />
+                    </span>
+                    <span className={`text-right text-sm tabular-nums ${weak ? 'text-red-300' : 'text-zinc-100'}`}>
+                      {fmtPercent(step.success_rate)}
+                    </span>
+                  </li>
+                )
+              })}
+            </ol>
           ) : (
-            <p className="py-8 text-center text-[11px] text-zinc-600">
-              No step-level events reported for this skill yet.
-            </p>
+            <p className="border-t border-white/8 pt-5 text-sm text-zinc-400">No step-level events reported for this skill yet.</p>
           )}
         </SectionCard>
 
-        <div className="space-y-4">
-          <SectionCard
-            question="How did recovery play out here?"
-            context={
-              data.recovery_cascade.entered_recovery > 0
-                ? `${data.recovery_cascade.entered_recovery} steps entered recovery · ${fmtPercent(data.recovery_cascade.heal_rate)} healed.`
-                : 'No step in this skill needed recovery.'
-            }
-            icon={<Waypoints className="size-4" />}
-          >
-            <RecoverySankey nodes={data.recovery_cascade.nodes} links={data.recovery_cascade.links} />
-          </SectionCard>
-
-          <SectionCard
-            question="What were the last runs?"
-            context="Most recent executions of this skill."
-            icon={<Radio className="size-4" />}
-          >
+        <div className="space-y-14">
+          <SectionCard question="What were the last runs?" answer={data.recent_runs.length ? 'Newest first.' : 'No runs in this period.'}>
             {data.recent_runs.length ? (
-              <ul className="space-y-0.5">
-                {data.recent_runs.slice(0, 8).map((run) => (
+              <ul className="border-t border-white/8">
+                {data.recent_runs.slice(0, 6).map((run) => (
                   <li key={run.run_id}>
                     <Link
-                      href={`/dashboard/runs/${encodeURIComponent(run.company)}/${encodeURIComponent(run.run_id)}`}
-                      className="flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-white/[0.045] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70"
+                      href={`/dashboard/runs/${encodeURIComponent(run.company)}/${encodeURIComponent(run.run_id)}?range=${range}`}
+                      className="flex min-h-14 items-center gap-3.5 border-b border-white/8 transition-colors hover:bg-white/[0.025] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-400/70"
                     >
                       <span
-                        className={cn(
-                          'size-2 shrink-0 rounded-full',
-                          run.status === 'ok' ? 'bg-emerald-400' : run.status === 'fail' ? 'bg-red-400' : 'bg-cyan-400',
-                        )}
+                        className="size-2 shrink-0 rounded-full"
+                        style={{
+                          background:
+                            run.status === 'fail' ? STATUS_COLORS.error : run.status === 'running' ? 'var(--tier-4)' : INK.mid,
+                        }}
                         aria-hidden
                       />
-                      <span className="min-w-0 flex-1 truncate text-[11px] text-zinc-400">
-                        {run.failure_code ?? (run.status === 'ok' ? 'Succeeded' : 'Running')}
-                        {run.duration_ms > 0 ? ` · ${fmtDuration(run.duration_ms)}` : ''}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-zinc-100">
+                          {run.status === 'fail'
+                            ? run.failed_step_id !== null
+                              ? `Failed at step ${run.failed_step_id + 1}`
+                              : 'Failed'
+                            : run.status === 'running'
+                              ? 'Running'
+                              : run.recovered_steps
+                                ? `Finished · ${run.recovered_steps} step${run.recovered_steps === 1 ? '' : 's'} repaired`
+                                : 'Finished'}
+                        </span>
+                        <span className="block truncate text-xs text-zinc-400">
+                          {run.status === 'fail' ? `${failureLabel(run.failure_code)} · ` : ''}
+                          {fmtRelative(run.at)}
+                        </span>
                       </span>
-                      <time className="shrink-0 text-[11px] tabular-nums text-zinc-600">{fmtRelative(run.at)}</time>
+                      <span className="shrink-0 text-xs tabular-nums text-zinc-400">
+                        {run.duration_ms > 0 ? fmtDuration(run.duration_ms) : ''}
+                      </span>
                     </Link>
                   </li>
                 ))}
               </ul>
-            ) : (
-              <p className="py-6 text-center text-[11px] text-zinc-600">No runs in this period.</p>
-            )}
+            ) : null}
+          </SectionCard>
+
+          <SectionCard question="How did recovery play out here?" answer={healingAnswer(cascade)}>
+            {cascade.entered_recovery > 0 ? (
+              <SplitBar
+                segments={[
+                  { label: 'Healed free', value: cascade.zero_token_heals, color: RECOVERY_COLORS.free },
+                  { label: 'Healed with AI', value: Math.max(0, cascade.healed - cascade.zero_token_heals), color: RECOVERY_COLORS.agent },
+                  { label: 'Not healed', value: cascade.failed, color: RECOVERY_COLORS.failed },
+                ]}
+              />
+            ) : null}
           </SectionCard>
         </div>
       </div>

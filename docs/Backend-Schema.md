@@ -2217,7 +2217,9 @@ derived from telemetry the runtime already emits — no new event codes, no LLM 
 
 Returns the pre-existing keys (`metrics`, `recovery_type_usage`, `recovery_usage_by_step`,
 `recovery_usage_by_workflow`, `most_failed_workflows`, `most_failed_steps`,
-`execution_trend`, `assertion_health_by_step`) plus:
+`execution_trend`, `assertion_health_by_step`) plus the keys below. Each
+`assertion_health_by_step[]` row also carries `previous_pass_rate` (added 2026-09-29): the same
+step's pass rate over the previous equal period, or `null` if it reported no checks then.
 
 | Key | Shape |
 |---|---|
@@ -2225,7 +2227,7 @@ Returns the pre-existing keys (`metrics`, `recovery_type_usage`, `recovery_usage
 | `series[]` | `{bucket, at, executions, successful, failed, recovered, success_rate, avg_duration}` — pre-seeded so quiet periods are zeros, not gaps. `success_rate` is `null` when nothing completed, which is distinct from a genuine 0% |
 | `kpis[]` | `{key, label, unit, direction, value, previous, delta, delta_pct, series[]}`. `direction` (`up_good`/`down_good`) tells the UI which way is an improvement per metric |
 | `health` | `{score, grade, factors[], summary}`. `score` is `null` (grade `"No telemetry"`) for a workspace with no runs — never 0. Factor weights sum to 100: success rate 40, assertion pass rate 20, drift resistance 15, zero-token healing 15, runtime freshness 10 |
-| `workflows[]` | Per-skill rollups grouped by `(company, workflow_id)` — runs, success rate, `success_rate_delta` vs the previous equal period, recovery/unattended rate, p50/p95 duration, and a nested `versions[]` breakdown |
+| `workflows[]` | Per-skill rollups grouped by `(company, workflow_id)` — runs, success rate, `success_rate_delta` vs the previous equal period, recovery/unattended rate, p50/p95 duration, and a nested `versions[]` breakdown (`{version, runs, success_rate, recovery_rate, last_seen, first_seen}`, newest `last_seen` first). `first_seen` (added 2026-09-29) is the version's first run **inside the window**, not its publish time |
 | `recovery_cascade` | Sankey `{nodes, links}` over `Entered recovery → Tier A → Tier B → Healed \| Failed`, plus `entered_recovery`, `healed`, `failed`, `heal_rate`, `resolved_directly`, `tier_touch[]`, `zero_token_heals`, `agent_assisted` |
 | `reliability_heatmap` | `{cells[{weekday, hour, runs, successful, failed, success_rate}], max_runs}`, UTC |
 | `failure_codes[]` | `{code, count, last_seen, workflow_count}` |
@@ -2256,11 +2258,13 @@ can show recorded baseline vs. measured automated time vs. net hours saved on on
 
 **GET /api/v1/tracking/activity?limit=50&before={epoch_ms}** — recent runs across every
 visible company, newest first, each with `recovery_tiers[]`. Separate from the dashboard
-payload because the live feed polls every 10s and must not re-run the full aggregation.
+payload because a live feed polls often and must not re-run the full aggregation. The Cloud
+dashboard stopped calling it on 2026-09-29 (the Overview no longer shows a live feed); the
+endpoint is kept for API clients.
 
 **GET /api/v1/tracking/workflows/{company}/{slug}?range=** — step-level drill-down for one
 skill: `summary`, `series[]`, `steps[]`, `recovery_cascade`, `failure_codes[]`,
-`assertion_health[]`, `recent_runs[]`.
+`assertion_health[]` (with `previous_pass_rate`, as above), `recent_runs[]`.
 
 **GET | PUT /api/v1/tracking/roi-assumptions** — read/write the `roi_assumptions` row for the
 caller's workspace. `PUT` requires admin or owner (`app.services.rbac.require_admin`) and

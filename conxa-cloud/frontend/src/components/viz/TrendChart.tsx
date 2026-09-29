@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import { scaleLinear } from 'd3-scale'
 import { ChartTooltip, TooltipRow, useChartWidth, type TooltipState } from './ChartFrame'
-import { AXIS_TEXT, BAR_RADIUS, GRID_LINE, MARK_GAP, STATUS_COLORS } from './chartTheme'
+import { AXIS_TEXT, BAR_RADIUS, GRID_LINE, INK, MARK_GAP, STATUS_COLORS } from './chartTheme'
 
 export type TrendBucket = {
   bucket: string
@@ -34,9 +34,12 @@ const PAD_TOP = 8
 export function TrendChart({
   buckets,
   granularity,
+  marker,
 }: {
   buckets: TrendBucket[]
   granularity: 'hour' | 'day'
+  /** A moment to call out, e.g. when a new version first ran. Drawn at the bucket containing `at`. */
+  marker?: { at: number; label: string }
 }) {
   const { ref, width } = useChartWidth<HTMLDivElement>()
   const [tooltip, setTooltip] = useState<TooltipState>(null)
@@ -56,6 +59,7 @@ export function TrendChart({
   )
 
   const ticks = y.ticks(3)
+  const markerIndex = marker ? buckets.findLastIndex((b) => b.at <= marker.at) : -1
   const slot = buckets.length ? plotWidth / buckets.length : 0
   // Keep a visible gutter between bars without letting them vanish at 90-day density.
   const barWidth = Math.max(2, Math.min(26, slot - (slot > 8 ? 4 : 1)))
@@ -108,7 +112,7 @@ export function TrendChart({
                       width={barWidth}
                       height={Math.max(1, okHeight)}
                       rx={Math.min(BAR_RADIUS, barWidth / 2)}
-                      fill={STATUS_COLORS.ok}
+                      fill={INK.soft}
                       opacity={isActive || activeIndex === null ? 1 : 0.45}
                     />
                   ) : null}
@@ -131,7 +135,7 @@ export function TrendChart({
                         content: (
                           <div className="space-y-1">
                             <p className="mb-1.5 font-medium text-zinc-100">{label(bucket)}</p>
-                            <TooltipRow color={STATUS_COLORS.ok} label="Succeeded" value={bucket.successful} />
+                            <TooltipRow color={INK.soft} label="Succeeded" value={bucket.successful} />
                             <TooltipRow color={STATUS_COLORS.error} label="Failed" value={bucket.failed} />
                             <TooltipRow
                               color="var(--tier-4)"
@@ -153,6 +157,23 @@ export function TrendChart({
                 </g>
               )
             })}
+
+            {marker && markerIndex >= 0 ? (
+              <g pointerEvents="none">
+                <line
+                  x1={PAD_LEFT + markerIndex * slot}
+                  x2={PAD_LEFT + markerIndex * slot}
+                  y1={0}
+                  y2={plotHeight}
+                  stroke="var(--tier-4)"
+                  strokeOpacity={0.7}
+                  strokeDasharray="3 3"
+                />
+                <text x={PAD_LEFT + markerIndex * slot + 6} y={10} className="fill-cyan-300 text-[11px]">
+                  {marker.label}
+                </text>
+              </g>
+            ) : null}
 
             {/* First and last ticks only — a label under every bar is unreadable at 30d+. */}
             {buckets.length > 0 ? (

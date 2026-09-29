@@ -1,0 +1,1 @@
+Show CONXA how the work is done once. It turns that recording into a reusable skill any AI agent can run on your own machine, the same way every time, with every run visible in the cloud.

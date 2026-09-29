@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Operations — Overview</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;font-family:'Geist',system-ui,sans-serif;background:#06080b;color:#f4f5f7}
+a{color:#9ba3af}a:hover{color:#f4f5f7}
+</style>
+</helmet>
+<div style="width: 100vw; height: 100vh; display: flex; background: #0a0c0f; color: #f4f5f7; font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; overflow: hidden">
+
+<aside style="width: 216px; flex-shrink: 0; height: 100%; display: flex; flex-direction: column; background: #0d0f12; border-right: 1px solid rgba(255,255,255,0.08)">
+<div style="display: flex; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid rgba(255,255,255,0.08)">
+<span style="width: 36px; height: 36px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05)"><img src="/_blob/ece2b56c8af755990f195e4f85eb8f5c" alt="" style="width: 24px; height: 24px"></span>
+<span style="min-width: 0; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 14px; font-weight: 600; color: #ffffff">[Workspace]</span><span style="font-size: 12px; color: #a1a1aa">Workspace</span></span>
+<button type="button" aria-label="Collapse sidebar" style="margin-left: auto; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: #a1a1aa; cursor: pointer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg></button>
+</div>
+<nav aria-label="Primary" style="flex-grow: 1; min-height: 0; display: flex; flex-direction: column; padding: 16px 12px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="padding: 12px 12px 0; font-size: 10px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #71717a">Operate</span>
+<a href="Main.dc.html" aria-current="page" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.07); color: #ffffff; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Dashboard</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"></path><path d="m3 8 9 5 9-5M12 13v8"></path></svg>Skill Packages</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"></rect><path d="M9 4V3h6v1M9 13l2 2 4-4"></path></svg>Audit</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"></rect><rect x="3" y="13" width="18" height="7" rx="2"></rect><path d="M7 7.5h.01M7 16.5h.01"></path></svg>Fleet</a>
+</div>
+<div style="margin-top: auto; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08)">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<span style="padding: 12px 12px 0; font-size: 10px; font-weight: 500; letter-spacing: 0.18em; text-transform: uppercase; color: #71717a">Manage</span>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"></circle><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"></path></svg>Team</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5" width="19" height="14" rx="2"></rect><path d="M2.5 10h19"></path></svg>Billing</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"></path></svg>Settings</a>
+<a href="#" style="display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 8px; border: 1px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="10" height="13" rx="5"></rect><path d="M12 11v9M3 13h4M17 13h4M4 7l3 2M20 7l-3 2M9 4l1.5 2M15 4l-1.5 2"></path></svg>Report a bug</a>
+</div>
+<p style="margin: 0; padding: 12px 12px 0; font-size: 11px; color: #71717a"><a href="#" style="color: #71717a; text-decoration: none">Terms</a> · <a href="#" style="color: #71717a; text-decoration: none">Privacy</a></p>
+</div>
+</nav>
+</aside>
+
+<main style="flex-grow: 1; min-width: 0; height: 100%; display: flex; flex-direction: column">
+<header style="flex-shrink: 0; display: flex; align-items: center; gap: 12px; height: 36px; padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.08)">
+<div style="flex-grow: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px">
+<h1 style="margin: 0; font-size: 16px; font-weight: 600; color: #ffffff">Operations</h1>
+<p style="margin: 0; font-size: 14px; color: #a1a1aa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">How every deployed workflow is doing, in plain terms.</p>
+</div>
+<div role="group" aria-label="Time range" style="display: flex; gap: 2px; padding: 2px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: rgba(255,255,255,0.03)">
+<sc-for list="{{ranges}}" as="r" hint-placeholder-count="4">
+<button type="button" aria-pressed="{{r.pressed}}" onClick="{{r.pick}}" style="height: 28px; min-width: 36px; padding: 0 10px; border: 0; border-radius: 6px; background: {{r.bg}}; color: {{r.fg}}; font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer">{{r.label}}</button>
+</sc-for>
+</div>
+<button type="button" aria-label="Refresh dashboard data" style="display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; background: rgba(255,255,255,0.03); color: #d4d4d8; font-family: inherit; font-size: 13px; cursor: pointer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.8-4M4 4v4h4M4 13a8 8 0 0 0 14.8 4M20 20v-4h-4"></path></svg>Refresh</button>
+<span aria-label="Account" style="width: 28px; height: 28px; flex-shrink: 0; border-radius: 50%; background: #27272a; border: 1px solid rgba(255,255,255,0.1)"></span>
+</header>
+<nav aria-label="Dashboard sections" style="flex-shrink: 0; display: flex; gap: 28px; padding: 0 24px; border-bottom: 1px solid rgba(255,255,255,0.08)">
+<a href="Main.dc.html" aria-current="page" style="padding: 4px 0 12px; margin-bottom: -1px; border-bottom: 2px solid #f4f5f7; color: #f4f5f7; font-size: 14px; font-weight: 500; text-decoration: none">Overview</a>
+<a href="Workflows.dc.html" style="padding: 4px 0 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none">Workflows</a>
+<a href="Healing.dc.html" style="padding: 4px 0 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none">Self-healing</a>
+<a href="Impact.dc.html" style="padding: 4px 0 12px; margin-bottom: -1px; border-bottom: 2px solid transparent; color: #a1a1aa; font-size: 14px; text-decoration: none">Impact</a>
+</nav>
+<div style="flex-grow: 1; min-height: 0; overflow-y: auto">
+<div style="padding: 32px 24px 48px; display: flex; flex-direction: column; gap: 56px">
+
+<section aria-label="Summary" style="display: grid; grid-template-columns: minmax(0, 1fr) 400px; align-items: center; gap: 64px">
+<div style="display: flex; flex-direction: column; gap: 22px">
+<p style="margin: 0; font-size: 13px; color: #8b93a0">The last 7 days, in one sentence</p>
+<p style="margin: 0; max-width: 780px; font-size: 34px; line-height: 1.3; letter-spacing: -0.02em; color: #9ba3af"><span style="color: #f4f5f7; font-weight: 500">1,284 runs.</span> 96.2% finished on their own, and <span style="color: #f4f5f7; font-weight: 500">41 of 43</span> breakages repaired themselves before anyone had to step in.</p>
+<div style="display: flex; flex-wrap: wrap; gap: 10px">
+<a href="WorkflowDetail.dc.html" style="display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px; border-radius: 999px; background: rgba(248,113,113,0.1); color: #fca5a5; font-size: 13px; text-decoration: none"><span style="width: 6px; height: 6px; border-radius: 50%; background: #f87171"></span>1 workflow failing</a>
+<a href="Workflows.dc.html" style="display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px; border-radius: 999px; background: rgba(251,191,36,0.1); color: #fcd34d; font-size: 13px; text-decoration: none"><span style="width: 6px; height: 6px; border-radius: 50%; background: #fbbf24"></span>2 workflows slipping</a>
+<a href="#" style="display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px; border-radius: 999px; background: rgba(255,255,255,0.05); color: #9ba3af; font-size: 13px; text-decoration: none"><span style="width: 6px; height: 6px; border-radius: 50%; background: #8b93a0"></span>4 runtimes gone quiet</a>
+</div>
+</div>
+<div style="display: flex; flex-direction: column; align-items: center; gap: 14px">
+<div style="position: relative; width: 184px; height: 184px">
+<svg width="184" height="184" viewBox="0 0 184 184" aria-hidden="true"><defs><linearGradient id="healthGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"></stop><stop offset="1" stop-color="#5eead4"></stop></linearGradient></defs><circle cx="92" cy="92" r="80" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="10"></circle><circle cx="92" cy="92" r="80" fill="none" stroke="url(#healthGrad)" stroke-width="10" stroke-linecap="round" stroke-dasharray="442.3 502.7" transform="rotate(-90 92 92)"></circle></svg>
+<div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px">
+<span style="font-size: 52px; font-weight: 600; letter-spacing: -0.03em; line-height: 1">88</span>
+<span style="font-size: 13px; color: #9ba3af">Health · Good</span>
+</div>
+</div>
+<p style="margin: 0; font-size: 12px; line-height: 1.5; color: #8b93a0; text-align: center">Out of 100. Anything above 75 is healthy.</p>
+</div>
+</section>
+
+<section aria-label="Key numbers" style="display: flex; flex-direction: column; gap: 16px">
+<div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border-top: 1px solid rgba(255,255,255,0.08); border-bottom: 1px solid rgba(255,255,255,0.08)">
+<sc-for list="{{kpis}}" as="k" hint-placeholder-count="5">
+<div style="padding: {{k.pad}}; border-left: {{k.border}}; display: flex; flex-direction: column; gap: 10px; min-width: 0">
+<span style="font-size: 13px; color: #9ba3af">{{k.label}}</span>
+<div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 12px">
+<span style="font-size: 30px; font-weight: 600; letter-spacing: -0.02em; line-height: 1">{{k.value}}</span>
+<svg width="76" height="28" viewBox="0 0 76 28" aria-hidden="true"><polyline points="{{k.points}}" fill="none" stroke="{{k.stroke}}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</div>
+<span style="font-size: 12px; color: #8b93a0"><span style="color: {{k.tone}}; font-weight: 500">{{k.delta}}</span> · {{k.meaning}}</span>
+</div>
+</sc-for>
+</div>
+<p style="margin: 0; font-size: 13px; color: #8b93a0">Reach — <span style="color: #f4f5f7">312</span> installs · <span style="color: #f4f5f7">1,020</span> active users · <span style="color: #f4f5f7">18</span> companies · <span style="color: #fcd34d">4</span> runtimes gone quiet (no report in 30+ days)</p>
+</section>
+
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 64px">
+<section style="display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 500; color: #8b93a0">Is the platform healthy?</h2>
+<p style="margin: 0; font-size: 21px; line-height: 1.4; font-weight: 500; letter-spacing: -0.01em">Yes, 88 out of 100. Runtime freshness is the one factor pulling it down.</p>
+</div>
+<ul style="margin: 0; padding: 18px 0 0; list-style: none; display: flex; flex-direction: column; gap: 22px; border-top: 1px solid rgba(255,255,255,0.08)">
+<sc-for list="{{factors}}" as="f" hint-placeholder-count="5">
+<li style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; align-items: baseline; justify-content: space-between; gap: 16px">
+<span style="font-size: 14px">{{f.label}}</span>
+<span style="font-size: 13px; color: #9ba3af"><span style="color: #f4f5f7; font-weight: 500">{{f.value}}</span> / 100 · counts for {{f.weight}}%</span>
+</div>
+<div style="height: 6px; border-radius: 999px; background: rgba(255,255,255,0.06); overflow: hidden"><div style="width: {{f.value}}%; height: 100%; border-radius: 999px; background: {{f.color}}"></div></div>
+<span style="font-size: 12px; color: #8b93a0">{{f.detail}}</span>
+</li>
+</sc-for>
+</ul>
+</section>
+
+<section id="attention" style="display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 500; color: #8b93a0">What needs attention?</h2>
+<p style="margin: 0; font-size: 21px; line-height: 1.4; font-weight: 500; letter-spacing: -0.01em">Three things, most urgent first.</p>
+</div>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; border-top: 1px solid rgba(255,255,255,0.08)">
+<sc-for list="{{insights}}" as="i" hint-placeholder-count="3">
+<li style="border-bottom: 1px solid rgba(255,255,255,0.08)">
+<a href="{{i.href}}" style="display: flex; flex-direction: column; gap: 8px; padding: 18px 0; text-decoration: none; color: #f4f5f7">
+<span style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+<span style="display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 500; color: {{i.tone}}"><span style="width: 6px; height: 6px; border-radius: 50%; background: {{i.dot}}"></span>{{i.severity}}</span>
+<span style="font-size: 12px; color: #9ba3af">{{i.metric}}</span>
+</span>
+<span style="font-size: 15px; font-weight: 500">{{i.title}}</span>
+<span style="font-size: 13px; line-height: 1.55; color: #9ba3af">{{i.body}}</span>
+<span style="font-size: 13px; color: #9ba3af">See evidence →</span>
+</a>
+</li>
+</sc-for>
+</ul>
+</section>
+</div>
+
+<div style="display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 64px">
+<section style="display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 500; color: #8b93a0">How much is running, and how much of it works?</h2>
+<p style="margin: 0; font-size: 21px; line-height: 1.4; font-weight: 500; letter-spacing: -0.01em">About 180 runs a day. Failures peaked on Saturday, at 11.</p>
+</div>
+<a href="Workflows.dc.html" style="font-size: 13px; text-decoration: none; white-space: nowrap">By workflow →</a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 14px">
+<div style="position: relative; height: 240px; display: flex; align-items: flex-end; gap: 20px; padding-left: 40px; border-bottom: 1px solid rgba(255,255,255,0.12)">
+<div style="position: absolute; left: 0; right: 0; bottom: 88px; border-top: 1px dashed rgba(255,255,255,0.06)"></div>
+<div style="position: absolute; left: 0; right: 0; bottom: 176px; border-top: 1px dashed rgba(255,255,255,0.06)"></div>
+<span style="position: absolute; left: 0; bottom: 92px; font-size: 11px; color: #8b93a0">100</span>
+<span style="position: absolute; left: 0; bottom: 180px; font-size: 11px; color: #8b93a0">200</span>
+<sc-for list="{{days}}" as="d" hint-placeholder-count="7">
+<div style="flex-grow: 1; flex-basis: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 6px; height: 100%">
+<span style="font-size: 11px; color: #9ba3af">{{d.total}}</span>
+<div style="width: 100%; max-width: 64px; display: flex; flex-direction: column; gap: 2px">
+<div style="height: {{d.failH}}px; border-radius: 4px 4px 0 0; background: #f87171"></div>
+<div style="height: {{d.okH}}px; border-radius: 0 0 2px 2px; background: rgba(244,245,247,0.22)"></div>
+</div>
+</div>
+</sc-for>
+</div>
+<div style="display: flex; gap: 20px; padding-left: 40px">
+<sc-for list="{{days}}" as="d" hint-placeholder-count="7">
+<span style="flex-grow: 1; flex-basis: 0; text-align: center; font-size: 11px; color: #8b93a0">{{d.label}}</span>
+</sc-for>
+</div>
+<div style="display: flex; gap: 20px; padding-left: 40px; font-size: 12px; color: #9ba3af">
+<span style="display: inline-flex; align-items: center; gap: 8px"><span style="width: 10px; height: 10px; border-radius: 2px; background: rgba(244,245,247,0.22)"></span>Finished</span>
+<span style="display: inline-flex; align-items: center; gap: 8px"><span style="width: 10px; height: 10px; border-radius: 2px; background: #f87171"></span>Failed</span>
+</div>
+</div>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 500; color: #8b93a0">What is failing most?</h2>
+<p style="margin: 0; font-size: 21px; line-height: 1.4; font-weight: 500; letter-spacing: -0.01em">Two workflows cause 57% of all failures.</p>
+</div>
+<ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 18px">
+<sc-for list="{{failing}}" as="w" hint-placeholder-count="5">
+<li>
+<a href="WorkflowDetail.dc.html" style="display: flex; flex-direction: column; gap: 8px; text-decoration: none; color: #f4f5f7">
+<span style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px">
+<span style="font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{{w.name}}</span>
+<span style="font-size: 14px; font-weight: 500">{{w.count}}</span>
+</span>
+<span style="height: 8px; border-radius: 999px; background: rgba(255,255,255,0.05)"><span style="display: block; width: {{w.pct}}%; height: 100%; border-radius: 999px; background: rgba(248,113,113,0.7)"></span></span>
+<span style="font-size: 12px; color: #8b93a0">{{w.reason}}</span>
+</a>
+</li>
+</sc-for>
+</ol>
+</section>
+</div>
+
+
+<section style="display: flex; flex-direction: column; gap: 28px">
+<div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px">
+<div style="display: flex; flex-direction: column; gap: 6px">
+<h2 style="margin: 0; font-size: 13px; font-weight: 500; color: #8b93a0">Is self-healing keeping up?</h2>
+<p style="margin: 0; font-size: 21px; line-height: 1.4; font-weight: 500; letter-spacing: -0.01em">Yes. 41 of the 43 steps that broke were repaired automatically.</p>
+</div>
+<a href="Healing.dc.html" style="font-size: 13px; text-decoration: none; white-space: nowrap">Recovery detail →</a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 18px">
+<div style="display: flex; height: 14px; gap: 3px">
+<div style="flex-grow: 38; border-radius: 4px 0 0 4px; background: rgba(244,245,247,0.8)"></div>
+<div style="flex-grow: 3; background: #22d3ee"></div>
+<div style="flex-grow: 2; border-radius: 0 4px 4px 0; background: #f87171"></div>
+</div>
+<div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; font-size: 13px; color: #9ba3af">
+<div style="display: flex; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08)"><span style="width: 10px; height: 10px; flex-shrink: 0; border-radius: 2px; background: rgba(244,245,247,0.8)"></span><span style="flex-grow: 1">Healed instantly, at zero AI cost</span><span style="color: #f4f5f7; font-weight: 500">38</span></div>
+<div style="display: flex; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08)"><span style="width: 10px; height: 10px; flex-shrink: 0; border-radius: 2px; background: #22d3ee"></span><span style="flex-grow: 1">Healed with help from an AI agent</span><span style="color: #f4f5f7; font-weight: 500">3</span></div>
+<div style="display: flex; align-items: center; gap: 10px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.08)"><span style="width: 10px; height: 10px; flex-shrink: 0; border-radius: 2px; background: #f87171"></span><span style="flex-grow: 1">Could not be healed</span><span style="color: #f4f5f7; font-weight: 500">2</span></div>
+</div>
+<p style="margin: 0; font-size: 12px; line-height: 1.5; color: #8b93a0">Only the 43 of 9,870 steps that needed recovery. The other 9,827 worked first time.</p>
+</div>
+</section>
+
+</div>
+</div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { range: '7d' };
+  }
+  spark(vals) {
+    const w = 76, h = 28;
+    const min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    const span = max - min || 1;
+    return vals.map((v, i) => (i * w / (vals.length - 1)).toFixed(1) + ',' + (h - 3 - (v - min) / span * (h - 6)).toFixed(1)).join(' ');
+  }
+  renderVals() {
+    const range = this.state.range;
+    const ranges = ['24h', '7d', '30d', '90d'].map((r) => ({
+      label: r,
+      pressed: String(range === r),
+      bg: range === r ? 'rgba(255,255,255,0.09)' : 'transparent',
+      fg: range === r ? '#f4f5f7' : '#8b93a0',
+      pick: () => this.setState({ range: r })
+    }));
+    const good = '#5eead4', bad = '#fca5a5';
+    const kpis = [
+      { label: 'Runs', value: '1,284', series: [150, 171, 162, 188, 201, 176, 214], delta: '↑ 12%', meaning: 'busier than last week', tone: good },
+      { label: 'Success rate', value: '96.2%', series: [97.4, 97.1, 96.9, 96.5, 96.8, 95.9, 96.2], delta: '↓ 1.1 pts', meaning: 'slightly worse', tone: bad },
+      { label: 'Failed runs', value: '49', series: [4, 5, 6, 9, 5, 8, 11], delta: '↑ 18%', meaning: 'more failures', tone: bad },
+      { label: 'Runs self-healed', value: '3.0%', series: [2.4, 2.6, 2.5, 2.9, 3.1, 2.8, 3.0], delta: '↑ 0.4 pts', meaning: 'healing more often', tone: good },
+      { label: 'Average run time', value: '42s', series: [47, 46, 45, 44, 44, 43, 42], delta: '↓ 6%', meaning: 'a little faster', tone: good }
+    ].map((k, i) => Object.assign({}, k, {
+      points: this.spark(k.series),
+      stroke: k.tone === bad ? '#f87171' : 'rgba(244,245,247,0.55)',
+      border: i === 0 ? '0' : '1px solid rgba(255,255,255,0.08)',
+      pad: i === 0 ? '22px 24px 22px 0' : '22px 24px'
+    }));
+    const factors = [
+      { label: 'Execution success', value: 96, weight: 35, detail: '96.2% of runs finished without a person stepping in.' },
+      { label: 'Post-step checks passing', value: 91, weight: 20, detail: '91% of the checks that confirm a step worked came back green.' },
+      { label: 'Resistance to page changes', value: 78, weight: 20, detail: 'The most fragile step needs repair on 38% of its runs.' },
+      { label: 'Healing without AI cost', value: 88, weight: 15, detail: '38 of 43 repairs needed no model call.' },
+      { label: 'Runtimes reporting in', value: 72, weight: 10, detail: '10 of 14 installed runtimes reported in the last 30 days.' }
+    ].map((f) => Object.assign({}, f, { color: f.value < 75 ? '#fbbf24' : 'rgba(244,245,247,0.55)' }));
+    const insights = [
+      { severity: 'Critical', tone: '#fca5a5', dot: '#f87171', metric: '72.3% success', title: 'Reconcile payouts fails about 1 in 4 runs', body: 'Down from 93.8% last week, since version 1.4 shipped. Most failures stop at step 6, where the Approve button can no longer be found.', href: 'WorkflowDetail.dc.html' },
+      { severity: 'Warning', tone: '#fcd34d', dot: '#fbbf24', metric: '−8.4 pts', title: 'Export weekly report is slipping', body: 'The date-range picker changed. Recovery is fixing it most of the time, but each repair adds about 20 seconds.', href: 'Healing.dc.html' },
+      { severity: 'Info', tone: '#9ba3af', dot: '#8b93a0', metric: '4 quiet', title: '4 runtimes have not reported in 30+ days', body: 'They may be uninstalled or offline. Nothing is failing, but they are not counted in the numbers above.', href: '#' }
+    ];
+    const totals = [162, 188, 201, 176, 214, 190, 153];
+    const fails = [6, 9, 5, 8, 11, 6, 4];
+    const labels = ['Wed 23', 'Thu 24', 'Fri 25', 'Sat 26', 'Sun 27', 'Mon 28', 'Tue 29'];
+    const scale = 0.88;
+    const days = totals.map((t, i) => ({ total: t, label: labels[i], failH: Math.round(fails[i] * scale * 1.6), okH: Math.round((t - fails[i]) * scale) }));
+    const failing = [
+      { name: 'Export weekly report', reason: 'Page did not show the expected result', count: 15 },
+      { name: 'Reconcile payouts', reason: 'Could not find the Approve button · step 6', count: 13 },
+      { name: 'Onboard new employee', reason: 'Page took too long to load · step 9', count: 11 },
+      { name: 'Sync GitHub issue to Drive', reason: 'Sign-in had expired', count: 5 },
+      { name: 'Create invoice in Zoho', reason: 'Could not find the Customer field', count: 3 }
+    ].map((w) => Object.assign({}, w, { pct: Math.round(w.count / 15 * 100) }));
+    return { ranges, kpis, factors, insights, days, failing };
+  }
+}
+</script>
+</body>
+</html>

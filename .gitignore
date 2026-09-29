@@ -127,3 +127,4 @@ test_llm_providers.py
 .codebase-memory/
 
 brag-output/
+brag-output-2/

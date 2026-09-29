@@ -12,21 +12,8 @@
  * "Other" rather than inventing a hue nobody can distinguish.
  */
 
-const OTHER_COLOR = 'var(--chart-5)'
-
-const TIER_COLORS: Record<string, string> = {
-  'Tier A': 'var(--tier-1)',
-  'Tier B': 'var(--tier-4)',
-}
-
-export const TIER_ORDER = ['Tier A', 'Tier B'] as const
-
 /** Tier A resolves without any model call — the platform's zero-cost band. */
 export const ZERO_TOKEN_TIERS = new Set(['Tier A'])
-
-export function tierColor(tier: string): string {
-  return TIER_COLORS[tier] ?? OTHER_COLOR
-}
 
 export const STATUS_COLORS = {
   ok: 'var(--status-ok)',
@@ -35,16 +22,37 @@ export const STATUS_COLORS = {
   idle: 'var(--chart-5)',
 } as const
 
-const HEAT_STEPS = ['var(--heat-0)', 'var(--heat-1)', 'var(--heat-2)', 'var(--heat-3)', 'var(--heat-4)']
+/**
+ * Neutral ink for data that is fine. Colour is reserved for what needs attention, so a
+ * healthy dashboard reads calm and the one red bar is impossible to miss. Steps differ in
+ * lightness, so they stay distinguishable without relying on hue.
+ */
+export const INK = {
+  strong: 'rgba(244,245,247,0.8)',
+  mid: 'rgba(244,245,247,0.5)',
+  soft: 'rgba(244,245,247,0.22)',
+  track: 'rgba(255,255,255,0.05)',
+} as const
 
-/** Map a 0..1 intensity onto the sequential heat ramp. Out-of-range input clamps. */
-export function heatColor(t: number): string {
-  if (!Number.isFinite(t)) return HEAT_STEPS[0]
-  const clamped = Math.max(0, Math.min(1, t))
-  return HEAT_STEPS[Math.min(HEAT_STEPS.length - 1, Math.round(clamped * (HEAT_STEPS.length - 1)))]
+/** Map 0..1 run volume onto neutral ink opacity. Out-of-range input clamps. */
+export function volumeInk(t: number): string {
+  const clamped = Number.isFinite(t) ? Math.max(0, Math.min(1, t)) : 0
+  return `rgba(244,245,247,${(0.06 + clamped * 0.5).toFixed(2)})`
 }
 
-export const HEAT_LEGEND = HEAT_STEPS
+/** The three recovery outcomes, used wherever a repair is split by how it ended. */
+export const RECOVERY_COLORS = {
+  free: INK.strong,
+  agent: 'var(--tier-4)',
+  failed: STATUS_COLORS.error,
+} as const
+
+/** Keyed by `narrative.ts::workflowStatus`. */
+export const WORKFLOW_STATUS = {
+  failing: { color: STATUS_COLORS.error, text: 'text-red-300', label: 'Failing' },
+  slipping: { color: STATUS_COLORS.warn, text: 'text-amber-300', label: 'Slipping' },
+  healthy: { color: INK.mid, text: 'text-zinc-400', label: 'Healthy' },
+} as const
 
 /** Recessive chrome — grid and axis lines must never compete with the data. */
 export const GRID_LINE = 'rgba(255,255,255,0.055)'

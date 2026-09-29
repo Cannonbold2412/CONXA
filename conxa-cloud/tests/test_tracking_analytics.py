@@ -11,7 +11,9 @@ import time
 
 import pytest
 
+from app.services.tracking import _assertion_health_by_step
 from app.services.tracking_analytics import (
+    _with_previous_pass_rate,
     bucket_series,
     failure_codes,
     health_score,
@@ -294,6 +296,28 @@ def test_workflow_analytics_breaks_down_by_version_newest_first():
     assert [v["version"] for v in row["versions"]] == ["0.3.0", "0.2.0"]
     assert row["versions"][0]["success_rate"] == 0.0
     assert row["versions"][1]["success_rate"] == 100.0
+
+
+def test_workflow_analytics_version_first_seen_is_earliest_run_in_window():
+    day = 86_400
+    records = [
+        _record(workflow_ver="0.3.0", at=_NOW - day, run_id="early"),
+        _record(workflow_ver="0.3.0", at=_NOW, run_id="late"),
+    ]
+    version = workflow_analytics(records)[0]["versions"][0]
+    assert version["first_seen"] < version["last_seen"]
+    assert version["first_seen"] == int((_NOW - day) * 1000)
+
+
+def test_with_previous_pass_rate_attaches_last_period_rate():
+    def verify(ok: bool, run_id: str) -> dict:
+        return _record(events=[{"e": "verify_result", "ts": _NOW, "si": 0, "ok": ok, "n": 1}], run_id=run_id)
+
+    current_rows = _assertion_health_by_step([verify(False, "c1")])
+    rows = _with_previous_pass_rate(current_rows, [verify(True, "p1"), verify(False, "p2")])
+    assert rows[0]["pass_rate"] == 0.0
+    assert rows[0]["previous_pass_rate"] == 50.0
+    assert _with_previous_pass_rate(current_rows, [])[0]["previous_pass_rate"] is None
 
 
 def test_workflow_analytics_reports_delta_against_previous_window():
