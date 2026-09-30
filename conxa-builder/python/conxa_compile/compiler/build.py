@@ -22,7 +22,8 @@ from conxa_compile.compiler.entity_binding import (
 )
 from conxa_compile.compiler.input_binding import derive_input_binding
 from conxa_compile.compiler.choice import collapse_choice_group_runs, derive_choice
-from conxa_compile.compiler.date_picker import collapse_date_picker_runs
+from conxa_compile.compiler.date_picker import collapse_date_picker_runs, convert_typed_date_steps
+from conxa_compile.compiler.navigation_effects import fold_action_caused_navigations, generalize_url_pattern
 from conxa_compile.compiler.upload_binding import apply_bindings_to_compiled_steps
 from conxa_compile.compiler.loop_suggestion import detect_download_upload_loop_candidates
 from conxa_compile.compiler.virtualized import detect_virtualized_container
@@ -854,6 +855,14 @@ def _build_assertions(
             required=True,
         ))
         required_assigned = True
+
+    # Where an action's own navigation landed (a click that redirected, or one folded in from a
+    # standalone navigation by navigation_effects.py) is evidence, never a target: advisory only,
+    # with per-run ids/tokens generalized away, so the run follows wherever the app sends it.
+    if classified_effect == "navigation" and not any(a.type == "url_pattern" for a in assertions):
+        landed = generalize_url_pattern(str(((post_condition.get("url_delta") or {}).get("after")) or ""))
+        if landed:
+            assertions.append(Assertion(type="url_pattern", target=landed, timeout_ms=wf_timeout, required=False))
 
     return assertions
 
@@ -1803,6 +1812,11 @@ def compile_skill_package(
         {"phase": "compiler_prepare", "event_count": len(events), "session_id": sid},
     )
     cleaned_events = fix_step_order(clean_steps(events, pol), pol)
+    # A navigation an action caused (click Submit -> redirect to /orders/847291) is that action's
+    # effect, not a step: drop it and keep only a generalized post-condition on the action.
+    # Before _insert_tab_markers so the deliberate navigate it adds for a user-opened tab (and
+    # _insert_start_navigate_step's start URL) are never candidates.
+    cleaned_events = fold_action_caused_navigations(cleaned_events)
     # Insert tab_open/tab_switch markers at tab-boundary crossings — after clean_steps/
     # fix_step_order so the synthetic marker events never have to satisfy those functions'
     # assumptions about real recorded event shape.
@@ -1854,6 +1868,11 @@ def compile_skill_package(
     # above) rather than cleaned_events. Collapses (never regresses) an open->nav->day-cell click
     # run into one parameterized date_pick step per bridge.js's date_context tagging; see
     # conxa_compile/compiler/date_picker.py.
+    # Typed-text dates ("25/09/2026" into a plain field) become date_pick steps that remember the
+    # field's format. Before the collapse (same 1:1 alignment, and it never changes the count);
+    # an ambiguous day/month order falls back to the recording browser's own locale sample.
+    environment = _read_environment_sidecar(session_root)
+    convert_typed_date_steps(steps, date_pass_events, pol, str(environment.get("date_format_sample") or ""))
     steps = collapse_date_picker_runs(steps, date_pass_events, pol)
     steps = _insert_start_navigate_step(steps, cleaned_events)
 
@@ -1932,7 +1951,6 @@ def compile_skill_package(
 
     now = datetime.now(timezone.utc).isoformat()
     structural_fp = _build_structural_fingerprint(steps)
-    environment = _read_environment_sidecar(session_root)
     meta = SkillMeta(
         id=skill_id,
         version=version,

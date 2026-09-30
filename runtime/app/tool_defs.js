@@ -5,6 +5,22 @@
  * installed skill) are generated at runtime in server.js from the loaded
  * skill index and appended after these.
  */
+
+// MCP server-level `instructions` (read once by every host at connect). Owns the
+// dataset → per-record contract: the agent reads the user's file and maps it; the
+// runtime only ever receives one record's resolved input values per call.
+const SERVER_INSTRUCTIONS = [
+  "Each Conxa skill runs ONE record per call, using the inputs get_skill_inputs declares.",
+  "When the user gives a dataset (Excel, CSV, a table, a document) and asks to act on every record in it:",
+  "1. Read the file yourself. Never pass the file, its path, or its contents to Conxa as an input. (A skill's own declared file_path input belongs to an upload step and means \"the file to upload\"; it is the only file input.)",
+  "2. Call get_skill_inputs and map the dataset's columns to those declared input names by meaning, not by exact header text.",
+  "3. Before running, show the user the column → input mapping, the record count, and any rows missing a required value, and get a go-ahead.",
+  "4. If sign-in may be needed, call authenticate once first.",
+  "5. Call execute_skill once per record, one at a time, passing only that record's values.",
+  "6. If one record fails, note why and continue with the rest — unless the failure would hit every record (sign-in, site down), then stop.",
+  "7. Finish with a per-record summary: succeeded, or failed with the reason.",
+].join("\n");
+
 const CORE_TOOL_DEFS = [
   {
     name: "list_skills",
@@ -19,13 +35,13 @@ const CORE_TOOL_DEFS = [
   },
   {
     name: "execute_skill",
-    description: "Conxa automation: execute a recorded browser workflow skill. Call list_skills first to get the skill slug, then get_skill_inputs to see required fields, then call this. Default watch: true (visible browser). Pass watch: false only if user explicitly asks for background execution. If an application needs the user to sign in, this returns immediately with \"Authentication required — please sign in to <apps>\" and a run_id: sign-in tabs open in the browser, and the workflow starts BY ITSELF once the user finishes — do not call execute_skill again. Poll get_execution_status with that run_id until state is completed or failed.",
+    description: "Conxa automation: execute a recorded browser workflow skill. Call list_skills first to get the skill slug, then get_skill_inputs to see required fields, then call this. Default watch: true (visible browser). Pass watch: false only if user explicitly asks for background execution. If an application needs the user to sign in, this returns immediately with \"Authentication required — please sign in to <apps>\" and a run_id: sign-in tabs open in the browser, and the workflow starts BY ITSELF once the user finishes — do not call execute_skill again. Poll get_execution_status with that run_id until state is completed or failed. Runs ONE record per call: for a spreadsheet or list, read it yourself, map its columns to the declared inputs, and call once per record — never pass the file to Conxa.",
     inputSchema: {
       type: "object",
       properties: {
         skill:       { type: "string",  description: "Skill slug from list_skills" },
         workspace_id:     { type: "string",  description: "Workspace ID (required if skill slug is not unique)" },
-        inputs:      { type: "object",  description: "Input values. Call get_skill_inputs first to see the schema." },
+        inputs:      { type: "object",  description: "Input values for ONE record. Call get_skill_inputs first to see the schema; for a dataset, call execute_skill once per record." },
         resume_from: { type: "integer", description: "0-based step index to resume from after a failure (the value reported in the failure response)." },
         step_overrides: {
           type: "object",
@@ -103,7 +119,7 @@ const CORE_TOOL_DEFS = [
   },
   {
     name: "get_skill_inputs",
-    description: "Conxa automation: return the required input fields for a skill. Always call this after list_skills and before execute_skill so you know exactly what to ask the user for.",
+    description: "Conxa automation: return the required input fields for a skill. Always call this after list_skills and before execute_skill so you know exactly what to ask the user for. These are also the semantic fields to map a user's dataset columns onto.",
     inputSchema: {
       type: "object",
       properties: {
@@ -155,4 +171,4 @@ const CORE_TOOL_DEFS = [
   },
 ];
 
-module.exports = { CORE_TOOL_DEFS };
+module.exports = { CORE_TOOL_DEFS, SERVER_INSTRUCTIONS };

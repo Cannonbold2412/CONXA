@@ -172,7 +172,7 @@ async function fetchUserinfoWithRetry(accessToken) {
   // The freshly-issued access token sometimes isn't propagated through
   // Clerk's backend by the time we immediately call /oauth/userinfo — one
   // retry after a short pause handles that race (mirrors auth_service.py).
-  const keep = ["sub", "email", "name", "full_name", "org_id"];
+  const keep = ["sub", "email", "name", "full_name", "given_name", "family_name", "picture", "org_id"];
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const raw = await fetchUserinfo(accessToken);
@@ -186,17 +186,26 @@ async function fetchUserinfoWithRetry(accessToken) {
   return {};
 }
 
+function identityFromClaims(c) {
+  return {
+    user_id: c.sub,
+    name: c.name || c.full_name,
+    first_name: c.given_name,
+    last_name: c.family_name,
+    email: c.email,
+    picture: c.picture,
+  };
+}
+
 function claimsFromTokens(tokens) {
   const userinfo = tokens.userinfo || {};
-  if (userinfo.sub) {
-    return { user_id: userinfo.sub, name: userinfo.name || userinfo.full_name, email: userinfo.email };
-  }
+  if (userinfo.sub) return identityFromClaims(userinfo);
   // Fallback: decode as JWT (Clerk may return JWTs on some plans).
   try {
     const payloadB64 = tokens.access_token.split(".")[1];
     const payload = JSON.parse(Buffer.from(payloadB64, "base64").toString("utf8"));
     if (!payload.sub) return null;
-    return { user_id: payload.sub, name: payload.name || payload.full_name, email: payload.email };
+    return identityFromClaims(payload);
   } catch {
     return null;
   }

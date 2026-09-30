@@ -3,9 +3,11 @@ import type { Attachment, ChatMessage, ConfirmRun, ExecuteContext, HistoryRow, I
 import { SettingsModal } from "./SettingsModal";
 import { TitleBar } from "./TitleBar";
 import { BrowserPanel } from "./BrowserPanel";
-import { Button, Icon, MsgActions, Row, paths } from "./ui";
-
-type Mode = "form" | "chat";
+import { Sidebar, type View } from "./Sidebar";
+import { Composer } from "./Composer";
+import { RunCard } from "./RunCard";
+import { RunsPage, SearchPage, SkillsPage } from "./Pages";
+import { BrandMark, Button, Icon, MsgActions, paths } from "./ui";
 
 function statusLabel(status: string) {
   if (status === "completed") return "Done";
@@ -15,6 +17,8 @@ function statusLabel(status: string) {
 }
 
 function userDisplayName(identity: Identity | null, signedIn: boolean) {
+  const full = [identity?.first_name, identity?.last_name].filter(Boolean).join(" ").trim();
+  if (full) return full;
   if (identity?.name?.trim()) return identity.name.trim();
   if (identity?.email?.trim()) return identity.email.split("@")[0];
   return signedIn ? "Account" : "Guest";
@@ -26,17 +30,46 @@ function userInitials(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
-// The runtime's declared-inputs schema is plain JSON-Schema: { properties: {...}, required: [...] }.
-function fieldList(schema: Record<string, unknown>): { name: string; required: boolean; description: string }[] {
-  const props = (schema.properties || {}) as Record<string, { description?: string; type?: string }>;
-  const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
-  if (!props || typeof props !== "object" || Array.isArray(props)) return [];
-  return Object.keys(props).map((name) => ({
-    name,
-    required: required.has(name),
-    description: String(props[name]?.description || ""),
-  }));
+function greeting(name: string) {
+  const h = new Date().getHours();
+  const part = h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+  const first = name === "Account" ? "" : name.split(/\s+/)[0];
+  return first ? `Good ${part}, ${first}` : `Good ${part}`;
 }
+
+type Field = {
+  name: string;
+  description: string;
+  required: boolean;
+  options?: string[]; // select (enum) or multiselect (array of enum'd items)
+  multi: boolean;
+  date: boolean;
+  secret: boolean;
+  default: string | string[];
+};
+
+// get_skill_inputs returns the compiler's shape: { inputs: [{ name, type, description, enum, items,
+// format, default, optional, sensitive }] }. Required = not optional and no default (server.js gate).
+function fieldList(schema: Record<string, unknown>): Field[] {
+  const raw = Array.isArray(schema.inputs) ? (schema.inputs as Record<string, any>[]) : [];
+  return raw.filter((f) => f && f.name).map((f) => {
+    const multi = f.type === "array";
+    const options: string[] | undefined = multi ? f.items?.enum : f.enum;
+    const hasDefault = f.default !== undefined && f.default !== null && String(f.default).trim() !== "";
+    return {
+      name: String(f.name),
+      description: String(f.description || ""),
+      required: !f.optional && !hasDefault,
+      options: Array.isArray(options) && options.length ? options : undefined,
+      multi,
+      date: f.format === "date",
+      secret: Boolean(f.sensitive),
+      default: hasDefault ? (multi && !Array.isArray(f.default) ? String(f.default).split(",").map((s) => s.trim()) : f.default) : multi ? [] : "",
+    };
+  });
+}
+
+const inputCls = "mt-1.5 h-11 w-full rounded-xl border border-line bg-bg-elevated px-3.5 text-[14.5px] outline-none transition-colors focus:border-brand/50";
 
 // Confirm card shows what is about to run, but never echoes a secret back onto the screen.
 const SECRET_NAME = /pass|secret|token|key|pin\b/i;
@@ -50,40 +83,51 @@ function renderBold(text: string) {
   const parts = text.replace(/^([ \t]*)[-*] /gm, "$1• ").split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, i) =>
     part.startsWith("**") && part.endsWith("**") ? (
-      <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>
+      <strong key={i} className="font-semibold text-fg">{part.slice(2, -2)}</strong>
     ) : (
       part
     )
   );
 }
 
-function SkillPills({ skills, onPick, limit }: { skills: SkillRow[]; onPick: (s: SkillRow) => void; limit?: number }) {
-  const list = limit ? skills.slice(0, limit) : skills;
-  return (
-    <div className="flex max-w-[720px] flex-wrap justify-center gap-2">
-      {list.map((s) => (
-        <button
-          key={s.skill}
-          type="button"
-          className="rounded-full border border-line bg-transparent px-3.5 py-1.5 text-[13px] text-fg-muted hover:bg-bg-hover hover:text-fg"
-          onClick={() => onPick(s)}
-        >
-          {s.name || s.skill}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 type LiveTurn = { user: ChatMessage; editIndex: number | null; content: string; thinking: string };
 const MAX_ATTACH_BYTES = 10 * 1024 * 1024;
 const TEXT_EXT = /\.(txt|md|csv|tsv|json|jsonl|ya?ml|xml|html?|css|log|py|js|jsx|ts|tsx|java|c|cpp|h|go|rs|rb|php|sh|sql|toml|ini)$/i;
+const RUN_UPDATE = "[Conxa run update]";
 
 function msgText(m: ChatMessage): string {
+  if (m.content == null) return "";
   return typeof m.content === "string" ? m.content : m.content.map((p) => (p.type === "text" ? p.text : "")).join("");
 }
 function msgImages(m: ChatMessage): string[] {
-  return typeof m.content === "string" ? [] : m.content.flatMap((p) => (p.type === "image_url" ? [p.image_url.url] : []));
+  return typeof m.content === "string" || m.content == null ? [] : m.content.flatMap((p) => (p.type === "image_url" ? [p.image_url.url] : []));
+}
+
+// What the thread shows: the user's and assistant's words, plus one card per skill run.
+type ThreadItem =
+  | { kind: "user" | "assistant"; m: ChatMessage & { error?: boolean }; idx: number }
+  | { kind: "run"; key: string; skill: string; result: string };
+
+function threadItems(log: (ChatMessage & { error?: boolean })[]): ThreadItem[] {
+  const toolResults = new Map(log.filter((m) => m.role === "tool" && m.tool_call_id).map((m) => [m.tool_call_id!, msgText(m)]));
+  const items: ThreadItem[] = [];
+  log.forEach((m, idx) => {
+    const text = msgText(m);
+    if (m.role === "user") {
+      if (!text.startsWith(RUN_UPDATE) && (text || msgImages(m).length)) items.push({ kind: "user", m, idx });
+      return;
+    }
+    if (m.role !== "assistant") return;
+    if (text) items.push({ kind: "assistant", m, idx });
+    for (const call of m.tool_calls || []) {
+      const result = toolResults.get(call.id);
+      if (call.function?.name !== "execute_skill" || result === undefined) continue;
+      let skill = "";
+      try { skill = String(JSON.parse(call.function.arguments || "{}").skill || ""); } catch { /* malformed args */ }
+      items.push({ kind: "run", key: call.id, skill, result });
+    }
+  });
+  return items;
 }
 
 export function App() {
@@ -94,16 +138,15 @@ export function App() {
   const [selected, setSelected] = useState<SkillRow | null>(null);
   const [schema, setSchema] = useState<Record<string, unknown>>({});
   const [inputsError, setInputsError] = useState("");
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, string | string[]>>({});
   const [busy, setBusy] = useState(false);
   const [formMsg, setFormMsg] = useState("");
   const [formOk, setFormOk] = useState(true);
   const [formDetail, setFormDetail] = useState("");
   const [formDetailsOpen, setFormDetailsOpen] = useState(false);
-  const [, setHistory] = useState<HistoryRow[]>([]);
-  const [mode, setMode] = useState<Mode>("chat");
+  const [history, setHistory] = useState<HistoryRow[]>([]);
+  const [view, setView] = useState<View>("chat");
   const [showSettings, setShowSettings] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [chatLog, setChatLog] = useState<(ChatMessage & { error?: boolean })[]>([]);
   // In-flight turns, keyed by chat. The main process only saves a transcript when its turn ends,
@@ -112,16 +155,29 @@ export function App() {
   const [chatErrors, setChatErrors] = useState<Record<string, string>>({});
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState("");
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
   const [pendingRun, setPendingRun] = useState<ConfirmRun | null>(null);
   const [runPermission, setRunPermission] = useState<"ask" | "auto">("ask");
-  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
-  const plusMenuRef = useRef<HTMLDivElement>(null);
   const [openThinking, setOpenThinking] = useState<Set<number>>(new Set());
   const [chatInput, setChatInput] = useState("");
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+
+  // Back/forward history of (view, chat, selected skill). Recorded by watching state,
+  // so every navigation path is covered; navGo moves navPos first so replays aren't re-pushed.
+  const navHist = useRef<{ view: View; sessionId: string | null; selected: SkillRow | null }[]>([]);
+  const navPos = useRef(-1);
+  const [navTick, setNavTick] = useState(0);
+  useEffect(() => {
+    const cur = navHist.current[navPos.current];
+    if (cur && cur.view === view && cur.sessionId === sessionId && cur.selected === selected) return;
+    navHist.current = [...navHist.current.slice(0, navPos.current + 1), { view, sessionId, selected }];
+    navPos.current = navHist.current.length - 1;
+    setNavTick((n) => n + 1);
+  }, [view, sessionId, selected]);
+  void navTick; // re-render so canGoBack/canGoForward refresh
   const sessionRef = useRef<string | null>(null);
   sessionRef.current = sessionId;
   const liveNow = sessionId ? live[sessionId] : undefined;
@@ -135,6 +191,8 @@ export function App() {
   const [switchingContext, setSwitchingContext] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [sidebarError, setSidebarError] = useState("");
+  const [browserHidden, setBrowserHidden] = useState(false);
+  const [browserRuns, setBrowserRuns] = useState(0);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (localStorage.getItem("conxa-theme") === "light" ? "light" : "dark"),
   );
@@ -178,19 +236,21 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!plusMenuOpen) return;
-    const close = (e: MouseEvent) => {
-      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) setPlusMenuOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [plusMenuOpen]);
-
-  useEffect(() => {
     document.documentElement.classList.remove("light", "dark");
     document.documentElement.classList.add(theme);
     localStorage.setItem("conxa-theme", theme);
   }, [theme]);
+
+  // A file dropped anywhere outside the chat would make Electron navigate the window to it.
+  useEffect(() => {
+    const stop = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", stop);
+    window.addEventListener("drop", stop);
+    return () => {
+      window.removeEventListener("dragover", stop);
+      window.removeEventListener("drop", stop);
+    };
+  }, []);
 
   const refreshHistory = useCallback(async () => {
     const h = await api.history();
@@ -282,17 +342,6 @@ export function App() {
   useEffect(() => { void api.panel.setChat({ chatId: sessionId }); }, [api, sessionId]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
-        e.preventDefault();
-        setShowSettings(true);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  useEffect(() => {
     if (!selected) {
       setSchema({});
       setValues({});
@@ -311,8 +360,8 @@ export function App() {
         const sc = (r.schema || {}) as Record<string, unknown>;
         setSchema(sc);
         const fields = fieldList(sc);
-        const next: Record<string, string> = {};
-        for (const f of fields) next[f.name] = "";
+        const next: Record<string, string | string[]> = {};
+        for (const f of fields) next[f.name] = f.default;
         setValues(next);
       })
       .catch(() => {
@@ -324,28 +373,31 @@ export function App() {
   }, [api, selected]);
 
   const fields = useMemo(() => fieldList(schema), [schema]);
-  const displayLog = useMemo(
-    () =>
-      chatLog
-        .map((m, idx) => ({ m, idx }))
-        .filter(({ m }) => (m.role === "user" || m.role === "assistant") && (msgText(m) || msgImages(m).length)
-          && !(m.role === "user" && msgText(m).startsWith("[Conxa run update]"))),
-    [chatLog],
-  );
+  const items = useMemo(() => threadItems(chatLog), [chatLog]);
+  const historyByRun = useMemo(() => new Map(history.filter((h) => h.run_id).map((h) => [h.run_id!, h])), [history]);
+  const skillName = useCallback((slug?: string) => skills.find((s) => s.skill === slug)?.name || slug || "Skill", [skills]);
   // Past the sign-in gate below, `signedIn` is always true — chat is ready
   // as soon as an Execute context (personal or team) has resolved.
   const chatReady = Boolean(activeWorkspaceId);
   const activeContext = contexts.find((c) => c.workspace_id === activeWorkspaceId);
-  const emptyChatHome = mode === "chat" && displayLog.length === 0 && !selected;
-  const formPicker = mode === "form" && !selected;
+  const onChat = view === "chat" && !selected;
+  const emptyChatHome = onChat && items.length === 0;
   const displayName = userDisplayName(identity, signedIn);
   const initials = userInitials(displayName);
-  const sessionIndex = sessions.findIndex((s) => s.id === sessionId);
-  const canGoBack = Boolean(selected) || sessionIndex > 0;
-  const canGoForward = sessionIndex >= 0 && sessionIndex < sessions.length - 1;
+  const lastUserText = [...items].reverse().find((i) => i.kind === "user");
+  const runAgainText = lastUserText && lastUserText.kind === "user" ? msgText(lastUserText.m).trim() : "";
+  const lastAssistantIdx = [...items].reverse().find((i) => i.kind === "assistant");
+  const currentTitle = onChat && !emptyChatHome ? sessions.find((s) => s.id === sessionId)?.title || null : null;
 
   async function runForm() {
     if (!selected || busy) return;
+    const missing = fields.filter((f) => f.required && !String(values[f.name] ?? "").trim());
+    if (missing.length) {
+      setFormOk(false);
+      setFormDetail("");
+      setFormMsg(`Fill in: ${missing.map((f) => f.name).join(", ")}`);
+      return;
+    }
     setBusy(true);
     setFormMsg("");
     setFormDetail("");
@@ -376,19 +428,28 @@ export function App() {
       added.push({ name: f.name, mime: f.type, kind: isImage ? "image" : "text", data });
     }
     setAttachments((prev) => [...prev, ...added]);
-    if (fileInput.current) fileInput.current.value = "";
   }
 
-  async function sendChat() {
-    const text = chatInput.trim();
-    if ((!text && attachments.length === 0) || chatBusy || !sessionId) return;
-    const sid = sessionId;
-    const editIndex = editingIndex;
-    const files = attachments;
-    setChatInput("");
-    setAttachments([]);
+  async function addCapture(take: () => Promise<{ ok: boolean; dataUrl?: string; message?: string }>, name: string) {
     setAttachError("");
-    setEditingIndex(null);
+    const r = await take();
+    if (!r.ok || !r.dataUrl) { setAttachError(r.message || "Couldn't capture that."); return; }
+    setAttachments((prev) => [...prev, { name, mime: "image/jpeg", kind: "image", data: r.dataUrl! }]);
+  }
+
+  // `resend` re-runs an earlier request as-is ("Run again"): it leaves the composer alone.
+  async function sendChat(resend?: string) {
+    const text = (resend ?? chatInput).trim();
+    const files = resend === undefined ? attachments : [];
+    if ((!text && files.length === 0) || chatBusy || !sessionId) return;
+    const sid = sessionId;
+    const editIndex = resend === undefined ? editingIndex : null;
+    if (resend === undefined) {
+      setChatInput("");
+      setAttachments([]);
+      setAttachError("");
+      setEditingIndex(null);
+    }
     const shown: ChatMessage["content"] = files.some((a) => a.kind === "image")
       ? [{ type: "text", text }, ...files.filter((a) => a.kind === "image").map((a) => ({ type: "image_url" as const, image_url: { url: a.data } }))]
       : text;
@@ -458,7 +519,11 @@ export function App() {
   async function goHome() {
     setSelected(null);
     setFormMsg("");
-    setMode("chat");
+    setView("chat");
+    if (sessionId && chatLog.length === 0) {
+      setEditingIndex(null);
+      return;
+    }
     const r = await api.createSession();
     if (!r.session) {
       setSidebarError(r.message || "Could not start a new chat.");
@@ -471,9 +536,22 @@ export function App() {
     setEditingIndex(null);
   }
 
+  function navGo(delta: -1 | 1) {
+    const t = navHist.current[navPos.current + delta];
+    if (!t) return;
+    navPos.current += delta;
+    if (t.sessionId && t.sessionId !== sessionId) {
+      const s = sessions.find((x) => x.id === t.sessionId);
+      if (s) void pickSession(s);
+    }
+    setSelected(t.selected);
+    setView(t.view);
+    setNavTick((n) => n + 1);
+  }
+
   async function pickSession(s: SessionSummary) {
     setSelected(null);
-    setMode("chat");
+    setView("chat");
     setSessionId(s.id);
     setEditingIndex(null);
     const loaded = await api.loadSession({ id: s.id });
@@ -490,15 +568,20 @@ export function App() {
     ]);
   }
 
+  function openSessionById(id: string) {
+    const s = sessions.find((x) => x.id === id);
+    if (s) void pickSession(s);
+  }
+
   function withLive(id: string, stored: ChatMessage[]): ChatMessage[] {
     const turn = live[id];
     if (!turn) return stored;
     return [...(turn.editIndex !== null ? stored.slice(0, turn.editIndex) : stored), turn.user];
   }
 
-  function pickSkill(s: SkillRow) {
-    setSelected(s);
-    setMode("form");
+  async function askInChat(s: SkillRow) {
+    await goHome();
+    setChatInput(`Run ${s.name || s.skill}`);
   }
 
   async function deleteChat(id: string) {
@@ -523,137 +606,74 @@ export function App() {
     }
   }
 
-  function handleBack() {
-    if (selected) {
-      setSelected(null);
-      setMode("chat");
-      return;
-    }
-    if (sessionIndex > 0) pickSession(sessions[sessionIndex - 1]);
+  async function renameChat(title: string) {
+    if (!sessionId) return;
+    const r = await api.renameSession({ id: sessionId, title });
+    if (!r.ok) setSidebarError(r.message || "Could not rename that chat.");
+    await refreshSessions();
   }
 
-  function handleForward() {
-    if (sessionIndex >= 0 && sessionIndex < sessions.length - 1) {
-      pickSession(sessions[sessionIndex + 1]);
-    }
-  }
+  // Latest handlers for the one global shortcut listener.
+  const keys = useRef({ goHome });
+  keys.current = { goHome };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === ",") {
+        e.preventDefault();
+        setShowSettings(true);
+      } else if (e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        void keys.current.goHome();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
-  const composer = (
-    <div className="mx-auto w-full max-w-[900px]">
-      <div className="rounded-2xl border border-line bg-bg-elevated px-3 pb-2 pt-3 shadow-[0_0_0_1px_rgba(255,255,255,0.03)] transition-shadow focus-within:border-brand/50 focus-within:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]">
-        {editingIndex !== null && (
-          <div className="mb-1.5 flex items-center justify-between rounded-lg bg-bg px-2 py-1 text-[12px] text-fg-dim">
-            <span>Editing message — sending will remove the replies after it</span>
-            <button
-              type="button"
-              className="rounded p-0.5 hover:text-fg"
-              aria-label="Cancel edit"
-              onClick={() => {
-                setEditingIndex(null);
-                setChatInput("");
-              }}
-            >
-              <Icon d={paths.x} size={12} />
-            </button>
-          </div>
-        )}
-        {(attachments.length > 0 || attachError) && (
-          <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
-            {attachments.map((a, i) => (
-              <span key={i} className="flex items-center gap-1 rounded-lg bg-bg px-2 py-1 text-[12px] text-fg-muted">
-                {a.kind === "image" && <img src={a.data} alt="" className="h-5 w-5 rounded object-cover" />}
-                <span className="max-w-[160px] truncate">{a.name}</span>
-                <button type="button" className="hover:text-fg" aria-label={`Remove ${a.name}`} onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}>
-                  <Icon d={paths.x} size={12} />
-                </button>
-              </span>
-            ))}
-            {attachError && <span className="text-[12px] text-err">{attachError}</span>}
-          </div>
-        )}
-        <textarea
-          className="theme-scroll max-h-[220px] min-h-[72px] w-full resize-none overflow-y-auto bg-transparent px-1 text-[15px] text-fg placeholder:text-fg-dim outline-none"
-          rows={emptyChatHome ? 3 : 2}
-          spellCheck={false}
-          value={chatInput}
-          onChange={(e) => setChatInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              sendChat();
-            }
-          }}
-          disabled={!runtimeOk || !chatReady || chatBusy}
-          placeholder={chatReady ? "How can I help you today?" : "Waiting for Execute access…"}
-        />
-        <div className="mt-1 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1">
-            <input ref={fileInput} type="file" multiple hidden onChange={(e) => addFiles(e.target.files)} />
-            <div ref={plusMenuRef} className="relative">
-              <button
-                type="button"
-                className="flex h-7 w-7 items-center justify-center rounded-full text-fg-muted hover:bg-bg-hover hover:text-fg"
-                aria-label="Attach files or run permissions"
-                aria-expanded={plusMenuOpen}
-                onClick={() => setPlusMenuOpen((v) => !v)}
-              >
-                <Icon d={paths.plus} size={16} />
-              </button>
-              {plusMenuOpen && (
-                <div className="absolute bottom-full left-0 z-20 mb-1.5 w-56 rounded-xl border border-line bg-bg-elevated p-1.5 text-[13px] shadow-xl">
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left hover:bg-bg-hover"
-                    onClick={() => {
-                      setPlusMenuOpen(false);
-                      fileInput.current?.click();
-                    }}
-                    title="Attach images or text files (up to 10 MB)"
-                  >
-                    Attach files
-                  </button>
-                  <div className="mt-1 border-t border-line px-2.5 pt-2">
-                    <div className="mb-1.5 text-[11px] text-fg-dim">Run permission</div>
-                    <div className="flex rounded-lg border border-line bg-bg p-0.5">
-                      <button
-                        type="button"
-                        className={`flex-1 rounded-md px-2 py-1 text-xs ${runPermission === "ask" ? "bg-bg-active text-fg" : "text-fg-dim hover:text-fg"}`}
-                        onClick={() => changeRunPermission("ask")}
-                      >
-                        Ask
-                      </button>
-                      <button
-                        type="button"
-                        className={`flex-1 rounded-md px-2 py-1 text-xs ${runPermission === "auto" ? "bg-bg-active text-fg" : "text-fg-dim hover:text-fg"}`}
-                        onClick={() => changeRunPermission("auto")}
-                      >
-                        Auto-approve
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="flex rounded-full bg-bg p-0.5 text-[12px]">
-              <button type="button" className={`rounded-full px-3 py-1 ${mode === "chat" ? "bg-bg-active text-fg" : "text-fg-dim"}`} onClick={() => setMode("chat")}>Chat</button>
-              <button type="button" className={`rounded-full px-3 py-1 ${mode === "form" ? "bg-bg-active text-fg" : "text-fg-dim"}`} onClick={() => setMode("form")}>Form</button>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 text-[12px] text-fg-dim">
-            <span>{activeContext ? `CONXA · ${activeContext.workspace_name}` : "CONXA"}</span>
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded-full bg-fg text-bg disabled:opacity-30"
-              disabled={!runtimeOk || !chatReady || chatBusy}
-              onClick={sendChat}
-              aria-label="Send"
-            >
-              <Icon d={paths.send} size={14} />
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+  const onDrag = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      dragDepth.current += 1;
+      setDragging(true);
+    },
+    onDragLeave: () => {
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragging(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      dragDepth.current = 0;
+      setDragging(false);
+      void addFiles(e.dataTransfer.files);
+    },
+  };
+
+  const composer = (variant: "home" | "thread") => (
+    <Composer
+      variant={variant}
+      value={chatInput}
+      onChange={setChatInput}
+      onSend={() => void sendChat()}
+      ready={Boolean(runtimeOk) && chatReady}
+      busy={chatBusy}
+      attachments={attachments}
+      attachError={attachError}
+      onAddFiles={(f) => void addFiles(f)}
+      onRemoveAttachment={(i) => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+      onScreenshot={() => void addCapture(api.captureScreen, "screenshot.jpg")}
+      onCaptureBrowser={() => void addCapture(api.panel.capture, "browser-panel.jpg")}
+      editing={editingIndex !== null}
+      onCancelEdit={() => { setEditingIndex(null); setChatInput(""); }}
+      mode="chat"
+      onMode={(m) => { if (m === "form") setView("skills"); }}
+      permission={runPermission}
+      onPermission={changeRunPermission}
+      contexts={contexts}
+      activeWorkspaceId={activeWorkspaceId}
+      onSwitchContext={(id) => void switchContext(id)}
+      switchingContext={switchingContext}
+    />
   );
 
   if (!authChecked) {
@@ -663,6 +683,7 @@ export function App() {
   if (startupError) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 bg-bg text-fg">
+        <BrandMark size={34} />
         <div className="text-lg font-medium">CONXA couldn't start</div>
         <p className="max-w-sm text-center text-sm text-fg-muted">{startupError}</p>
         <Button onClick={() => { setAuthChecked(false); load(); }}>Retry</Button>
@@ -673,240 +694,317 @@ export function App() {
   if (!signedIn) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 bg-bg text-fg">
-        <div className="text-lg font-medium">Sign in to CONXA</div>
-        <p className="max-w-xs text-center text-sm text-fg-muted">Sign in with your CONXA account to use Execute.</p>
-        <Button className="px-5 py-2.5" onClick={login}>Sign in with CONXA</Button>
+        <BrandMark size={34} />
+        <div className="text-[22px] font-medium tracking-[-0.02em]">Sign in to Conxa</div>
+        <p className="max-w-xs text-center text-sm text-fg-muted">Sign in with your Conxa account to use Execute.</p>
+        <Button className="px-5 py-2.5" onClick={login}>Sign in with Conxa</Button>
         {loginError && <p className="max-w-xs text-center text-sm text-err">{loginError}</p>}
       </div>
     );
   }
 
+  const sidebarW = collapsed ? 56 : sidebarWidth;
+
   return (
     <div className="flex h-full flex-col bg-bg text-fg">
       <TitleBar
+        leftWidth={sidebarW}
+        onBack={() => navGo(-1)}
+        onForward={() => navGo(1)}
+        canGoBack={navPos.current > 0}
+        canGoForward={navPos.current < navHist.current.length - 1}
         onToggleSidebar={() => setCollapsed((v) => !v)}
-        onMenu={() => setShowSettings(true)}
-        onBack={handleBack}
-        onForward={handleForward}
-        canGoBack={canGoBack}
-        canGoForward={canGoForward}
+        title={currentTitle}
+        onRename={(t) => void renameChat(t)}
+        onDelete={() => sessionId && void deleteChat(sessionId)}
+        browserAvailable={browserRuns > 0}
+        browserHidden={browserHidden}
+        onToggleBrowser={() => setBrowserHidden((v) => !v)}
       />
 
       <div className="flex min-h-0 flex-1">
-      <aside
-        style={{ width: collapsed ? 52 : sidebarWidth }}
-        className={`relative flex shrink-0 flex-col border-r border-line bg-bg-sidebar ${resizing ? "" : "transition-[width]"}`}
-      >
-        {!collapsed && (
-          <div
-            onPointerDown={startResize}
-            className="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize hover:bg-line"
-          />
-        )}
-        <div className="px-2 pt-3">
-          <button type="button" onClick={goHome} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] text-fg-muted hover:bg-bg-hover hover:text-fg">
-            <Icon d={paths.plus} />
-            {!collapsed && "New"}
-          </button>
-        </div>
+        <Sidebar
+          width={sidebarW}
+          collapsed={collapsed}
+          resizing={resizing}
+          onResizeStart={startResize}
+          view={selected ? "skills" : view}
+          onNav={(v) => { setSelected(null); setView(v); if (v === "runs") void refreshHistory(); }}
+          onNewChat={() => void goHome()}
+          sessions={sessions}
+          sessionId={sessionId}
+          running={(id) => id in live}
+          onPick={(s) => void pickSession(s)}
+          onDelete={(id) => void deleteChat(id)}
+          error={sidebarError}
+          initials={initials}
+          displayName={displayName}
+          workspaceName={activeContext?.workspace_name || ""}
+          onSettings={() => setShowSettings(true)}
+        />
 
-        {sidebarError && !collapsed && (
-          <p className="mx-2 mt-2 rounded-lg bg-err-bg px-2.5 py-1.5 text-[12px] text-err-fg">{sidebarError}</p>
-        )}
+        <main className="relative flex min-w-0 flex-1 flex-col" {...(onChat ? onDrag : {})} onDragOver={(e) => e.preventDefault()}>
+          {runtimeOk === false && (
+            <div className="border-b border-err/30 bg-err-bg px-5 py-2 text-sm text-err-fg">{runtimeMsg}</div>
+          )}
 
-        <div className="sidebar-scroll min-h-0 flex-1 overflow-auto px-2 py-3">
-          {!collapsed && <p className="mb-1 px-2 text-[11px] text-fg-dim">Chats</p>}
-          {sessions.length === 0 && !collapsed && <p className="px-2 text-[12px] text-fg-dim">No chats yet.</p>}
-          {sessions.map((s) => (
-            <Row
-              key={s.id}
-              active={s.id === sessionId}
-              onClick={() => pickSession(s)}
-              onDelete={collapsed ? undefined : () => deleteChat(s.id)}
-              icon={s.id in live
-                ? <span className="mx-[5px] h-[7px] w-[7px] rounded-full bg-ok" title="Running" />
-                : <Icon d={paths.list} size={15} />}
-            >
-              {collapsed ? "" : s.title}
-            </Row>
-          ))}
-        </div>
-
-        <div className="relative border-t border-line p-2">
-          {accountOpen && (
-            <div className="absolute bottom-14 left-2 right-2 rounded-xl border border-line bg-bg-elevated p-1 text-[13px] shadow-xl">
-              <button type="button" className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left hover:bg-bg-hover" onClick={() => { setAccountOpen(false); setShowSettings(true); }}>
-                <span className="flex items-center gap-2"><Icon d={paths.settings} size={15} /> Settings</span>
-                <span className="text-[11px] text-fg-dim">Ctrl ,</span>
-              </button>
+          {selected && (
+            <div className="theme-scroll min-h-0 flex-1 overflow-auto px-10 py-12">
+              <div className="mx-auto w-full max-w-[520px]">
+                <h1 className="m-0 text-[26px] font-medium tracking-[-0.02em]">{selected.name || selected.skill}</h1>
+                {selected.description && <p className="mt-2 text-[14px] leading-relaxed text-fg-muted">{selected.description}</p>}
+                <div className="mt-8 space-y-4">
+                  {inputsError && <p className="text-sm text-err">{inputsError}</p>}
+                  {!inputsError && fields.map((f) => (
+                    <label key={f.name} className="block text-sm">
+                      <span className="text-fg-soft">{f.name}{f.required ? " *" : ""}</span>
+                      {f.multi && f.options ? (
+                        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
+                          {f.options.map((o) => {
+                            const cur = (values[f.name] as string[]) || [];
+                            return (
+                              <label key={o} className="flex items-center gap-1.5 text-[14px]">
+                                <input type="checkbox" checked={cur.includes(o)} disabled={!runtimeOk}
+                                  onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.checked ? [...cur, o] : cur.filter((x) => x !== o) }))} />
+                                {o}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : f.options ? (
+                        <select className={inputCls} value={String(values[f.name] ?? "")} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk}>
+                          <option value="" />
+                          {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : (
+                        <input className={inputCls} type={f.secret ? "password" : f.date ? "date" : "text"} value={String(values[f.name] ?? "")} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk} />
+                      )}
+                      {f.description && <span className="mt-1 block text-xs text-fg-dim">{f.description}</span>}
+                    </label>
+                  ))}
+                  {!inputsError && fields.length === 0 && <p className="text-sm text-fg-muted">This skill has no declared inputs.</p>}
+                  <button type="button" className="h-10 rounded-[10px] bg-brand px-5 text-sm font-semibold text-bg hover:bg-brand/90 disabled:opacity-40" disabled={!runtimeOk || busy || Boolean(inputsError)} onClick={runForm}>
+                    {busy ? "Running…" : "Run"}
+                  </button>
+                  {formMsg && (
+                    <div className="text-sm">
+                      <p className={formOk ? "text-fg-muted" : "text-err"}>{formMsg}</p>
+                      {formDetail && (
+                        <>
+                          <button type="button" className="mt-1 text-xs text-fg-dim underline" onClick={() => setFormDetailsOpen((v) => !v)}>
+                            {formDetailsOpen ? "Hide details" : "Show details"}
+                          </button>
+                          {formDetailsOpen && <pre className="mt-1 whitespace-pre-wrap text-xs text-fg-dim">{formDetail}</pre>}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
-          <button type="button" className="flex w-full items-center gap-2 rounded-lg px-2 py-2 hover:bg-bg-hover" onClick={() => setAccountOpen((v) => !v)}>
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-bg-active text-[11px] font-medium text-fg">
-              {initials}
-            </span>
-            {!collapsed && (
-              <>
-                <span className="min-w-0 flex-1 truncate text-left text-[13px]">{displayName}</span>
-                <Icon d={paths.chevron} size={14} />
-              </>
-            )}
-          </button>
-        </div>
-      </aside>
 
-      <main className="relative flex min-w-0 flex-1 flex-col">
-        {runtimeOk === false && (
-          <div className="border-b border-err/30 bg-err-bg px-5 py-2 text-sm text-err-fg">{runtimeMsg}</div>
-        )}
+          {!selected && view === "search" && <SearchPage onOpen={openSessionById} />}
+          {!selected && view === "skills" && (
+            <SkillsPage skills={skills} runtimeOk={runtimeOk} onRunForm={setSelected} onAskChat={(s) => void askInChat(s)} />
+          )}
+          {!selected && view === "runs" && (
+            <RunsPage
+              items={history}
+              skillName={skillName}
+              canOpenChat={(id) => sessions.some((s) => s.id === id)}
+              onOpenChat={openSessionById}
+              onDelete={async (at) => { const r = await api.deleteHistory({ at }); setHistory(r.items || []); }}
+            />
+          )}
 
-        {emptyChatHome && (
-          <div className="flex flex-1 flex-col items-center justify-center px-6 pb-8">
-            <h1 className="mb-8 font-serif text-[40px] font-normal tracking-tight">Ready when you are</h1>
-            {composer}
-            <div className="mt-5">
-              <SkillPills skills={skills} onPick={pickSkill} limit={5} />
-            </div>
-          </div>
-        )}
-
-        {formPicker && (
-          <div className="flex flex-1 flex-col items-center justify-center px-6">
-            <p className="mb-6 font-serif text-3xl">Pick a skill to fill and run</p>
-            <SkillPills skills={skills} onPick={pickSkill} />
-          </div>
-        )}
-
-        {mode === "form" && selected && (
-          <div className="mx-auto w-full max-w-lg flex-1 overflow-auto theme-scroll px-6 py-10">
-            <h1 className="font-serif text-3xl">{selected.name || selected.skill}</h1>
-            {selected.description && <p className="mt-2 text-sm text-fg-muted">{selected.description}</p>}
-            <div className="mt-8 space-y-4">
-              {inputsError && <p className="text-sm text-err">{inputsError}</p>}
-              {!inputsError && fields.map((f) => (
-                <label key={f.name} className="block text-sm">
-                  <span className="text-fg-muted">{f.name}{f.required ? " *" : ""}</span>
-                  <input className="mt-1.5 w-full rounded-xl border border-line bg-bg-elevated px-3 py-2.5 outline-none transition-shadow focus:border-brand/50 focus:shadow-[0_0_0_3px_rgba(217,119,87,0.15)]" value={values[f.name] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk} />
-                  {f.description && <span className="mt-1 block text-xs text-fg-dim">{f.description}</span>}
-                </label>
-              ))}
-              {!inputsError && fields.length === 0 && <p className="text-sm text-fg-muted">This skill has no declared inputs.</p>}
-              <button type="button" className="rounded-xl bg-fg px-5 py-2.5 text-sm font-medium text-bg disabled:opacity-40" disabled={!runtimeOk || busy || Boolean(inputsError)} onClick={runForm}>
-                {busy ? "Running…" : "Run"}
-              </button>
-              {formMsg && (
-                <div className="text-sm">
-                  <p className={formOk ? "text-fg-muted" : "text-err"}>{formMsg}</p>
-                  {formDetail && (
-                    <>
-                      <button type="button" className="mt-1 text-xs text-fg-dim underline" onClick={() => setFormDetailsOpen((v) => !v)}>
-                        {formDetailsOpen ? "Hide details" : "Show details"}
-                      </button>
-                      {formDetailsOpen && <pre className="mt-1 whitespace-pre-wrap text-xs text-fg-dim">{formDetail}</pre>}
-                    </>
-                  )}
+          {emptyChatHome && (
+            <div className="flex flex-1 flex-col items-center justify-center px-10 pb-20">
+              <div className="flex w-full max-w-[720px] flex-col items-center gap-7">
+                <div className="flex items-center gap-3.5">
+                  <BrandMark size={34} />
+                  <h1 className="m-0 text-[34px] font-medium tracking-[-0.025em]">{greeting(displayName)}</h1>
                 </div>
-              )}
+                {!chatReady && (
+                  <p className="m-0 rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
+                    Waiting for Execute access — forms on the Skills page still run skills without chat.
+                  </p>
+                )}
+                {composer("home")}
+                <div className="flex flex-wrap justify-center gap-2">
+                  {skills.slice(0, 3).map((s) => (
+                    <button
+                      key={`${s.workspace_id || ""}/${s.skill}`}
+                      type="button"
+                      onClick={() => setChatInput(`Run ${s.name || s.skill}`)}
+                      className="flex h-[34px] items-center gap-2 rounded-full border border-line px-3.5 text-[13px] text-fg-soft transition-colors hover:border-brand/45 hover:text-fg"
+                    >
+                      <span className="text-brand"><Icon d={paths.arrowUp} size={14} stroke={1.9} /></span>
+                      {s.name || s.skill}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setView("skills")}
+                    className="flex h-[34px] items-center gap-2 rounded-full border border-line px-3.5 text-[13px] text-fg-soft transition-colors hover:border-brand/45 hover:text-fg"
+                  >
+                    <span className="text-brand"><Icon d={paths.grid} size={14} stroke={1.9} /></span>
+                    Browse all skills
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {mode === "chat" && !emptyChatHome && (
-          <div className="flex min-h-0 flex-1 flex-col">
-            {!chatReady && (
-              <p className="mx-auto mt-4 max-w-[900px] rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
-                Waiting for Execute access — the form still runs skills without chat.
-              </p>
-            )}
-            <div className="theme-scroll min-h-0 flex-1 space-y-4 overflow-auto px-4 py-8">
-              {displayLog.map(({ m, idx }) =>
-                m.role === "user" ? (
-                  <div key={idx} className="group mx-auto flex max-w-[900px] flex-col items-end">
-                    <div className="max-w-[70%] whitespace-pre-wrap rounded-2xl bg-bg-elevated px-4 py-2.5 text-[15px] leading-relaxed">
-                      {msgImages(m).map((u, k) => <img key={k} src={u} alt="" className="mb-2 max-h-48 rounded-lg" />)}
-                      {msgText(m)}
-                    </div>
-                    <MsgActions className="mt-1" text={msgText(m)} onEdit={chatBusy ? undefined : () => { setChatInput(msgText(m)); setEditingIndex(idx); }} />
-                  </div>
-                ) : (
-                  <div key={idx} className="group mx-auto max-w-[900px]">
-                    {m.thinking ? (
-                      <button
-                        type="button"
-                        className="mb-1 flex items-center gap-1 text-[11px] text-fg-dim hover:text-fg"
-                        onClick={() => setOpenThinking((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(idx)) next.delete(idx); else next.add(idx);
-                          return next;
-                        })}
-                      >
-                        CONXA
-                        <span className={openThinking.has(idx) ? "rotate-180" : ""}>
-                          <Icon d={paths.chevron} size={10} />
-                        </span>
-                      </button>
-                    ) : (
-                      <div className="mb-1 text-[11px] text-fg-dim">{m.error ? "Couldn't run that" : "CONXA"}</div>
-                    )}
-                    {m.thinking && openThinking.has(idx) && (
-                      <pre className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-dim">{m.thinking}</pre>
-                    )}
-                    <div className={`whitespace-pre-wrap text-[15px] leading-relaxed ${m.error ? "text-err" : ""}`}>{renderBold(msgText(m))}</div>
-                    <MsgActions className="mt-1" text={msgText(m)} />
-                  </div>
-                )
+          {onChat && !emptyChatHome && (
+            <div className="flex min-h-0 flex-1 flex-col">
+              {!chatReady && (
+                <p className="mx-auto mt-4 max-w-[720px] rounded-xl border border-warn/40 bg-warn-bg px-4 py-2 text-sm text-warn-fg">
+                  Waiting for Execute access — forms on the Skills page still run skills without chat.
+                </p>
               )}
-              {pendingRun && (
-                <div className="mx-auto max-w-[900px] rounded-xl border border-line bg-bg-elevated px-4 py-3">
-                  <div className="mb-1 text-[11px] text-fg-dim">Run this skill?</div>
-                  <div className="text-[15px] font-medium">{pendingRun.skill || "Unnamed skill"}</div>
-                  {Object.keys(pendingRun.inputs).length > 0 && (
-                    <dl className="mt-2 space-y-0.5 text-[13px] text-fg-muted">
-                      {Object.entries(pendingRun.inputs).map(([k, v]) => (
-                        <div key={k} className="flex gap-2">
-                          <dt className="shrink-0 text-fg-dim">{k}</dt>
-                          <dd className="min-w-0 break-words">{shownInput(k, v)}</dd>
+              <div className="theme-scroll flex min-h-0 flex-1 flex-col overflow-auto px-10 pt-8">
+                <div className="mx-auto mt-auto flex w-full max-w-[720px] flex-col gap-[22px] pb-7">
+                  {items.map((it) => {
+                    if (it.kind === "run") {
+                      const runId = /\(run_id:\s*([^)]+)\)/.exec(it.result)?.[1].trim();
+                      return (
+                        <RunCard
+                          key={it.key}
+                          skillName={skillName(it.skill)}
+                          resultText={it.result}
+                          entry={runId ? historyByRun.get(runId) : undefined}
+                          onShowBrowser={() => setBrowserHidden(false)}
+                        />
+                      );
+                    }
+                    const { m, idx } = it;
+                    if (it.kind === "user") {
+                      const images = msgImages(m);
+                      return (
+                        <div key={idx} className="group flex flex-col items-end gap-2">
+                          {images.length > 0 && (
+                            <div className="flex flex-wrap justify-end gap-2">
+                              {images.map((u, k) => <img key={k} src={u} alt="" className="h-[120px] w-24 rounded-xl border border-line object-cover" />)}
+                            </div>
+                          )}
+                          {msgText(m) && (
+                            <div className="max-w-[520px] whitespace-pre-wrap rounded-[18px] bg-bg-elevated px-4 py-2.5 text-[15px] leading-[1.55]">{msgText(m)}</div>
+                          )}
+                          <MsgActions text={msgText(m)} onEdit={chatBusy ? undefined : () => { setChatInput(msgText(m)); setEditingIndex(idx); }} />
                         </div>
-                      ))}
-                    </dl>
+                      );
+                    }
+                    const isLast = lastAssistantIdx?.kind === "assistant" && lastAssistantIdx.idx === idx;
+                    return (
+                        <div key={idx} className="group flex flex-col gap-1.5">
+                          {m.thinking && (
+                            <button
+                              type="button"
+                              className="flex w-fit items-center gap-1 text-[12px] text-fg-dim hover:text-fg"
+                              aria-expanded={openThinking.has(idx)}
+                              onClick={() => setOpenThinking((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(idx)) next.delete(idx); else next.add(idx);
+                                return next;
+                              })}
+                            >
+                              Thinking
+                              <Icon d={openThinking.has(idx) ? paths.chevronUp : paths.chevron} size={12} />
+                            </button>
+                          )}
+                          {m.thinking && openThinking.has(idx) && (
+                            <pre className="whitespace-pre-wrap border-l-2 border-line pl-3 font-sans text-[13px] leading-relaxed text-fg-dim">{m.thinking}</pre>
+                          )}
+                          <div className={`whitespace-pre-wrap text-[15.5px] leading-[1.65] ${m.error ? "text-err" : "text-fg/90"}`}>{renderBold(msgText(m))}</div>
+                          <div className="-ml-1.5 flex items-center gap-0.5">
+                            <MsgActions text={msgText(m)} />
+                            {isLast && runAgainText && !chatBusy && (
+                              <button
+                                type="button"
+                                onClick={() => void sendChat(runAgainText)}
+                                className="flex h-6 items-center gap-1.5 rounded-md px-2 text-[12.5px] text-fg-dim opacity-0 transition-opacity hover:bg-bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100"
+                              >
+                                <Icon d={paths.retry} size={14} /> Run again
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                    );
+                  })}
+                  {pendingRun && (
+                    <div className="overflow-hidden rounded-[14px] border border-brand/35 bg-bg-sidebar">
+                      <div className="flex items-center gap-3 px-4 py-3">
+                        <span className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg bg-brand/15 text-brand"><Icon d={paths.question} size={15} /></span>
+                        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                          <span className="truncate text-[14px] font-medium">{skillName(pendingRun.skill) || "Unnamed skill"}</span>
+                          <span className="text-[12px] text-fg-dim">Run this skill on this computer?</span>
+                        </span>
+                      </div>
+                      {Object.keys(pendingRun.inputs).length > 0 && (
+                        <dl className="m-0 space-y-1 border-t border-line px-4 py-3 text-[13px]">
+                          {Object.entries(pendingRun.inputs).map(([k, v]) => (
+                            <div key={k} className="flex gap-3">
+                              <dt className="w-32 shrink-0 truncate text-fg-dim">{k}</dt>
+                              <dd className="m-0 min-w-0 break-words text-fg-soft">{shownInput(k, v)}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+                      <div className="flex justify-end gap-2 border-t border-line px-3 py-2.5">
+                        <button type="button" onClick={() => answerRun(false)} className="h-8 rounded-[9px] border border-line px-3 text-[13px] text-fg-soft hover:bg-bg-hover hover:text-fg">Cancel</button>
+                        <button type="button" onClick={() => answerRun(true)} className="h-8 rounded-[9px] bg-brand px-3.5 text-[13px] font-semibold text-bg hover:bg-brand/90">Run</button>
+                      </div>
+                    </div>
                   )}
-                  <div className="mt-3 flex gap-2">
-                    <Button onClick={() => answerRun(true)}>Run</Button>
-                    <Button variant="secondary" onClick={() => answerRun(false)}>Cancel</Button>
-                  </div>
+                  {liveNow && (
+                    <div className="flex flex-col gap-1.5">
+                      {liveNow.thinking && (
+                        <pre className="whitespace-pre-wrap border-l-2 border-line pl-3 font-sans text-[13px] leading-relaxed text-fg-dim">{liveNow.thinking}</pre>
+                      )}
+                      {liveNow.content ? (
+                        <div className="whitespace-pre-wrap text-[15.5px] leading-[1.65] text-fg/90">{renderBold(liveNow.content)}</div>
+                      ) : (
+                        !liveNow.thinking && <div className="text-[14px] text-fg-dim">Working…</div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
-              {liveNow && (
-                <div className="mx-auto max-w-[900px]">
-                  <div className="mb-1 text-[11px] text-fg-dim">CONXA</div>
-                  {liveNow.thinking && (
-                    <pre className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-fg-dim">{liveNow.thinking}</pre>
-                  )}
-                  {liveNow.content && (
-                    <div className="whitespace-pre-wrap text-[15px] leading-relaxed">{renderBold(liveNow.content)}</div>
-                  )}
-                </div>
-              )}
+              </div>
+              <div className="flex justify-center px-10 pb-3.5">
+                <div className="w-full max-w-[720px]">{composer("thread")}</div>
+              </div>
             </div>
-            <div className="px-4 pb-6">{composer}</div>
-          </div>
-        )}
-      </main>
+          )}
 
-      <BrowserPanel sessionId={sessionId} />
+          {dragging && onChat && (
+            <div className="pointer-events-none absolute inset-3 z-10 flex flex-col items-center justify-center gap-3.5 rounded-[20px] border-2 border-dashed border-brand/60 bg-bg/90">
+              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand/15 text-brand"><Icon d={paths.upload} size={26} /></span>
+              <div className="text-[20px] font-medium tracking-[-0.01em]">Drop files to add them to the chat</div>
+              <div className="text-[13.5px] text-fg-dim">Images and text files, up to 10 MB each</div>
+            </div>
+          )}
+        </main>
 
-      <SettingsModal
-        open={showSettings}
-        onClose={() => setShowSettings(false)}
-        identity={identity}
-        contexts={contexts}
-        activeWorkspaceId={activeWorkspaceId}
-        onSwitchContext={switchContext}
-        switchingContext={switchingContext}
-        theme={theme}
-        onThemeChange={setTheme}
-        onLogout={logout}
-      />
+        <BrowserPanel
+          sessionId={sessionId}
+          hidden={browserHidden}
+          onRunCount={setBrowserRuns}
+          onWantsShow={() => setBrowserHidden(false)}
+        />
+
+        <SettingsModal
+          open={showSettings}
+          onClose={() => setShowSettings(false)}
+          identity={identity}
+          contexts={contexts}
+          activeWorkspaceId={activeWorkspaceId}
+          onSwitchContext={switchContext}
+          switchingContext={switchingContext}
+          theme={theme}
+          onThemeChange={setTheme}
+          onLogout={logout}
+        />
       </div>
     </div>
   );

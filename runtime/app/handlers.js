@@ -24,7 +24,7 @@ const {
   gateLocator,
 } = require("./resolution");
 const {
-  parseDateValue,
+  parseDateInput,
   formatForDisplay,
   monthDelta,
   machineCellSelector,
@@ -559,9 +559,21 @@ const HANDLERS = {
 
   date_pick: async (page, step, inputs) => {
     const value = interpolate(step.value || "", inputs);
-    const parsed = parseDateValue(value);
     const hints = asObject(asObject(step.handler_hints).date_picker);
+    const parsed = parseDateInput(value, hints.display_format);
     const isCustomPicker = asObject(step.handler_hints).control_kind === "date_picker";
+    // A plain text field the user typed a date into during recording (compiler/date_picker.py::
+    // convert_typed_date_steps): fill the app's own recorded format, no calendar to fall back to.
+    const isTextField = hints.kind === "text_field";
+
+    // The step learned this application's date format at compile time, so a value that can't be
+    // read as a date is the caller's mistake — say so instead of typing garbage into the field.
+    if (!parsed && hints.display_format) {
+      throw Object.assign(
+        new Error(`Input "${step.input_binding}" = ${JSON.stringify(value)} is not a valid date; send one like 2026-09-25`),
+        { badInput: true },
+      );
+    }
 
     // Unparseable value: native <input type=month|week|time> never produces a full ISO
     // date/datetime (bridge.js records their raw "2026-09"/"2026-W38"/"14:30" as-is), so
@@ -599,12 +611,12 @@ const HANDLERS = {
           // leave the calendar getting yanked shut mid-click several actions later, well past
           // this step. A native input has no popup to corrupt, so it keeps pressing Enter for
           // widgets that need it to commit.
-          if (!isCustomPicker) {
+          if (!isCustomPicker && !isTextField) {
             try { await locator.press("Enter", { timeout: SECONDARY_ACTION_TIMEOUT_MS }); } catch (_) { /* not every widget commits on Enter */ }
           }
           let actual = "";
           try { actual = await locator.inputValue({ timeout: SECONDARY_ACTION_TIMEOUT_MS }); } catch (_) { /* not every widget is a real <input> */ }
-          typedOk = _dateValueMatches(actual, parsed, hints.display_format, { trustIsoEquality: !isCustomPicker });
+          typedOk = _dateValueMatches(actual, parsed, hints.display_format, { trustIsoEquality: !isCustomPicker && !isTextField });
         });
       } catch (err) {
         if (!isCustomPicker) throw err; // no grid fallback exists for a native input

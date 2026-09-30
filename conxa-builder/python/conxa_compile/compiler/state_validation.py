@@ -66,8 +66,13 @@ def capture_state_snapshot(step: Step, *, before: bool) -> dict[str, Any]:
     target_text = str(target.get("inner_text") or "").strip()
     if action_name(step) == "scroll":
         target_text = ""
+    url = str(page.get("url") or "")
+    if not before:
+        # The recorded page is where the action STARTED; where it landed lives on the post-condition.
+        url_delta = (step.get("post_condition") or {}).get("url_delta") or {}
+        url = str(url_delta.get("after") or url)
     state = {
-        "url": str(page.get("url") or ""),
+        "url": url,
         "page_title": str(page.get("title") or ""),
         "visible_key_elements": [x for x in visible if x],
         # `state_change.before/after` (bridge.js's pageFingerprint(), format

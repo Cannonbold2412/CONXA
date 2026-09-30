@@ -24,6 +24,10 @@ _URL_REGEX = re.compile(r"^https?://", re.IGNORECASE)
 # matches "2026-09-14" (8+ digits with hyphens) and misclassifies every date_pick collapse's
 # ISO literal (compiler/date_picker.py) as a phone number.
 _ISO_DATE_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$")
+# Typed numeric dates ("25-09-2026", "25/09/2026", "25.09.2026") — same reason: "25-09-2026" also
+# satisfies the phone pattern below. Only a real calendar date (detect_date_format may still say
+# the day/month order is ambiguous, which is fine here: it IS a date either way).
+_TYPED_DATE_REGEX = re.compile(r"^\d{1,2}([/.\-])\d{1,2}\1\d{4}$")
 
 
 def _snake_case(text: str) -> str:
@@ -57,7 +61,7 @@ def _classify_value_pattern(value: str) -> str | None:
         return "email"
     if _URL_REGEX.match(v):
         return "url"
-    if _ISO_DATE_REGEX.match(v):
+    if _ISO_DATE_REGEX.match(v) or _TYPED_DATE_REGEX.match(v):
         return "date"
     if _PHONE_REGEX.match(v) and any(c.isdigit() for c in v):
         digits = re.sub(r"\D", "", v)

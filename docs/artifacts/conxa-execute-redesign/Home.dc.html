@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Conxa Execute — new chat</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#d97757}a:hover{color:#e69477}
+button{font-family:inherit;cursor:pointer}
+textarea::placeholder{color:#85837b}
+.ib:hover{background:#2a2a28;color:#f5f4f0}
+.nav:hover{background:#252523}
+.chip:hover{border-color:rgba(217,119,87,.45);color:#f5f4f0}
+.opt:hover{background:#3a3a37}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #141413; color: #f5f4f0; font-family: Geist, system-ui, sans-serif; font-size: 14px; overflow: hidden">
+
+<!-- Title bar -->
+<div style="height: 44px; display: flex; align-items: center; flex-shrink: 0; border-bottom: 1px solid rgba(255,255,255,.06)">
+<div style="width: 260px; height: 100%; box-sizing: border-box; padding: 0 10px; display: flex; align-items: center; gap: 2px; background: #1c1c1a; border-right: 1px solid rgba(255,255,255,.06)">
+<button class="ib" aria-label="Toggle sidebar" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M9 4v16"></path></svg></button>
+<button class="ib" aria-label="Back" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg></button>
+<button class="ib" aria-label="Forward" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #4a4944; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg></button>
+</div>
+<div style="flex-grow: 1"></div>
+<div style="display: flex; align-items: center; gap: 2px; padding-right: 4px">
+<button class="ib" aria-label="Show browser panel" style="height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; font-size: 13px; display: flex; align-items: center; gap: 6px; margin-right: 10px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path></svg>Browser</button>
+<button class="ib" aria-label="Minimize" style="width: 44px; height: 44px; border: 0; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14"></path></svg></button>
+<button class="ib" aria-label="Maximize" style="width: 44px; height: 44px; border: 0; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="4" y="4" width="16" height="16" rx="1.5"></rect></svg></button>
+<button class="ib" aria-label="Close" style="width: 44px; height: 44px; border: 0; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+</div>
+</div>
+
+<div style="flex-grow: 1; display: flex; min-height: 0">
+
+<!-- Sidebar -->
+<nav aria-label="Chats" style="width: 260px; flex-shrink: 0; box-sizing: border-box; background: #1c1c1a; border-right: 1px solid rgba(255,255,255,.06); display: flex; flex-direction: column; padding: 14px 10px 10px">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px 16px">
+<div style="width: 22px; height: 22px; border-radius: 6px; background: #d97757; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#141413" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7l5 5-5 5"></path></svg></div>
+<div style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em">Conxa <span style="color: #8a8880; font-weight: 500">Execute</span></div>
+</div>
+<button style="height: 38px; border: 1px solid rgba(217,119,87,.35); border-radius: 10px; background: #252523; color: #f5f4f0; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px; margin-bottom: 8px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg><span style="flex-grow: 1; text-align: left">New chat</span><span style="font-family: 'Geist Mono', monospace; font-size: 11px; color: #85837b">Ctrl N</span></button>
+<a class="nav" href="#" style="height: 36px; border-radius: 8px; color: #cfcdc4; text-decoration: none; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>Search</a>
+<a class="nav" href="#" style="height: 36px; border-radius: 8px; color: #cfcdc4; text-decoration: none; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>Skills</a>
+<a class="nav" href="#" style="height: 36px; border-radius: 8px; color: #cfcdc4; text-decoration: none; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"></path></svg>Runs</a>
+
+<div style="font-size: 12px; color: #85837b; padding: 22px 10px 8px; font-weight: 500">Recents</div>
+<div style="display: flex; flex-direction: column; gap: 1px">
+<a class="nav" href="#" style="height: 34px; border-radius: 8px; color: #b4b2a9; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; padding: 0 10px; white-space: nowrap; overflow: hidden">Upload Fancy.gitignore from GitHub…</a>
+<a class="nav" href="#" style="height: 34px; border-radius: 8px; color: #b4b2a9; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; padding: 0 10px; white-space: nowrap; overflow: hidden">Upload Dotnet.gitignore to Drive</a>
+<a class="nav" href="#" style="height: 34px; border-radius: 8px; color: #b4b2a9; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; padding: 0 10px; white-space: nowrap; overflow: hidden">Upload Dotnet.gitignore (retry)</a>
+</div>
+
+<div style="flex-grow: 1"></div>
+<button class="nav" style="height: 52px; border: 0; border-radius: 10px; background: transparent; color: #f5f4f0; display: flex; align-items: center; gap: 10px; padding: 0 8px; text-align: left">
+<div style="width: 32px; height: 32px; border-radius: 999px; background: #30302e; border: 1px solid rgba(217,119,87,.35); color: #d97757; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0">KN</div>
+<div style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 13.5px; font-weight: 500">Kiran Nandi</span>
+<span style="font-size: 12px; color: #8a8880">CONXA workspace</span>
+</div>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8880" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"></path></svg>
+</button>
+</nav>
+
+<!-- Home -->
+<main style="flex-grow: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 40px 80px; min-width: 0">
+<div style="width: 720px; display: flex; flex-direction: column; align-items: center; gap: 28px">
+
+<div style="display: flex; align-items: center; gap: 14px">
+<div style="width: 34px; height: 34px; border-radius: 9px; background: #d97757; display: flex; align-items: center; justify-content: center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#141413" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7l5 5-5 5"></path></svg></div>
+<h1 style="margin: 0; font-size: 34px; font-weight: 500; letter-spacing: -0.025em; color: #f5f4f0">Good evening, Kiran</h1>
+</div>
+
+<!-- Composer with open menu -->
+<div style="width: 100%; position: relative">
+<div role="menu" aria-label="Composer options" style="position: absolute; left: 8px; top: calc(100% + 6px); width: 280px; box-sizing: border-box; background: #30302e; border: 1px solid rgba(255,255,255,.11); border-radius: 14px; box-shadow: 0 18px 44px rgba(0,0,0,.5); padding: 6px; display: flex; flex-direction: column; z-index: 2">
+<button class="opt" role="menuitem" style="height: 38px; border: 0; border-radius: 9px; background: transparent; color: #ebe9e2; font-size: 13.5px; display: flex; align-items: center; gap: 10px; padding: 0 10px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b4b2a9" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12l-8.5 8.5a5 5 0 0 1-7-7L13 5a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 8"></path></svg><span style="flex-grow: 1">Add files or photos</span><span style="font-family: 'Geist Mono', monospace; font-size: 11px; color: #85837b">Ctrl U</span></button>
+<button class="opt" role="menuitem" style="height: 38px; border: 0; border-radius: 9px; background: transparent; color: #ebe9e2; font-size: 13.5px; display: flex; align-items: center; gap: 10px; padding: 0 10px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b4b2a9" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"></path><circle cx="12" cy="12" r="3"></circle></svg>Take a screenshot</button>
+<button class="opt" role="menuitem" style="height: 38px; border: 0; border-radius: 9px; background: transparent; color: #ebe9e2; font-size: 13.5px; display: flex; align-items: center; gap: 10px; padding: 0 10px; text-align: left"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b4b2a9" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path></svg>Capture the browser panel</button>
+<div style="height: 1px; background: rgba(255,255,255,.07); margin: 6px 4px"></div>
+<div style="font-size: 11.5px; color: #8a8880; padding: 6px 10px 4px; font-weight: 500">Before a skill runs</div>
+<button class="opt" role="menuitemradio" aria-checked="false" style="border: 0; border-radius: 9px; background: transparent; color: #ebe9e2; display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; text-align: left">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#b4b2a9" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="margin-top: 1px; flex-shrink: 0"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M12 17h.01"></path></svg>
+<span style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 13.5px">Ask me first</span><span style="font-size: 12px; color: #8a8880">Confirm each run before it starts</span></span>
+</button>
+<button class="opt" role="menuitemradio" aria-checked="true" style="border: 0; border-radius: 9px; background: #3a3a37; color: #f5f4f0; display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; text-align: left">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="margin-top: 1px; flex-shrink: 0"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"></path><path d="M9 12l2 2 4-4"></path></svg>
+<span style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px"><span style="font-size: 13.5px">Auto-approve</span><span style="font-size: 12px; color: #8a8880">Run skills without asking</span></span>
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="margin-top: 2px"><path d="M5 12.5l4.5 4.5L19 7"></path></svg>
+</button>
+</div>
+
+<div style="width: 100%; box-sizing: border-box; background: #2a2a28; border: 1px solid rgba(255,255,255,.10); border-radius: 22px; box-shadow: 0 10px 30px rgba(0,0,0,.35); padding: 18px 12px 10px 18px; display: flex; flex-direction: column; gap: 22px">
+<textarea aria-label="Message Conxa" rows="2" placeholder="What should Conxa do?" style="border: 0; outline: none; resize: none; background: transparent; color: #f5f4f0; font-family: inherit; font-size: 16px; line-height: 1.5; height: 48px; padding: 0"></textarea>
+<div style="display: flex; align-items: center; gap: 6px">
+<button aria-label="Add attachments and options" aria-expanded="true" style="width: 32px; height: 32px; border: 1px solid rgba(217,119,87,.45); border-radius: 10px; background: #30302e; color: #f5f4f0; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button>
+<div role="group" aria-label="Input mode" style="display: flex; padding: 2px; border-radius: 10px; background: #141413; border: 1px solid rgba(255,255,255,.07)">
+<button aria-pressed="true" style="height: 26px; padding: 0 12px; border: 0; border-radius: 8px; background: #30302e; color: #f5f4f0; font-size: 12.5px; font-weight: 500">Chat</button>
+<button aria-pressed="false" style="height: 26px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; font-size: 12.5px">Form</button>
+</div>
+<button class="ib" style="height: 32px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; color: #b4b2a9; font-size: 12.5px; display: flex; align-items: center; gap: 6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"></path><path d="M9 12l2 2 4-4"></path></svg>Auto-approve</button>
+<div style="flex-grow: 1"></div>
+<button class="ib" style="height: 32px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; color: #8a8880; font-size: 12.5px; display: flex; align-items: center; gap: 4px">CONXA workspace<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+<button aria-label="Send" disabled style="width: 34px; height: 34px; border: 0; border-radius: 10px; background: #30302e; color: #6b6962; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+</div>
+</div>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px">
+<button class="chip" style="height: 34px; padding: 0 14px; border: 1px solid rgba(255,255,255,.11); border-radius: 999px; background: transparent; color: #cfcdc4; font-size: 13px; display: flex; align-items: center; gap: 8px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>Upload a file from GitHub to Drive</button>
+<button class="chip" style="height: 34px; padding: 0 14px; border: 1px solid rgba(255,255,255,.11); border-radius: 999px; background: transparent; color: #cfcdc4; font-size: 13px; display: flex; align-items: center; gap: 8px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="1.9" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>Browse all skills</button>
+</div>
+</div>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>

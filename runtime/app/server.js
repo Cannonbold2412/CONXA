@@ -298,7 +298,7 @@ try {
 // ─── 8. MCP server ────────────────────────────────────────────────────────────
 const server = new Server(
   { name: "conxa", version: RUNTIME_VERSION },
-  { capabilities: { tools: { listChanged: true } } }
+  { capabilities: { tools: { listChanged: true } }, instructions: require("./tool_defs").SERVER_INSTRUCTIONS }
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: _toolDefinitions() }));
@@ -468,6 +468,12 @@ function _skillToolDefinitions() {
       // _normalize_saved_skill_inputs. Forward it the same way so the agent knows the value must
       // be a list of these exact strings, not a single one.
       if (f.items) prop.items = f.items;
+      // A date input is sent in a normal date form and converted at run time into the format the
+      // target application itself accepted (handlers.js date_pick) — tell the agent which form.
+      if (f.format === "date") {
+        prop.format = "date";
+        prop.description = `${prop.description} (date, e.g. 2026-09-25)`;
+      }
       properties[f.name] = prop;
       // A field with a default is effectively optional to the calling agent — the execute
       // gate below fills it in from f.default when omitted, so don't advertise it as
@@ -479,7 +485,7 @@ function _skillToolDefinitions() {
     const needsStr = required.length ? ` Needs: ${required.join(", ")}.` : "";
     tools.push({
       name: `skill_${entry.workspace_id}_${entry.slug.replace(/-/g, "_")}`,
-      description: `Conxa: ${entry.manifest.name || entry.slug} on ${entry.workspace_id}. ${entry.manifest.description || ""}${needsStr}`,
+      description: `Conxa: ${entry.manifest.name || entry.slug} on ${entry.workspace_id}. ${entry.manifest.description || ""}${needsStr} Runs one record per call; for a list/spreadsheet, call once per row.`,
       inputSchema: { type: "object", properties, required },
     });
   }

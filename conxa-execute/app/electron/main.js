@@ -4,7 +4,7 @@
  * Window + IPC only. No Python backend, no recorder.
  */
 
-const { app, BrowserWindow, ipcMain, Menu, shell } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, Menu, screen, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const crypto = require("crypto");
 const net = require("net");
@@ -142,6 +142,7 @@ const ERROR_MESSAGES = {
   login_identity_missing: "CONXA couldn't read your account details after sign-in. Try again.",
   execute_context_not_available: "You don't have Conxa Execute access in that workspace anymore.",
   no_session: "No active chat session.",
+  panel_empty: "Nothing is open in the browser panel yet.",
 };
 
 function humanMessage(code, fallbackMessage) {
@@ -183,9 +184,12 @@ handle("skills:list", () => mcp.listSkills());
 handle("skills:inputs", (_e, payload) => mcp.getSkillInputs(payload.skill, payload.workspace_id));
 
 handle("skills:execute", async (_e, payload) => {
+  const startedAt = Date.now();
   const result = await mcp.executeSkill(payload);
   history.pushHistory({
-    at: new Date().toISOString(),
+    at: new Date(startedAt).toISOString(),
+    duration_ms: Date.now() - startedAt,
+    via: "form",
     skill: payload.skill,
     workspace_id: payload.workspace_id || null,
     status: result.status,
@@ -213,6 +217,10 @@ handle("sessions:delete", async (_e, payload) => {
   await sessionsStore.deleteSession(payload.id);
   return { ok: true };
 });
+
+handle("sessions:rename", async (_e, payload) => ({ ok: true, title: await sessionsStore.renameSession(payload.id, payload.title) }));
+
+handle("sessions:search", async (_e, payload) => ({ ok: true, results: await sessionsStore.searchSessions(payload && payload.query) }));
 
 handle("auth:login", async () => ({ ok: true, identity: await authService.login() }));
 
@@ -275,6 +283,34 @@ ipcMain.handle("panel:set-chat", (_e, payload) => {
   return { ok: true };
 });
 
+// The title-bar "Browser" toggle hid the panel: park every native view.
+ipcMain.handle("panel:hide-all", () => {
+  browserPanel.hideAll();
+  return { ok: true };
+});
+
+handle("panel:capture", async () => ({ ok: true, dataUrl: await browserPanel.captureVisible() }));
+
+// "Take a screenshot": step the window out of the way, grab the primary screen, bring it back.
+handle("screen:capture", async (event) => {
+  const win = windowFromEvent(event);
+  const display = screen.getPrimaryDisplay();
+  const size = {
+    width: Math.round(display.size.width * display.scaleFactor),
+    height: Math.round(display.size.height * display.scaleFactor),
+  };
+  win?.hide();
+  try {
+    await new Promise((r) => setTimeout(r, 250)); // let the compositor drop the window first
+    const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: size });
+    const src = sources.find((s) => s.display_id === String(display.id)) || sources[0];
+    if (!src) throw new Error("No screen to capture.");
+    return { ok: true, dataUrl: `data:image/jpeg;base64,${src.thumbnail.toJPEG(85).toString("base64")}` };
+  } finally {
+    win?.show();
+  }
+});
+
 ipcMain.handle("panel:select-tab", (_e, payload) => {
   const { runId, tabId, rect } = payload || {};
   if (!runId || !tabId) return { ok: false };
@@ -321,6 +357,7 @@ Rules:
 - If the user is greeting you, chatting, or asking a question, just answer. Do not call any tool.
 - Only when the user asks to run or automate something: use list_skills to find the skill, get_skill_inputs to see what it needs, then execute_skill. Never call execute_skill until the user has said which task they want and you have every required input from them.
 - Fill declared skill inputs from the user. Do not invent secret values.
+- A skill runs one record per call. If the user pastes several records (a table or list) and asks to run a skill for each, map their fields to the skill's declared inputs, show the mapping and the record count and wait for a go-ahead, then call execute_skill once per record, one at a time, and end with a per-record result. You cannot open attached files: if the user mentions a spreadsheet or file, ask them to paste its rows into the chat.
 - If a run fails, read the failure text. Recovery (self-heal) happens inside the skill runtime; you may retry execute_skill with resume_from / step_overrides only when the failure text asks for them.
 - Do not run a shell, edit files, or browse the web yourself. There is no bash or write tool.
 - execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.
@@ -395,7 +432,12 @@ async function followRun(sessionId, runId, skill) {
     const st = await waitForRunEnd(runId, mcp.callTool);
     const state = st.state === "unknown" ? "failed" : st.state;
     const summary = String(st.summary || "").trim();
-    history.updateRun(runId, { status: state, message: summary.slice(0, 300) });
+    const started = Date.parse((history.loadHistory().find((e) => e.run_id === runId) || {}).at);
+    history.updateRun(runId, {
+      status: state,
+      message: summary.slice(0, 300),
+      duration_ms: Number.isNaN(started) ? null : Date.now() - started,
+    });
     await withSessionLock(sessionId, async () => {
       let stored;
       try {
@@ -472,6 +514,7 @@ async function chatSend(payload) {
         browserPanel.tagRun(runId, sessionId);
         args = { ...args, watch: true, _run_id: runId };
       }
+      const startedAt = Date.now();
       const text = await mcp.callTool(name, args);
       if (name === "get_execution_status" && args && args.run_id) {
         // The model already read how this run ended, so no follow-up is needed.
@@ -481,13 +524,16 @@ async function chatSend(payload) {
         const runId = extractRunId(text);
         if (classifyRunResult(text) === "awaiting_auth" && runId) detached.set(runId, args.skill);
         history.pushHistory({
-          at: new Date().toISOString(),
+          at: new Date(startedAt).toISOString(),
+          // A run parked on sign-in has no real duration yet — followRun fills it in when it ends.
+          duration_ms: classifyRunResult(text) === "awaiting_auth" ? null : Date.now() - startedAt,
           skill: args.skill,
           workspace_id: args.workspace_id || null,
           status: classifyRunResult(text),
           run_id: extractRunId(text),
           message: String(text || "").trim().slice(0, 300),
           via: "chat",
+          session_id: sessionId,
         });
       }
       return text;

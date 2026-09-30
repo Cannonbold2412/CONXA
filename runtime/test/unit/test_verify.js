@@ -56,6 +56,50 @@ test("hash url_pattern assertion honours the short compiler timeout", async () =
   assert.ok(Date.now() - t0 < 500, "same-document hash checks should not inherit the page-load budget");
 });
 
+// COMPILE-3: url_changed = "the URL differs from before the action" (compiler target = before-URL).
+test("url_changed passes when the page navigated away from the pre-action URL", async () => {
+  const page = mockPage("https://app.example.com/success/42");
+  const step = { type: "click", validation: { assertions: [
+    { type: "url_changed", target: "https://app.example.com/form", required: true },
+  ] } };
+  const r = await verifyStep(page, step, {}, { url: "https://app.example.com/form" });
+  assert.strictEqual(r.pass, true);
+});
+
+test("url_changed fails when the page stayed put", { timeout: 70000 }, async () => {
+  const page = mockPage("https://app.example.com/form");
+  const step = { type: "click", validation: { assertions: [
+    { type: "url_changed", target: "https://app.example.com/form", required: true, timeout_ms: 50 },
+  ] } };
+  const r = await verifyStep(page, step, {}, { url: "https://app.example.com/form" });
+  assert.strictEqual(r.pass, false);
+  assert.strictEqual(r.channel, "url_changed");
+});
+
+test("url_changed prefers the live baseline over the recorded target", async () => {
+  // Recorded on a different host than the replay; only the live baseline is meaningful.
+  const page = mockPage("https://prod.example.com/success");
+  const step = { type: "click", validation: { assertions: [
+    { type: "url_changed", target: "https://staging.example.com/form", required: true },
+  ] } };
+  const r = await verifyStep(page, step, {}, { url: "https://prod.example.com/form" });
+  assert.strictEqual(r.pass, true);
+});
+
+test("url_changed falls back to the recorded target when no baseline was captured", async () => {
+  const page = mockPage("https://app.example.com/success");
+  const step = { type: "click", validation: { assertions: [
+    { type: "url_changed", target: "https://app.example.com/form", required: true },
+  ] } };
+  const r = await verifyStep(page, step, {});
+  assert.strictEqual(r.pass, true);
+});
+
+test("url_changed steps capture a pre-action baseline", () => {
+  const { needsStateChangedBaseline } = require("../../app/assertions");
+  assert.strictEqual(needsStateChangedBaseline({ type: "click", validation: { assertions: [{ type: "url_changed", target: "" }] } }), true);
+});
+
 test("selector_present passes when element attached", async () => {
   const page = mockPage("https://x.test", { ".success-banner": 1 });
   const step = { type: "click", validation: { assertions: [

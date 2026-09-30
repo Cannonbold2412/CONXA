@@ -55,7 +55,8 @@ function buildNote(workspace_id, skills) {
     : "_(no workflows synced yet)_";
   return [
     `Conxa has registered ${skills.length} automated workflow${skills.length === 1 ? "" : "s"} for **${workspace_id}** as MCP tools.`,
-    "Call `list_skills` to see current inputs, or `execute_skill` directly once you know which one applies:",
+    "Call `list_skills` to see current inputs, or `execute_skill` directly once you know which one applies.",
+    "Each workflow handles one record per call: for a spreadsheet or list, read it yourself, map its columns to the workflow's inputs, and call it once per row. Never pass the file to Conxa.",
     "",
     list,
   ].join("\n");

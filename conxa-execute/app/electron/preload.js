@@ -42,6 +42,9 @@ contextBridge.exposeInMainWorld("conxaExecute", {
   createSession: () => ipcRenderer.invoke("sessions:create"),
   loadSession: (payload) => ipcRenderer.invoke("sessions:load", payload),
   deleteSession: (payload) => ipcRenderer.invoke("sessions:delete", payload),
+  renameSession: (payload) => ipcRenderer.invoke("sessions:rename", payload),
+  searchSessions: (payload) => ipcRenderer.invoke("sessions:search", payload),
+  captureScreen: () => ipcRenderer.invoke("screen:capture"),
   authLogin: () => ipcRenderer.invoke("auth:login"),
   authLogout: () => ipcRenderer.invoke("auth:logout"),
   authStatus: () => ipcRenderer.invoke("auth:status"),
@@ -56,6 +59,8 @@ contextBridge.exposeInMainWorld("conxaExecute", {
     navigate: (payload) => ipcRenderer.invoke("panel:navigate", payload),
     newTab: (payload) => ipcRenderer.invoke("panel:new-tab", payload),
     loginDone: (payload) => ipcRenderer.invoke("panel:login-done", payload),
+    hideAll: () => ipcRenderer.invoke("panel:hide-all"),
+    capture: () => ipcRenderer.invoke("panel:capture"),
     onTabsChanged: (cb) => {
       const listener = (_e, payload) => cb(payload);
       ipcRenderer.on("panel:tabs", listener);

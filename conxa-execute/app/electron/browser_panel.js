@@ -305,6 +305,24 @@ function setActiveBounds(runId, tabId, rect) {
     t.view.setBounds(t.id === tabId ? rect : _HIDDEN);
   }
   run.activeTabId = tabId;
+  _shown = { runId, tabId };
+}
+
+// The last tab placed on screen — what "Capture the browser panel" grabs.
+let _shown = null;
+
+// The user hid the panel: park every view. Showing it again re-reports bounds via setActiveBounds.
+function hideAll() {
+  for (const run of _runs.values()) for (const t of run.tabs) t.view.setBounds(_HIDDEN);
+  _shown = null;
+}
+
+async function captureVisible() {
+  const run = _shown && _runs.get(_shown.runId);
+  const tab = run && run.tabs.find((t) => t.id === _shown.tabId);
+  if (!tab) throw Object.assign(new Error("Nothing is open in the browser panel."), { code: "panel_empty" });
+  const img = await tab.view.webContents.capturePage();
+  return `data:image/jpeg;base64,${img.toJPEG(85).toString("base64")}`;
 }
 
 // The user moved to another chat: park every view that belongs to a different chat at 0x0. The
@@ -312,8 +330,11 @@ function setActiveBounds(runId, tabId, rect) {
 function setVisibleChat(chatId) {
   for (const [runId, run] of _runs) {
     const owner = _chatOf.get(runId);
-    if (owner && owner !== chatId) for (const t of run.tabs) t.view.setBounds(_HIDDEN);
+    if (owner && owner !== chatId) {
+      for (const t of run.tabs) t.view.setBounds(_HIDDEN);
+      if (_shown && _shown.runId === runId) _shown = null;
+    }
   }
 }
 
-module.exports = { init, tagRun, chatOf, newView, newTab, closeTab, navigate, runEnd, setActiveBounds, setVisibleChat, loginDone, saveDownload };
+module.exports = { init, tagRun, chatOf, newView, newTab, closeTab, navigate, runEnd, setActiveBounds, setVisibleChat, hideAll, captureVisible, loginDone, saveDownload };
