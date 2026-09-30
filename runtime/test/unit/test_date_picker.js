@@ -7,6 +7,7 @@ const assert = require("node:assert");
 
 const {
   parseDateValue,
+  parseDateInput,
   formatForDisplay,
   parseHeader,
   monthDelta,
@@ -14,7 +15,7 @@ const {
   dayNumberSelector,
   monthLabel,
 } = require("../../app/date_picker");
-const { _dateValueMatches } = require("../../app/handlers");
+const { _dateValueMatches, HANDLERS } = require("../../app/handlers");
 
 test("parseDateValue: plain ISO date", () => {
   assert.deepStrictEqual(parseDateValue("2026-09-15"), { year: 2026, month: 9, day: 15, hour: null, minute: null });
@@ -156,4 +157,48 @@ test("_dateValueMatches: rejects an empty readback", () => {
 test("_dateValueMatches: rejects a readback for the wrong date", () => {
   const parsed = parseDateValue("2026-09-15");
   assert.strictEqual(_dateValueMatches("09/16/2026", parsed, "MM/DD/YYYY"), false);
+});
+
+// Typed-date format replay: semantic date in -> the application's own recorded format out.
+const YMD = { year: 2026, month: 9, day: 25, hour: null, minute: null };
+
+test("formatForDisplay: unpadded and month-name tokens", () => {
+  const parsed = parseDateValue("2026-01-05");
+  assert.strictEqual(formatForDisplay(parsed, "D/M/YYYY"), "5/1/2026");
+  assert.strictEqual(formatForDisplay(parsed, "MMM D, YYYY"), "Jan 5, 2026");
+  assert.strictEqual(formatForDisplay(parsed, "D MMMM YYYY"), "5 January 2026");
+});
+
+test("parseDateInput: ISO and month-name forms need no format", () => {
+  assert.deepStrictEqual(parseDateInput("2026-09-25", ""), YMD);
+  assert.deepStrictEqual(parseDateInput("September 25, 2026", ""), YMD);
+  assert.deepStrictEqual(parseDateInput("Sep 25 2026", ""), YMD);
+  assert.deepStrictEqual(parseDateInput("25th September 2026", ""), YMD);
+  assert.deepStrictEqual(parseDateInput("25-Sep-2026", ""), YMD);
+});
+
+test("parseDateInput: numeric is read through the app's own format, never guessed", () => {
+  assert.deepStrictEqual(parseDateInput("25/09/2026", "DD/MM/YYYY"), YMD);
+  assert.deepStrictEqual(parseDateInput("09/25/2026", "MM/DD/YYYY"), YMD);
+  assert.strictEqual(parseDateInput("25/09/2026", ""), null);
+  assert.strictEqual(parseDateInput("09/25/2026", "DD/MM/YYYY"), null); // month 25
+  assert.strictEqual(parseDateInput("31/02/2026", "DD/MM/YYYY"), null); // not a real date
+  assert.strictEqual(parseDateInput("not a date", "DD/MM/YYYY"), null);
+});
+
+test("semantic date -> each application's recorded format", () => {
+  const cases = { "DD/MM/YYYY": "25/09/2026", "MM/DD/YYYY": "09/25/2026", "YYYY-MM-DD": "2026-09-25", "DD.MM.YYYY": "25.09.2026", "MMM D, YYYY": "Sep 25, 2026" };
+  for (const [fmt, expected] of Object.entries(cases)) {
+    assert.strictEqual(formatForDisplay(parseDateInput("September 25, 2026", fmt), fmt), expected, fmt);
+  }
+});
+
+test("date_pick: an unreadable date on a format-aware step is a badInput error, not a garbage fill", async () => {
+  const step = {
+    action: "date_pick",
+    value: "{{date}}",
+    input_binding: "date",
+    handler_hints: { date_picker: { kind: "text_field", display_format: "DD/MM/YYYY" } },
+  };
+  await assert.rejects(() => HANDLERS.date_pick(null, step, { date: "next tuesday" }), (err) => err.badInput === true);
 });

@@ -22,6 +22,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from conxa_compile.compiler.date_format import detect_date_format
 from conxa_compile.compiler.input_binding import derive_input_binding
 from conxa_core.models.skill_spec import Assertion, HandlerHints, SkillStep, ValidationBlock
 
@@ -302,6 +303,56 @@ def _collapse_one(
         hints=hints,
     )
     return [step]
+
+
+_TYPED_ACTIONS = frozenset({"type", "fill"})
+_NATIVE_DATE_INPUT_TYPES = frozenset({"date", "datetime-local", "time", "month", "week", "select"})
+
+
+def convert_typed_date_steps(
+    steps: list[SkillStep],
+    events: list[dict[str, Any]],
+    policy: dict[str, Any],
+    locale_sample: str = "",
+) -> None:
+    """Turn a `type`/`fill` step whose recorded literal is a date ("25/09/2026") into a
+    `date_pick` step that remembers the field's format, so the runtime can convert whatever date
+    the caller supplies into the format THIS application accepted. In place, 1:1 with `events`
+    (must run before collapse_date_picker_runs, which changes the step count).
+
+    kind="text_field" (not control_kind="date_picker") tells the runtime there is no calendar
+    widget to fall back to: fill the formatted text, read it back, fail if the field disagrees.
+    An ambiguous or non-date literal is left exactly as compiled before."""
+    if len(steps) != len(events):
+        raise ValueError("convert_typed_date_steps: steps and events must be the same length")
+    for step, ev in zip(steps, events):
+        if step.action not in _TYPED_ACTIONS:
+            continue
+        target = ev.get("target") or {}
+        if str((ev.get("semantic") or {}).get("input_type") or "").lower() in _NATIVE_DATE_INPUT_TYPES:
+            continue
+        if str(target.get("tag") or "").lower() == "select":
+            continue
+        detected = detect_date_format(
+            str((ev.get("action") or {}).get("value") or ""),
+            str(target.get("placeholder") or ""),
+            locale_sample,
+        )
+        if detected is None:
+            continue
+        display_format, iso = detected
+        step.action = "date_pick"
+        step.intent = "pick_date"
+        step.value, step.input_binding = _binding_for(ev, iso, policy, "date")
+        step.handler_hints = step.handler_hints.model_copy(update={
+            "date_picker": {"kind": "text_field", "display_format": display_format, "recorded_value": iso},
+        })
+        # The step's own value_equals expects the token/literal, never the app-formatted text the
+        # field will actually hold, so it would fail every run whose date differs from the
+        # recording; the runtime's format-aware readback in handlers.js date_pick is the check.
+        step.validation = step.validation.model_copy(update={
+            "assertions": [a for a in step.validation.assertions if a.type != "value_equals"],
+        })
 
 
 def collapse_date_picker_runs(
