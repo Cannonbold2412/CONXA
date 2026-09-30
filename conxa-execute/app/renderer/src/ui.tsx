@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode, type ButtonHTMLAttributes } from "react";
 
-export function Icon({ d, size = 16 }: { d: string; size?: number }) {
+export function Icon({ d, size = 16, stroke = 1.75, className }: { d: string; size?: number; stroke?: number; className?: string }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden>
       <path d={d} />
     </svg>
   );
@@ -19,8 +19,8 @@ export const paths = {
   dots: "M12 12h.01M12 5h.01M12 19h.01",
   trash: "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6",
   menu: "M4 6h16M4 12h16M4 18h16",
-  back: "M19 12H5M12 19l-7-7 7-7",
-  forward: "M5 12h14M12 5l7 7-7 7",
+  back: "M15 18l-6-6 6-6",
+  forward: "M9 18l6-6-6-6",
   minimize: "M5 19h14",
   maximize: "M6 6h12v12H6z",
   restore: "M5 9V5h4M19 9V5h-4M5 15v4h4M19 15v4h-4",
@@ -29,7 +29,36 @@ export const paths = {
   copy: "M9 9h11v11H9zM5 15V5h10",
   edit: "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z",
   check: "M20 6 9 17l-5-5",
+  tick: "M5 12.5l4.5 4.5L19 7",
+  chevronUp: "M6 15l6-6 6 6",
+  updown: "M8 9l4-4 4 4M8 15l4 4 4-4",
+  search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM20 20l-3.5-3.5",
+  grid: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+  pulse: "M3 12h4l3-8 4 16 3-8h4",
+  shield: "M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6zM9 12l2 2 4-4",
+  question: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5v.7M12 17h.01",
+  warning: "M12 4l9 16H3zM12 10v4M12 17h.01",
+  paperclip: "M20 12l-8.5 8.5a5 5 0 0 1-7-7L13 5a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L14 8",
+  screenshot: "M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
+  browser: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4v16",
+  retry: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
+  arrowUp: "M12 19V5M5 12l7-7 7 7",
+  upload: "M12 15V4M7 9l5-5 5 5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3",
+  file: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5",
 };
+
+/** The Conxa mark: brand-orange rounded square with a dark chevron. */
+export function BrandMark({ size = 22 }: { size?: 22 | 34 }) {
+  const big = size === 34;
+  return (
+    <span
+      className={`flex shrink-0 items-center justify-center bg-brand text-bg ${big ? "h-[34px] w-[34px] rounded-[9px]" : "h-[22px] w-[22px] rounded-md"}`}
+      aria-hidden
+    >
+      <Icon d="M9 7l5 5-5 5" size={big ? 20 : 14} stroke={big ? 2.8 : 3} />
+    </span>
+  );
+}
 
 /** Hover-revealed copy (+ optional edit) icons under a chat message; parent needs `group`. */
 export function MsgActions({ text, onEdit, className = "" }: { text: string; onEdit?: () => void; className?: string }) {
@@ -110,7 +139,7 @@ export function Row({
         active ? "bg-bg-active text-fg" : "text-fg-muted hover:bg-bg-hover hover:text-fg"
       }`}
     >
-      <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-1.5 text-left text-[13px]">
+      <button type="button" onClick={onClick} aria-current={active ? "page" : undefined} className="flex h-[34px] min-w-0 flex-1 items-center gap-2.5 px-2.5 text-left text-[13.5px]">
         {icon}
         <span className="min-w-0 flex-1 truncate">{children}</span>
       </button>
@@ -121,7 +150,7 @@ export function Row({
             aria-label="Row options"
             aria-expanded={menuOpen}
             className={`flex h-6 w-6 items-center justify-center rounded-md text-fg-dim transition-opacity hover:bg-bg-elevated hover:text-fg ${
-              menuOpen ? "opacity-100" : "opacity-50 group-hover:opacity-100"
+              menuOpen ? "opacity-100" : "opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
             }`}
             onClick={(e) => {
               e.stopPropagation();

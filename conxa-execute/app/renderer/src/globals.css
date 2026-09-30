@@ -6,7 +6,9 @@
   --bg-elevated: #2a2a28;
   --bg-hover: #252523;
   --bg-active: #30302e;
+  --bg-raised: #3a3a37;
   --fg: #f5f4f0;
+  --fg-soft: #cfcdc4;
   --fg-muted: #b4b2a9;
   --fg-dim: #8a8880;
   --line: rgba(255, 255, 255, 0.08);
@@ -18,8 +20,8 @@
   --err-fg: #f0c4c4;
   --warn-bg: #2a2114;
   --warn-fg: #e8d4b0;
-  --font-ui: Inter, system-ui, sans-serif;
-  --font-display: "Source Serif 4", Georgia, serif;
+  --font-ui: Geist, system-ui, sans-serif;
+  --font-code: "Geist Mono", ui-monospace, monospace;
 }
 
 :root.light {
@@ -28,7 +30,9 @@
   --bg-elevated: #ffffff;
   --bg-hover: #ece9e2;
   --bg-active: #e5e2d9;
+  --bg-raised: #ddd9cf;
   --fg: #2b2a27;
+  --fg-soft: #45433d;
   --fg-muted: #5f5d56;
   --fg-dim: #8a8880;
   --line: rgba(0, 0, 0, 0.08);
@@ -48,7 +52,9 @@
   --color-bg-elevated: var(--bg-elevated);
   --color-bg-hover: var(--bg-hover);
   --color-bg-active: var(--bg-active);
+  --color-bg-raised: var(--bg-raised);
   --color-fg: var(--fg);
+  --color-fg-soft: var(--fg-soft);
   --color-fg-muted: var(--fg-muted);
   --color-fg-dim: var(--fg-dim);
   --color-line: var(--line);
@@ -61,7 +67,7 @@
   --color-warn-bg: var(--warn-bg);
   --color-warn-fg: var(--warn-fg);
   --font-sans: var(--font-ui);
-  --font-serif: var(--font-display);
+  --font-mono: var(--font-code);
 }
 
 html, body, #root { height: 100%; }

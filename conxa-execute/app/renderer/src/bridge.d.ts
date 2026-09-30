@@ -13,10 +13,16 @@ export type HistoryRow = {
   status: string;
   run_id?: string | null;
   message?: string;
+  duration_ms?: number | null;
+  via?: "chat" | "form";
+  session_id?: string;
 };
 
+export type SearchHit = SessionSummary & { snippet: string };
+
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
-export type ChatMessage = { role: string; content: string | ContentPart[]; thinking?: string };
+export type ToolCall = { id: string; type?: string; function: { name: string; arguments: string } };
+export type ChatMessage = { role: string; content: string | ContentPart[]; thinking?: string; tool_calls?: ToolCall[]; tool_call_id?: string };
 export type Attachment = { name: string; mime: string; kind: "image" | "text"; data: string };
 
 export type ChatDelta = { requestId: string; type: "text" | "reasoning"; text: string };
@@ -84,6 +90,9 @@ export type Bridge = {
   createSession: () => Promise<{ ok: boolean; session?: SessionSummary; message?: string }>;
   loadSession: (p: { id: string }) => Promise<{ ok: boolean; session?: SessionDetail; message?: string }>;
   deleteSession: (p: { id: string }) => Promise<{ ok: boolean; message?: string }>;
+  renameSession: (p: { id: string; title: string }) => Promise<{ ok: boolean; title?: string; message?: string }>;
+  searchSessions: (p: { query: string }) => Promise<{ ok: boolean; results?: SearchHit[]; message?: string }>;
+  captureScreen: () => Promise<{ ok: boolean; dataUrl?: string; message?: string }>;
   authLogin: () => Promise<{ ok: boolean; identity?: Identity; code?: string; message?: string }>;
   authLogout: () => Promise<{ ok: boolean }>;
   authStatus: () => Promise<{ ok: boolean; signedIn: boolean; identity?: Identity | null }>;
@@ -98,6 +107,8 @@ export type Bridge = {
     navigate: (p: { runId: string; tabId: string; action: PanelNavAction; url?: string }) => Promise<{ ok: boolean }>;
     newTab: (p: { runId: string }) => Promise<{ ok: boolean }>;
     loginDone: (p: { runId: string; tabId: string }) => Promise<{ ok: boolean; error?: string }>;
+    hideAll: () => Promise<{ ok: boolean }>;
+    capture: () => Promise<{ ok: boolean; dataUrl?: string; message?: string }>;
     onTabsChanged: (cb: (p: { runId: string; tabs: PanelTab[]; chatId?: string | null; focus?: boolean }) => void) => () => void;
   };
   windowControls: {

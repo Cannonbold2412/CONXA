@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Conxa Execute — conversation</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500&amp;display=swap">
+<style>
+body{margin:0}
+a{color:#d97757}a:hover{color:#e69477}
+button{font-family:inherit;cursor:pointer}
+textarea::placeholder{color:#85837b}
+.ib:hover{background:#2a2a28;color:#f5f4f0}
+.nav:hover{background:#252523}
+.chip:hover{border-color:rgba(217,119,87,.45)}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; display: flex; flex-direction: column; background: #141413; color: #f5f4f0; font-family: Geist, system-ui, sans-serif; font-size: 14px; overflow: hidden">
+
+<!-- Title bar -->
+<div style="height: 44px; display: flex; align-items: center; flex-shrink: 0; border-bottom: 1px solid rgba(255,255,255,.06)">
+<div style="width: 260px; height: 100%; box-sizing: border-box; padding: 0 10px; display: flex; align-items: center; gap: 2px; background: #1c1c1a; border-right: 1px solid rgba(255,255,255,.06)">
+<button class="ib" aria-label="Toggle sidebar" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M9 4v16"></path></svg></button>
+<button class="ib" aria-label="Back" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"></path></svg></button>
+<button class="ib" aria-label="Forward" style="width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: #4a4944; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"></path></svg></button>
+</div>
+<div style="flex-grow: 1; display: flex; justify-content: center">
+<button class="ib" style="height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: #e0ded6; font-size: 13.5px; display: flex; align-items: center; gap: 6px">Upload Fancy.gitignore from GitHub to Drive<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8a8880" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+</div>
+<div style="display: flex; align-items: center; gap: 2px; padding-right: 4px">
+<button class="ib" aria-label="Show browser panel" style="height: 30px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; font-size: 13px; display: flex; align-items: center; gap: 6px; margin-right: 10px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M15 4v16"></path></svg>Browser</button>
+<button class="ib" aria-label="Minimize" style="width: 44px; height: 44px; border: 0; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 12h14"></path></svg></button>
+<button class="ib" aria-label="Maximize" style="width: 44px; height: 44px; border: 0; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="4" y="4" width="16" height="16" rx="1.5"></rect></svg></button>
+<button class="ib" aria-label="Close" style="width: 44px; height: 44px; border: 0; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+</div>
+</div>
+
+<div style="flex-grow: 1; display: flex; min-height: 0">
+
+<!-- Sidebar -->
+<nav aria-label="Chats" style="width: 260px; flex-shrink: 0; box-sizing: border-box; background: #1c1c1a; border-right: 1px solid rgba(255,255,255,.06); display: flex; flex-direction: column; padding: 14px 10px 10px">
+<div style="display: flex; align-items: center; gap: 10px; padding: 2px 8px 16px">
+<div style="width: 22px; height: 22px; border-radius: 6px; background: #d97757; display: flex; align-items: center; justify-content: center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#141413" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7l5 5-5 5"></path></svg></div>
+<div style="font-size: 15px; font-weight: 600; letter-spacing: -0.01em">Conxa <span style="color: #8a8880; font-weight: 500">Execute</span></div>
+</div>
+<button class="nav" style="height: 38px; border: 1px solid rgba(255,255,255,.10); border-radius: 10px; background: #1c1c1a; color: #f5f4f0; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px; margin-bottom: 8px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d97757" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg><span style="flex-grow: 1; text-align: left">New chat</span><span style="font-family: 'Geist Mono', monospace; font-size: 11px; color: #85837b">Ctrl N</span></button>
+<a class="nav" href="#" style="height: 36px; border-radius: 8px; color: #cfcdc4; text-decoration: none; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>Search</a>
+<a class="nav" href="#" style="height: 36px; border-radius: 8px; color: #cfcdc4; text-decoration: none; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>Skills</a>
+<a class="nav" href="#" style="height: 36px; border-radius: 8px; color: #cfcdc4; text-decoration: none; font-size: 14px; display: flex; align-items: center; gap: 10px; padding: 0 10px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"></path></svg>Runs</a>
+
+<div style="font-size: 12px; color: #85837b; padding: 22px 10px 8px; font-weight: 500">Recents</div>
+<div style="display: flex; flex-direction: column; gap: 1px">
+<a href="#" aria-current="page" style="height: 34px; border-radius: 8px; background: #30302e; color: #f5f4f0; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">Upload Fancy.gitignore from GitHub…</a>
+<a class="nav" href="#" style="height: 34px; border-radius: 8px; color: #b4b2a9; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; padding: 0 10px; white-space: nowrap; overflow: hidden">Upload Dotnet.gitignore to Drive</a>
+<a class="nav" href="#" style="height: 34px; border-radius: 8px; color: #b4b2a9; text-decoration: none; font-size: 13.5px; display: flex; align-items: center; padding: 0 10px; white-space: nowrap; overflow: hidden">Upload Dotnet.gitignore (retry)</a>
+</div>
+
+<div style="flex-grow: 1"></div>
+<button class="nav" style="height: 52px; border: 0; border-radius: 10px; background: transparent; color: #f5f4f0; display: flex; align-items: center; gap: 10px; padding: 0 8px; text-align: left">
+<div style="width: 32px; height: 32px; border-radius: 999px; background: #30302e; border: 1px solid rgba(217,119,87,.35); color: #d97757; font-size: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0">KN</div>
+<div style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 13.5px; font-weight: 500">Kiran Nandi</span>
+<span style="font-size: 12px; color: #8a8880">CONXA workspace</span>
+</div>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8880" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"></path></svg>
+</button>
+</nav>
+
+<!-- Conversation -->
+<main style="flex-grow: 1; display: flex; flex-direction: column; min-width: 0">
+<div style="flex-grow: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding: 0 40px">
+<div style="width: 720px; display: flex; flex-direction: column; gap: 22px; padding-bottom: 28px">
+
+<div style="display: flex; justify-content: flex-end">
+<div style="max-width: 520px; background: #2a2a28; border-radius: 18px; padding: 10px 16px; font-size: 15px; line-height: 1.55; color: #f5f4f0">Upload Fancy.gitignore from github to drive</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 14px">
+<p style="margin: 0; font-size: 15.5px; line-height: 1.65; color: #ebe9e2">Found the skill. Running it to move <strong style="color: #f5f4f0; font-weight: 600">Fancy.gitignore</strong> from GitHub to Drive.</p>
+
+<!-- Resolved sign-in -->
+<div style="display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 14px; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; font-size: 13.5px; color: #b4b2a9">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"></path><path d="M9 12l2 2 4-4"></path></svg>
+<span style="flex-grow: 1">Signed in to <span style="color: #f5f4f0">GitHub</span> and <span style="color: #f5f4f0">Google</span> in the browser panel</span>
+<span style="font-size: 12px; color: #85837b">Tabs closed automatically</span>
+</div>
+
+<!-- Run card -->
+<div style="border: 1px solid rgba(255,255,255,.08); border-radius: 14px; background: #1c1c1a; overflow: hidden">
+<button style="width: 100%; height: 54px; border: 0; background: transparent; color: #f5f4f0; display: flex; align-items: center; gap: 12px; padding: 0 16px; text-align: left">
+<div style="width: 26px; height: 26px; border-radius: 8px; background: rgba(125,206,160,.12); display: flex; align-items: center; justify-content: center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></svg></div>
+<div style="flex-grow: 1; display: flex; flex-direction: column; gap: 2px">
+<span style="font-size: 14px; font-weight: 500">Upload file from GitHub to Drive</span>
+<span style="font-size: 12px; color: #8a8880">Completed · 4 steps · ran on this computer</span>
+</div>
+<span style="font-family: 'Geist Mono', monospace; font-size: 12px; color: #8a8880">0:38</span>
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8a8880" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="{{chevron}}"></path></svg>
+</button>
+<sc-if value="{{showSteps}}" hint-placeholder-val="{{ true }}">
+<div style="border-top: 1px solid rgba(255,255,255,.06); padding: 8px 16px 10px 54px; display: flex; flex-direction: column">
+<div style="height: 34px; display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: #cfcdc4"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></svg><span style="flex-grow: 1">Open the file on GitHub</span><span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: #85837b">0:06</span></div>
+<div style="height: 34px; display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: #cfcdc4"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></svg><span style="flex-grow: 1">Download Fancy.gitignore</span><span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: #85837b">0:04</span></div>
+<div style="height: 34px; display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: #cfcdc4"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></svg><span style="flex-grow: 1">Open Google Drive</span><span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: #85837b">0:09</span></div>
+<div style="height: 34px; display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: #cfcdc4"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"></path></svg><span style="flex-grow: 1">Upload to My Drive</span><span style="font-family: 'Geist Mono', monospace; font-size: 11.5px; color: #85837b">0:19</span></div>
+</div>
+</sc-if>
+<div style="border-top: 1px solid rgba(255,255,255,.06); padding: 11px 16px; display: flex; align-items: flex-start; gap: 10px; background: rgba(212,160,84,.07)">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#d4a054" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="margin-top: 2px; flex-shrink: 0"><path d="M12 4l9 16H3z"></path><path d="M12 10v4M12 17h.01"></path></svg>
+<span style="flex-grow: 1; font-size: 13px; line-height: 1.5; color: #e8d4b0">The live page looked slightly different from the recording. Every step still finished — worth a quick look in Drive.</span>
+<a href="#" style="font-size: 13px; text-decoration: none; white-space: nowrap">Open Drive</a>
+</div>
+</div>
+
+<p style="margin: 0; font-size: 15.5px; line-height: 1.65; color: #ebe9e2">Done — <strong style="color: #f5f4f0; font-weight: 600">Fancy.gitignore</strong> was downloaded from GitHub and uploaded to your Drive.</p>
+
+<div style="display: flex; gap: 2px; margin-left: -6px">
+<button class="ib" aria-label="Copy" style="width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; display: flex; align-items: center; justify-content: center"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"></path></svg></button>
+<button class="ib" aria-label="Run again" style="height: 30px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; display: flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 12.5px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"></path><path d="M20 4v7h-7"></path></svg>Run again</button>
+</div>
+</div>
+</div>
+</div>
+
+<!-- Composer -->
+<div style="display: flex; flex-direction: column; align-items: center; padding: 0 40px 14px">
+<div style="width: 720px; box-sizing: border-box; background: #2a2a28; border: 1px solid rgba(255,255,255,.10); border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.35); padding: 14px 12px 10px 16px; display: flex; flex-direction: column; gap: 10px">
+<textarea aria-label="Message Conxa" rows="1" placeholder="Reply to Conxa…" style="border: 0; outline: none; resize: none; background: transparent; color: #f5f4f0; font-family: inherit; font-size: 15px; line-height: 1.5; height: 24px; padding: 0"></textarea>
+<div style="display: flex; align-items: center; gap: 6px">
+<button class="ib" aria-label="Add attachments and options" style="width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.10); border-radius: 10px; background: transparent; color: #b4b2a9; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg></button>
+<div role="group" aria-label="Input mode" style="display: flex; padding: 2px; border-radius: 10px; background: #141413; border: 1px solid rgba(255,255,255,.07)">
+<button aria-pressed="true" style="height: 26px; padding: 0 12px; border: 0; border-radius: 8px; background: #30302e; color: #f5f4f0; font-size: 12.5px; font-weight: 500">Chat</button>
+<button aria-pressed="false" style="height: 26px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: #8a8880; font-size: 12.5px">Form</button>
+</div>
+<button class="ib" style="height: 32px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; color: #b4b2a9; font-size: 12.5px; display: flex; align-items: center; gap: 6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7dcea0" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"></path><path d="M9 12l2 2 4-4"></path></svg>Auto-approve</button>
+<div style="flex-grow: 1"></div>
+<button class="ib" style="height: 32px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; color: #8a8880; font-size: 12.5px; display: flex; align-items: center; gap: 4px">CONXA workspace<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg></button>
+<button aria-label="Send" style="width: 34px; height: 34px; border: 0; border-radius: 10px; background: #f5f4f0; color: #141413; display: flex; align-items: center; justify-content: center"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+</div>
+</div>
+<div style="font-size: 11.5px; color: #85837b; padding-top: 10px">Skills run locally on this computer. Conxa can make mistakes — check important results.</div>
+</div>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"showSteps":{"editor":"boolean","default":true},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+renderVals() {
+const open = this.props.showSteps ?? true;
+return { showSteps: open, chevron: open ? 'M6 15l6-6 6 6' : 'M6 9l6 6 6-6' };
+}
+}
+</script>
+</body>
+</html>

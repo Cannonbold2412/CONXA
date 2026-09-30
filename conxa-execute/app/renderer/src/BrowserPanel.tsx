@@ -61,12 +61,27 @@ function MenuItem({ children, onClick, disabled }: { children: ReactNode; onClic
  * empty: anything drawn inside it would be invisibly stuck underneath the real browser view,
  * so the header has to stay outside it.
  */
-export function BrowserPanel({ sessionId }: { sessionId: string | null }) {
+export function BrowserPanel({
+  sessionId,
+  hidden = false,
+  onRunCount,
+  onWantsShow,
+}: {
+  sessionId: string | null;
+  hidden?: boolean;
+  onRunCount?: (count: number) => void;
+  onWantsShow?: () => void;
+}) {
   const [allRuns, setRuns] = useState<RunEntry[]>([]);
   // Only the current chat's runs (plus runs started outside any chat) are shown; the rest keep
   // running with their native view parked by the main process (panel:set-chat).
   const runs = useMemo(() => allRuns.filter((r) => r.chatId === null || r.chatId === sessionId), [allRuns, sessionId]);
   const [selected, setSelected] = useState<string | null>(null);
+  const wantsShow = useRef(onWantsShow);
+  wantsShow.current = onWantsShow;
+  useEffect(() => { onRunCount?.(runs.length); }, [runs.length, onRunCount]);
+  // Hidden from the title bar: the native views float above the page, so park them explicitly.
+  useEffect(() => { if (hidden) void window.conxaExecute.panel.hideAll(); }, [hidden]);
   const placeholderRef = useRef<HTMLDivElement | null>(null);
   const asideRef = useRef<HTMLElement | null>(null);
   const [expanded, setExpanded] = useState(false); // ⤢ — fill all width the chat column can spare
@@ -82,10 +97,15 @@ export function BrowserPanel({ sessionId }: { sessionId: string | null }) {
 
   useEffect(() => {
     return window.conxaExecute.panel.onTabsChanged(({ runId, tabs, chatId, focus }) => {
+      // A new run or a sign-in brings a hidden panel back — it's the run's only window.
+      if (tabs.length && focus) wantsShow.current?.();
       setRuns((prev) => {
         if (tabs.length === 0) return prev.filter((r) => r.runId !== runId);
         const idx = prev.findIndex((r) => r.runId === runId);
-        if (idx === -1) return [...prev, { runId, tabs, chatId: chatId ?? null }];
+        if (idx === -1) {
+          queueMicrotask(() => wantsShow.current?.());
+          return [...prev, { runId, tabs, chatId: chatId ?? null }];
+        }
         const next = [...prev];
         next[idx] = { runId, tabs, chatId: chatId ?? null };
         return next;
@@ -131,7 +151,7 @@ export function BrowserPanel({ sessionId }: { sessionId: string | null }) {
       ro.disconnect();
       window.removeEventListener("resize", report);
     };
-  }, [activeRun, activeTab]);
+  }, [activeRun, activeTab, hidden]);
 
   // Leaving a tab (or the tab navigating) discards a half-typed address.
   useEffect(() => { setUrlDraft(null); }, [activeTab, activeTabInfo?.url]);
@@ -208,7 +228,7 @@ export function BrowserPanel({ sessionId }: { sessionId: string | null }) {
     h.addEventListener("pointercancel", up);
   }
 
-  if (runs.length === 0) return null;
+  if (runs.length === 0 || hidden) return null;
 
   return (
     <aside

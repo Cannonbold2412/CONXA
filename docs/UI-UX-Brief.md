@@ -16,6 +16,8 @@
 7. [Missing Experiences](#7-missing-experiences)
 8. [Enterprise UX Considerations](#8-enterprise-ux-considerations)
 9. [Recommended Improvements](#9-recommended-improvements)
+10. [Runner Tray](#10-runner-tray-prod-5-2026-08-26)
+11. [Conxa Execute](#11-conxa-execute-redesign-2026-10-01)
 
 ---
 
@@ -921,3 +923,24 @@ code — no .ico asset to ship.
 Known gaps (tracked in TODO.md): no per-schedule enable/disable from the menu yet; the status
 line does not show the next fire time (state.json carries it; menu text kept short); macOS has
 no tray.
+
+---
+
+## 11. Conxa Execute (redesign, 2026-10-01)
+
+The Execute desktop app (`conxa-execute/app/renderer/src/`) is built from the three boards in `docs/artifacts/conxa-execute-redesign/` (Main, Home, Attach). The palette is the app's warm charcoal with the `#d97757` accent. The typeface is Geist, with Geist Mono for shortcuts and durations. The light theme is kept.
+
+| Screen | What it shows |
+|---|---|
+| Title bar | Sidebar toggle, back/forward, the current chat's name (menu: Rename, Delete), the **Browser** show/hide toggle (disabled until a run opens the panel), window controls |
+| Sidebar | Conxa mark, **New chat** (Ctrl N), **Search / Skills / Runs**, Recents (a green dot while a chat's turn is running), account footer (name + active workspace, opens Settings) |
+| Home (empty chat) | "Good {morning/afternoon/evening}, {first name}", the composer, chips for three skills (prefill "Run …") and **Browse all skills** |
+| Thread | User bubbles (attached images as tiles), assistant prose, one **run card** per skill run, confirm card in "Ask me first" mode, **Run again** under the latest reply |
+| Run card | Skill name, status (done / didn't finish / waiting for sign-in / busy / cancelled), time taken, downloaded files, an amber strip for runtime warnings with **Open page**. There is no per-step list, because the run result carries none. Status and duration come from the run history, so a run parked on sign-in updates when it ends |
+| Composer | Attachment tiles, the **+** menu (Add files or photos Ctrl U, Take a screenshot, Capture the browser panel, "Before a skill runs": Ask me first / Auto-approve), Chat/Form switch (Form opens Skills), permission chip, workspace switcher, Send |
+| Drag and drop | Dropping files on the chat column shows a dashed overlay. Images and text files up to 10 MB each; no PDFs |
+| Search | Finds chats by name or by anything the user or Conxa said in them |
+| Skills | A card per installed skill with **Run with form** (the fill-in form) and **Ask in chat** |
+| Runs | The latest 50 runs from chat and forms: status filter, time, duration, source. A row expands to show the result text, **Open chat** and **Remove from list** |
+
+Not built on purpose: the Attach board's editable "Run N times" review table (the AI still proposes batches in plain text), PDF reading, and a per-step run timeline.
