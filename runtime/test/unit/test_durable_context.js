@@ -65,6 +65,20 @@ test("buildNote: lists skills, falls back to a placeholder when empty", () => {
   assert.ok(empty.includes("no workflows synced yet"));
 });
 
+test("dataset guidance: the agent owns the file, the runtime gets one record per call", () => {
+  const { buildNote } = freshDurableContext();
+  const note = buildNote("acme", ["onboard-user"]);
+  assert.ok(note.includes("one record per call"));
+  assert.ok(note.includes("Never pass the file to Conxa"));
+
+  const { SERVER_INSTRUCTIONS, CORE_TOOL_DEFS } = require("../../app/tool_defs");
+  assert.ok(SERVER_INSTRUCTIONS.includes("ONE record per call"));
+  assert.ok(SERVER_INSTRUCTIONS.includes("get_skill_inputs"));
+  assert.ok(SERVER_INSTRUCTIONS.includes("Never pass the file"));
+  const exec = CORE_TOOL_DEFS.find((t) => t.name === "execute_skill");
+  assert.ok(exec.inputSchema.properties.inputs.description.includes("ONE record"));
+});
+
 test("writeDedicatedFile: creates parents, writes content, no-op when unchanged", async () => {
   const dir = mkFixture();
   const { writeDedicatedFile } = freshDurableContext();
