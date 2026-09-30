@@ -62,7 +62,6 @@ export const ASSERTION_TYPE_HELP: Record<string, string> = {
 
 // Types that take a selector/pattern/text in `target`. state_changed needs no target.
 const TARGET_LABEL: Record<string, string> = {
-  url_changed: 'URL prefix (blank = must just differ)',
   url_pattern: 'Regular expression',
   selector_present: 'Selector',
   selector_absent: 'Selector',
@@ -127,10 +126,13 @@ export function isAssertionRequired(a: Record<string, unknown>): boolean {
   return a.required !== false
 }
 
+/** state_changed and url_changed compare against the page as it was before the action — no target. */
+const takesTarget = (type: string) => type !== 'state_changed' && type !== 'url_changed'
+
 /** A check with a blank target (or blank expected value, for value_equals) never verifies
- *  anything at runtime — it silently no-ops. state_changed is the only type with no target. */
+ *  anything at runtime — it silently no-ops. */
 export function isAssertionValid(a: AssertionDraft): boolean {
-  if (a.type !== 'state_changed' && !(a.target ?? '').trim()) return false
+  if (takesTarget(a.type) && !(a.target ?? '').trim()) return false
   if (a.type === 'value_equals' && !(a.expected ?? '').trim()) return false
   return true
 }
@@ -218,7 +220,7 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
 
       <ul className="space-y-2.5">
         {assertions.map((a, i) => {
-          const missingTarget = a.type !== 'state_changed' && !(a.target ?? '').trim()
+          const missingTarget = takesTarget(a.type) && !(a.target ?? '').trim()
           const missingExpected = a.type === 'value_equals' && !(a.expected ?? '').trim()
           return (
           <li key={i} className="border-border/50 bg-muted/15 hover:border-border rounded-lg border p-3 transition-colors">
@@ -238,7 +240,7 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
                   </p>
                   <p className="font-mono text-xs text-zinc-500">
                     {a.type}
-                    {a.type !== 'state_changed' ? `: "${a.target ?? ''}"` : ''}
+                    {takesTarget(a.type) ? `: "${a.target ?? ''}"` : ''}
                   </p>
                 </div>
               </div>
@@ -289,7 +291,7 @@ export function AssertionEditorRows({ assertions, onChange }: RowsProps) {
                     ))}
                   </select>
                 </div>
-                {a.type !== 'state_changed' ? (
+                {takesTarget(a.type) ? (
                   <div className="min-w-40 flex-1 space-y-1">
                     <Label className="text-foreground text-xs">{TARGET_LABEL[a.type] ?? 'Target'}</Label>
                     <Input

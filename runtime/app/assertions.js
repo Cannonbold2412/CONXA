@@ -116,8 +116,7 @@ async function anyRootHasMatch(roots, target) {
 }
 
 // The full type list a compiled Assertion can carry (packages/conxa-core's model docstring) —
-// url_pattern is a regex-matching alias of url_changed, kept as its own type at this layer
-// because the two use different match strategies (startsWith vs RegExp).
+// url_changed means "differs from the pre-action URL"; url_pattern means "matches this RegExp".
 const URL_ASSERTION_TYPES = new Set(["url_changed", "url_pattern"]);
 
 // Full navigations may need the page-load budget; same-document hash checks do not.
@@ -142,7 +141,10 @@ async function evaluateAssertion(roots, page, a, inputs, baseline) {
 
   try {
     if (type === "url_changed") {
-      ok = await pollPositive(() => page.url() === target || (!!target && page.url().startsWith(target)), timeout);
+      // "The URL differs from before the action." The live pre-action URL wins; the compiled
+      // target (the recorded before-URL) is only a fallback when no baseline was captured.
+      const before = baseline ? baseline.url : target;
+      ok = await pollPositive(() => page.url() !== before, timeout);
     } else if (type === "url_pattern") {
       // An empty pattern is a compile-time mistake, not "anything matches" — matching that used
       // to make a required url_pattern assertion a silent no-op.
@@ -255,7 +257,10 @@ function hasRequiredAssertion(step) {
 // advisory-only, so requiring `required` here would leave every state_changed check baseline-less.
 function needsStateChangedBaseline(step) {
   if (isNonIdempotent(step)) return true;
-  return stepAssertions(step).some(a => a && String(a.type || "").toLowerCase() === "state_changed");
+  return stepAssertions(step).some(a => {
+    const t = a && String(a.type || "").toLowerCase();
+    return t === "state_changed" || t === "url_changed";
+  });
 }
 
 module.exports = {

@@ -451,7 +451,25 @@ class RecordingSession:
     _nav_pending_renderer_initiated: dict[int, float] = field(default_factory=dict)
     # A requested navigation must commit within this long to count as the cause of the
     # next observed navigation; real link/form/script navigations commit far faster.
-    _NAV_RENDERER_INITIATED_TTL_S = 2.0
+    _NAV_RENDERER_INITIATED_TTL_S = 10.0
+    # When each page's last main-frame navigation COMMITTED (stamped in _on_page_navigated), so the
+    # TTL above is judged against the commit, not against whenever the pump loop gets around to
+    # draining the check (a slow server or a busy pump used to push a real click past the old 2 s).
+    _nav_committed_at: dict[int, float] = field(default_factory=dict)
+    # Pages that saw a same-document navigation (pushState/replaceState/hash) since the last
+    # check. CDP never fires frameRequestedNavigation for those, so without this a SPA router
+    # redirect after a click was indistinguishable from the user retyping the address bar.
+    # ponytail: a user typing a hash-only URL by hand also lands here; rare, accepted.
+    _nav_same_document: set[int] = field(default_factory=set)
+    # When the page last reported a user interaction (click, submit, typing, ...) through the
+    # bridge — a navigation committing shortly after one is the interaction's effect.
+    _last_interaction_at: dict[int, float] = field(default_factory=dict)
+    _NAV_INTERACTION_WINDOW_S = 5.0
+    _INTERACTION_ACTIONS = frozenset({
+        "click", "dblclick", "right_click", "type", "fill", "select", "select_option",
+        "set_checkbox", "set_radio", "date_pick", "keyboard_shortcut", "submit", "drag_drop",
+        "upload", "upload_intent",
+    })
 
     def _remember_current_url(self, url: str) -> None:
         value = str(url or "").strip()
@@ -498,6 +516,9 @@ class RecordingSession:
         self._nav_cdp_sessions.clear()
         self._nav_history_state.clear()
         self._nav_check_pages.clear()
+        self._nav_committed_at.clear()
+        self._nav_same_document.clear()
+        self._last_interaction_at.clear()
         try:
             self._finalize_video_file_sync()
         except Exception as exc:  # noqa: BLE001
@@ -843,6 +864,10 @@ class RecordingSession:
                     k, time.monotonic()
                 ),
             )
+            session.on(
+                "Page.navigatedWithinDocument",
+                lambda _evt, k=key: self._nav_same_document.add(k),
+            )
         except Exception as exc:  # noqa: BLE001
             # Non-fatal: worst case, every navigation on this page is treated as
             # browser-initiated (over-reports manual_navigate instead of under-reporting).
@@ -917,6 +942,9 @@ class RecordingSession:
                 self._nav_cdp_sessions.pop(key, None)
                 self._nav_history_state.pop(key, None)
                 self._nav_pending_renderer_initiated.pop(key, None)
+                self._nav_committed_at.pop(key, None)
+                self._nav_same_document.discard(key)
+                self._last_interaction_at.pop(key, None)
                 continue
             if session is None:
                 continue
@@ -951,18 +979,32 @@ class RecordingSession:
                 # its own — the user retyped the address bar, used a bookmark, etc. Nothing else
                 # in the recording will ever reproduce that, so it needs its own explicit step.
                 requested_at = self._nav_pending_renderer_initiated.pop(key, None)
+                committed_at = self._nav_committed_at.pop(key, None) or time.monotonic()
                 renderer_initiated = (
                     requested_at is not None
-                    and (time.monotonic() - requested_at) <= self._NAV_RENDERER_INITIATED_TTL_S
+                    and 0 <= (committed_at - requested_at) <= self._NAV_RENDERER_INITIATED_TTL_S
                 )
-                if not renderer_initiated and to_url and to_url != from_url and not is_blank_url(to_url):
-                    self._enqueue_synthetic(
-                        "manual_navigate",
-                        json.dumps({"from_url": from_url, "to_url": to_url}),
-                        src_page=page,
-                    )
+                same_document = key in self._nav_same_document
+                self._nav_same_document.discard(key)
+                interacted_at = self._last_interaction_at.get(key)
+                after_interaction = (
+                    interacted_at is not None
+                    and -1.0 <= (committed_at - interacted_at) <= self._NAV_INTERACTION_WINDOW_S
+                )
+                if renderer_initiated or not to_url or to_url == from_url or is_blank_url(to_url):
+                    continue
+                # Not requested by the page through CDP, but a SPA route change or a navigation
+                # right after a click/submit is still that action's EFFECT, not something the
+                # user did on their own. Kept as evidence (cause="action") so the compiler can
+                # fold it into the action's post-condition instead of replaying the URL.
+                payload = {"from_url": from_url, "to_url": to_url}
+                if same_document or after_interaction:
+                    payload["cause"] = "action"
+                self._enqueue_synthetic("manual_navigate", json.dumps(payload), src_page=page)
                 continue
             self._nav_pending_renderer_initiated.pop(key, None)
+            self._nav_committed_at.pop(key, None)
+            self._nav_same_document.discard(key)
             self._enqueue_synthetic(
                 kind,
                 json.dumps({"from_url": from_url, "to_url": to_url}),
@@ -1225,6 +1267,8 @@ class RecordingSession:
             # inside a callback the dispatcher is still in the middle of delivering.
             self._pending_payloads.put((payload_copy, src_page, src_frame))
             self._last_enqueue_at = time.monotonic()
+            if src_page is not None and str((payload_copy.get("action") or {}).get("action") or "") in self._INTERACTION_ACTIONS:
+                self._last_interaction_at[id(src_page)] = self._last_enqueue_at
         except Exception as exc:  # noqa: BLE001 — recorder must never crash from page callback
             self.binding_errors.append(f"binding_error: {exc!s}")
 
@@ -2065,6 +2109,7 @@ class RecordingSession:
         except Exception:  # noqa: BLE001
             return
         self._page = page
+        self._nav_committed_at[id(page)] = time.monotonic()
         self._remember_page_url_sync(page)
         # Main-frame navigation happened — defer the Back/Forward history comparison to the
         # pump loop (CDP round-trips are unsafe inside Playwright event callbacks).

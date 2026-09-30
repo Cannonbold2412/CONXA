@@ -183,7 +183,7 @@ def _validate_findings(
             a_target = str(parsed.get("target") or "").strip()
             if a_type not in _VALID_ASSERTION_TYPES:
                 continue
-            if a_type == "state_changed":
+            if a_type in ("state_changed", "url_changed"):  # both compare to the pre-action page
                 if a_target:
                     continue
             else:
