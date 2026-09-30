@@ -646,7 +646,10 @@ class HandlerHints(BaseModel):
                                           # aria-label/title sentence, so the runtime falls back to
                                           # an exact-day-text match), display_format (best-effort
                                           # "MM/DD/YYYY"-shaped guess), kind ("single"|"range"|
-                                          # "datetime"), strategy ("typed_first"|"grid_only"),
+                                          # "datetime"|"text_field" -- text_field: a plain text
+                                          # field a date was TYPED into, no control_kind, display_format
+                                          # is exact (DD/MM/YYYY, MMM D, YYYY, ...), compiler/
+                                          # date_format.py), strategy ("typed_first"|"grid_only"),
                                           # role ("range_start"|"range_end", ranges only),
                                           # year_select/month_select (selectors for a widget's
                                           # native year/month <select> dropdowns — react-datepicker
@@ -822,6 +825,10 @@ then had no step for it at all. The recorder now tells the two apart via CDP's
 never address-bar/bookmark/`goto()`; see `docs/TRD.md` §6.2) and emits a `manual_navigate`
 synthetic event, same `{from_url, to_url}` value shape as `browser_back`/`browser_forward`.
 
+- **`cause` (2026-09-30).** The value may also carry `"cause": "action"`: the navigation was a SPA route change
+  or landed within 5 s of a bridge interaction, i.e. an *effect* of that action. The compiler
+  (`navigation_effects.py`) drops such an event and keeps only its destination as the causing action's
+  `post_condition.url_delta` -> an advisory `url_pattern` assertion; it never becomes a `navigate` step.
 - **Recorded by:** `session.py::_drain_nav_history_checks_sync`, gated on
   `_nav_pending_renderer_initiated` (set by the CDP event, consumed per classification).
 - **`ActionKind` member.** `manual_navigate` must be listed in the `ActionKind` Literal
@@ -1160,8 +1167,10 @@ class Assertion(BaseModel):
     required: bool     # True = halt on failure (and descend into recovery); False = warning only
 ```
 
-- `url_changed` — the page address must differ from its value before the action (target = the
-  before-URL). `url_pattern`/`url` is a regex-matching alias.
+- `url_changed` — the page address must differ from its value before the action. The runtime
+  compares against the live pre-action URL; `target` (the recorded before-URL, may be empty) is
+  only a fallback when no baseline was captured. To check *where* the page landed, use
+  `url_pattern` (regex).
 - `selector_present` / `selector_absent` — a selector must (not) be present.
 - `text_present` / `text_absent` — visible text must (not) appear.
 - `value_equals` — the target field's actual value must match `expected`. Compared normalized

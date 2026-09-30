@@ -17,3 +17,7 @@ The new chat design had no way to share pictures or documents with Conxa. A new 
 **Built the new Conxa Execute chat design into the real app — 2026-10-01**
 The calmer chat design from this morning now runs in the actual Execute app, not just in a mockup. Each skill run shows up as one tidy card with how long it took, any files it downloaded, and any warning worth a look. There are new Search, Skills and Runs pages for finding old chats, starting a skill, and checking what ran. You can also drag files onto the chat, attach a screenshot or a snapshot of the in-app browser, rename a chat, and hide the browser panel when you don't need it.
 — 2026-10-01
+
+**Saved the recent date, redirect and spreadsheet improvements — 2026-10-01**
+Several finished improvements were sitting unsaved on one computer, like drafts that were never filed. They are now filed in four tidy groups: dates typed into plain boxes, pages that move on after a click, running a list of records one at a time, and the matching notes. This keeps the team's history clear and makes each change easy to find or undo.
+— 2026-10-01

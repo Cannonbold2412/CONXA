@@ -17,7 +17,8 @@ Items moved out of [`TODO.md`](TODO.md) once resolved, grouped by area (the ID p
 | REC — Recorder | 1 | REC-STALE-1 |
 | AUTH — Authentication | 17 | AUTH-1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 14, 15, 18, 19, 20, 21 |
 | DEAD — Tech debt | 1 | DEAD-1 |
-| **Total** | **87** | |
+| COMPILE — Compiler Correctness | 1 | COMPILE-3 |
+| **Total** | **88** | |
 
 ---
 
@@ -1531,3 +1532,12 @@ recorded State's cities). None of these block a run; all deserve their own item.
 - **Category:** Tech debt
 - **Description:** `conxa-builder/python/handlers/protocol.py::_stage_runtime_auth` writes `{company}_groups.json` beside the staged sessions; `runtime/` never reads it (`browser.js::_resolveGroup` reads `pack.json`'s `groups`). Either dead, or the sandbox stages a `pack.json` that makes it redundant. Also `target_hosts.js` reads `manifest.login_url` / `entry_url`, which the builder never writes.
 - **Complexity:** S.
+
+## COMPILE — Compiler Correctness (1 done)
+
+### COMPILE-3 — `url_changed` means opposite things in the compiler and the runtime
+**Resolved:** 2026-09-30
+- **Resolution:** `url_changed` now means "the URL differs from before the action" everywhere. The runtime (`assertions.js`) compares against the live pre-action URL (baseline now captured for `url_changed` steps), falling back to the compiled before-URL target; `capture_state_snapshot(before=False)` reads `post_condition.url_delta.after`, so `state_diff.url_changed` is real; the editor and LLM `suggest_assertion` treat it as target-less like `state_changed`.
+- **Category:** Compiler / Runtime Correctness
+- **Description:** Found while fixing redirect recording (2026-09-30). `compiler/build.py::_build_assertions` emits `url_changed` with `target = <the URL before the action>` and the comment "assert it differs", but `runtime/app/assertions.js` checked `page.url() === target || page.url().startsWith(target)`. Separately, `state_validation.py::capture_state_snapshot` ignored `before=`, so `state_diff.url_changed` was always False.
+- **Complexity:** S-M.

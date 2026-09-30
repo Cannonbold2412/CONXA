@@ -43,10 +43,10 @@ Counts are of still-open items only. Resolved items live in [`Done.md`](Done.md)
 |---|---|
 | P0 — Critical / Time-Sensitive | 15 |
 | P1 — Blocking / Foundational | 3 |
-| P2 — High Value, Do Soon (incl. Discovered Items) | 36 |
+| P2 — High Value, Do Soon (incl. Discovered Items) | 37 |
 | P3 — Valuable, Sequence Around Other Work (incl. Discovered Items) | 20 |
 | P4 — Low Urgency, Opportunistic | 38 |
-| **Total** | **112** |
+| **Total** | **113** |
 
 ---
 
