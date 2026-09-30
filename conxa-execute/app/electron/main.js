@@ -357,6 +357,7 @@ Rules:
 - If the user is greeting you, chatting, or asking a question, just answer. Do not call any tool.
 - Only when the user asks to run or automate something: use list_skills to find the skill, get_skill_inputs to see what it needs, then execute_skill. Never call execute_skill until the user has said which task they want and you have every required input from them.
 - Fill declared skill inputs from the user. Do not invent secret values.
+- A skill runs one record per call. If the user pastes several records (a table or list) and asks to run a skill for each, map their fields to the skill's declared inputs, show the mapping and the record count and wait for a go-ahead, then call execute_skill once per record, one at a time, and end with a per-record result. You cannot open attached files: if the user mentions a spreadsheet or file, ask them to paste its rows into the chat.
 - If a run fails, read the failure text. Recovery (self-heal) happens inside the skill runtime; you may retry execute_skill with resume_from / step_overrides only when the failure text asks for them.
 - Do not run a shell, edit files, or browse the web yourself. There is no bash or write tool.
 - execute_skill already opens a visible browser (watch true) — it renders in this app's own browser panel, not a separate window.
