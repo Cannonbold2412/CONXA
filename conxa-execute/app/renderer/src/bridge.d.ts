@@ -33,7 +33,7 @@ export type SessionSummary = { id: string; title: string; createdAt: string; upd
 
 export type SessionDetail = SessionSummary & { messages: ChatMessage[] };
 
-export type Identity = { user_id: string; name?: string; email?: string };
+export type Identity = { user_id: string; name?: string; first_name?: string; last_name?: string; email?: string; picture?: string };
 
 export type PanelRect = { x: number; y: number; width: number; height: number };
 
@@ -70,7 +70,7 @@ export type Bridge = {
   runtimeStatus: () => Promise<{ ok: boolean; command?: string; message?: string }>;
   listSkills: () => Promise<{ ok: boolean; skills?: SkillRow[]; message?: string }>;
   getInputs: (p: { skill: string; workspace_id?: string }) => Promise<{ ok: boolean; schema?: Record<string, unknown>; message?: string }>;
-  execute: (p: { skill: string; workspace_id?: string; inputs: Record<string, string> }) => Promise<{ ok: boolean; status?: string; run_id?: string | null; text?: string; message?: string }>;
+  execute: (p: { skill: string; workspace_id?: string; inputs: Record<string, string | string[]> }) => Promise<{ ok: boolean; status?: string; run_id?: string | null; text?: string; message?: string }>;
   history: () => Promise<{ ok: boolean; items?: HistoryRow[] }>;
   deleteHistory: (p: { at: string }) => Promise<{ ok: boolean; items?: HistoryRow[]; message?: string }>;
   getSettings: () => Promise<{ ok: boolean; activeWorkspaceId?: string; runPermission?: "ask" | "auto"; error?: string }>;

@@ -2,6 +2,26 @@
 
 > Rotated daily into `docs/archive/fix-log/` — see [INDEX.md](docs/archive/fix-log/INDEX.md) for older entries.
 
+**Added working back and forward arrows to Conxa Execute — 2026-10-01**
+The top bar now has a left arrow and a right arrow that work like a web browser's. They step back and forward through the chats and pages you just visited, instead of just moving up and down the chat list. The arrows grey out when there is nowhere to go.
+— 2026-10-01
+
+**Moved the Conxa logo to the top bar in Conxa Execute — 2026-10-01**
+The Conxa logo and name now sit at the very top-left of the window, next to the button that shows and hides the chat list. The little left and right arrows are gone because they were confusing, like two doors that led nowhere obvious. The chat list now starts straight with "New chat".
+— 2026-10-01
+
+**Fixed the run form in Conxa Execute showing no boxes to fill in — 2026-10-01**
+Opening a skill that needs details, like the list of files to transfer, showed "no declared inputs" and then failed because the details were missing. The form was like a clerk who couldn't read the order slip, so it handed over a blank one. It now reads the slip correctly and shows the right box for each detail: text, a dropdown, tick boxes, a date, or a hidden password. It also tells you which required boxes are empty before it starts.
+— 2026-10-01
+
+**Conxa Execute now greets you by your real first name — 2026-10-01**
+The word "Execute" is gone from the top-left corner, so it just says "Conxa". When you sign in, the app now also receives your first name, last name and photo from your account, instead of only a single combined name. The greeting uses that first name, like a receptionist who reads your badge rather than guessing from your email.
+— 2026-10-01
+
+**Stopped empty chats piling up in Conxa Execute and added the real logo — 2026-10-01**
+Clicking "New chat" over and over used to fill the left list with blank chats, like opening a new notebook every time you pick up a pen. Now a chat only shows up in the list once you actually send something, and clicking "New chat" on an already-blank chat just keeps you there. The top-left corner also shows the Conxa logo instead of a plain orange square.
+— 2026-10-01
+
 **Designed a calmer look for the Conxa Execute chat window — 2026-10-01**
 The Execute chat screen felt busy: every reply was labelled with the company name, the sign-in request was a long block of text, and the options menu was cramped. A new mockup shows it cleaner, like the Claude desktop app, in Conxa's own blue-green colours. A skill run now shows up as one tidy card with its steps and any warning, and sign-in shrinks to a single line once it is done. This is a design only; the app itself has not changed yet.
 — 2026-10-01

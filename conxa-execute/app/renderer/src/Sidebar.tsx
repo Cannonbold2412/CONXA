@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionSummary } from "./bridge";
-import { BrandMark, Icon, Row, paths } from "./ui";
+import { Icon, Row, paths } from "./ui";
 
 export type View = "chat" | "search" | "skills" | "runs";
 
@@ -60,15 +60,6 @@ export function Sidebar({
       {!collapsed && (
         <div onPointerDown={onResizeStart} className="absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize hover:bg-line" />
       )}
-
-      <div className={`flex items-center gap-2.5 pb-4 ${collapsed ? "justify-center" : "px-2"}`}>
-        <BrandMark />
-        {!collapsed && (
-          <div className="text-[15px] font-semibold tracking-[-0.01em]">
-            Conxa <span className="font-medium text-fg-dim">Execute</span>
-          </div>
-        )}
-      </div>
 
       <button
         type="button"

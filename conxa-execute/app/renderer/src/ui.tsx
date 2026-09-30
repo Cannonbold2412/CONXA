@@ -42,7 +42,9 @@ export const paths = {
   screenshot: "M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
   browser: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4v16",
   retry: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
-  arrowUp: "M12 19V5M5 12l7-7 7 7",
+  arrowLeft: "M19 12H5M12 19l-7-7 7-7",
+  arrowRight: "M5 12h14M12 5l7 7-7 7",
+  arrowUp:"M12 19V5M5 12l7-7 7 7",
   upload: "M12 15V4M7 9l5-5 5 5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3",
   file: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5",
 };
@@ -51,12 +53,12 @@ export const paths = {
 export function BrandMark({ size = 22 }: { size?: 22 | 34 }) {
   const big = size === 34;
   return (
-    <span
-      className={`flex shrink-0 items-center justify-center bg-brand text-bg ${big ? "h-[34px] w-[34px] rounded-[9px]" : "h-[22px] w-[22px] rounded-md"}`}
+    <img
+      src="/icon.png"
+      alt=""
+      className={`shrink-0 ${big ? "h-[34px] w-[34px] rounded-[9px]" : "h-[22px] w-[22px] rounded-md"}`}
       aria-hidden
-    >
-      <Icon d="M9 7l5 5-5 5" size={big ? 20 : 14} stroke={big ? 2.8 : 3} />
-    </span>
+    />
   );
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Icon, paths } from "./ui";
+import { BrandMark, Icon, paths } from "./ui";
 
 function Chrome({
   label,
@@ -143,14 +143,16 @@ export function TitleBar({
   return (
     <header className="app-region-drag flex h-11 shrink-0 select-none items-center border-b border-line">
       <div style={{ width: leftWidth, minWidth: "fit-content" }} className="flex h-full shrink-0 items-center gap-0.5 border-r border-line bg-bg-sidebar px-2.5">
+        <BrandMark />
+        <span className="mr-2 ml-1 text-[15px] font-semibold tracking-[-0.01em]">Conxa</span>
         <Chrome label="Toggle sidebar" onClick={onToggleSidebar}>
           <Icon d={paths.panel} size={16} />
         </Chrome>
         <Chrome label="Back" onClick={onBack} disabled={!canGoBack}>
-          <Icon d={paths.back} size={16} />
+          <Icon d={paths.arrowLeft} size={16} />
         </Chrome>
         <Chrome label="Forward" onClick={onForward} disabled={!canGoForward}>
-          <Icon d={paths.forward} size={16} />
+          <Icon d={paths.arrowRight} size={16} />
         </Chrome>
       </div>
 

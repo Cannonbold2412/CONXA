@@ -19,7 +19,8 @@ const storage = require("../vendor/opencode/storage/storage");
 async function listSessions() {
   const keys = await storage.list(["session"]);
   const sessions = await Promise.all(keys.map((k) => storage.read(k)));
-  return sessions.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+  // Untitled chats have no messages yet — keep them out of the sidebar.
+  return sessions.filter((s) => s.title !== "New chat").sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
 
 async function createSession() {

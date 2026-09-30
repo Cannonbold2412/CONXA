@@ -17,6 +17,8 @@ function statusLabel(status: string) {
 }
 
 function userDisplayName(identity: Identity | null, signedIn: boolean) {
+  const full = [identity?.first_name, identity?.last_name].filter(Boolean).join(" ").trim();
+  if (full) return full;
   if (identity?.name?.trim()) return identity.name.trim();
   if (identity?.email?.trim()) return identity.email.split("@")[0];
   return signedIn ? "Account" : "Guest";
@@ -35,17 +37,39 @@ function greeting(name: string) {
   return first ? `Good ${part}, ${first}` : `Good ${part}`;
 }
 
-// The runtime's declared-inputs schema is plain JSON-Schema: { properties: {...}, required: [...] }.
-function fieldList(schema: Record<string, unknown>): { name: string; required: boolean; description: string }[] {
-  const props = (schema.properties || {}) as Record<string, { description?: string; type?: string }>;
-  const required = new Set(Array.isArray(schema.required) ? (schema.required as string[]) : []);
-  if (!props || typeof props !== "object" || Array.isArray(props)) return [];
-  return Object.keys(props).map((name) => ({
-    name,
-    required: required.has(name),
-    description: String(props[name]?.description || ""),
-  }));
+type Field = {
+  name: string;
+  description: string;
+  required: boolean;
+  options?: string[]; // select (enum) or multiselect (array of enum'd items)
+  multi: boolean;
+  date: boolean;
+  secret: boolean;
+  default: string | string[];
+};
+
+// get_skill_inputs returns the compiler's shape: { inputs: [{ name, type, description, enum, items,
+// format, default, optional, sensitive }] }. Required = not optional and no default (server.js gate).
+function fieldList(schema: Record<string, unknown>): Field[] {
+  const raw = Array.isArray(schema.inputs) ? (schema.inputs as Record<string, any>[]) : [];
+  return raw.filter((f) => f && f.name).map((f) => {
+    const multi = f.type === "array";
+    const options: string[] | undefined = multi ? f.items?.enum : f.enum;
+    const hasDefault = f.default !== undefined && f.default !== null && String(f.default).trim() !== "";
+    return {
+      name: String(f.name),
+      description: String(f.description || ""),
+      required: !f.optional && !hasDefault,
+      options: Array.isArray(options) && options.length ? options : undefined,
+      multi,
+      date: f.format === "date",
+      secret: Boolean(f.sensitive),
+      default: hasDefault ? (multi && !Array.isArray(f.default) ? String(f.default).split(",").map((s) => s.trim()) : f.default) : multi ? [] : "",
+    };
+  });
 }
+
+const inputCls = "mt-1.5 h-11 w-full rounded-xl border border-line bg-bg-elevated px-3.5 text-[14.5px] outline-none transition-colors focus:border-brand/50";
 
 // Confirm card shows what is about to run, but never echoes a secret back onto the screen.
 const SECRET_NAME = /pass|secret|token|key|pin\b/i;
@@ -114,7 +138,7 @@ export function App() {
   const [selected, setSelected] = useState<SkillRow | null>(null);
   const [schema, setSchema] = useState<Record<string, unknown>>({});
   const [inputsError, setInputsError] = useState("");
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, string | string[]>>({});
   const [busy, setBusy] = useState(false);
   const [formMsg, setFormMsg] = useState("");
   const [formOk, setFormOk] = useState(true);
@@ -140,6 +164,20 @@ export function App() {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+
+  // Back/forward history of (view, chat, selected skill). Recorded by watching state,
+  // so every navigation path is covered; navGo moves navPos first so replays aren't re-pushed.
+  const navHist = useRef<{ view: View; sessionId: string | null; selected: SkillRow | null }[]>([]);
+  const navPos = useRef(-1);
+  const [navTick, setNavTick] = useState(0);
+  useEffect(() => {
+    const cur = navHist.current[navPos.current];
+    if (cur && cur.view === view && cur.sessionId === sessionId && cur.selected === selected) return;
+    navHist.current = [...navHist.current.slice(0, navPos.current + 1), { view, sessionId, selected }];
+    navPos.current = navHist.current.length - 1;
+    setNavTick((n) => n + 1);
+  }, [view, sessionId, selected]);
+  void navTick; // re-render so canGoBack/canGoForward refresh
   const sessionRef = useRef<string | null>(null);
   sessionRef.current = sessionId;
   const liveNow = sessionId ? live[sessionId] : undefined;
@@ -322,8 +360,8 @@ export function App() {
         const sc = (r.schema || {}) as Record<string, unknown>;
         setSchema(sc);
         const fields = fieldList(sc);
-        const next: Record<string, string> = {};
-        for (const f of fields) next[f.name] = "";
+        const next: Record<string, string | string[]> = {};
+        for (const f of fields) next[f.name] = f.default;
         setValues(next);
       })
       .catch(() => {
@@ -346,9 +384,6 @@ export function App() {
   const emptyChatHome = onChat && items.length === 0;
   const displayName = userDisplayName(identity, signedIn);
   const initials = userInitials(displayName);
-  const sessionIndex = sessions.findIndex((s) => s.id === sessionId);
-  const canGoBack = Boolean(selected) || view !== "chat" || sessionIndex > 0;
-  const canGoForward = onChat && sessionIndex >= 0 && sessionIndex < sessions.length - 1;
   const lastUserText = [...items].reverse().find((i) => i.kind === "user");
   const runAgainText = lastUserText && lastUserText.kind === "user" ? msgText(lastUserText.m).trim() : "";
   const lastAssistantIdx = [...items].reverse().find((i) => i.kind === "assistant");
@@ -356,6 +391,13 @@ export function App() {
 
   async function runForm() {
     if (!selected || busy) return;
+    const missing = fields.filter((f) => f.required && !String(values[f.name] ?? "").trim());
+    if (missing.length) {
+      setFormOk(false);
+      setFormDetail("");
+      setFormMsg(`Fill in: ${missing.map((f) => f.name).join(", ")}`);
+      return;
+    }
     setBusy(true);
     setFormMsg("");
     setFormDetail("");
@@ -478,6 +520,10 @@ export function App() {
     setSelected(null);
     setFormMsg("");
     setView("chat");
+    if (sessionId && chatLog.length === 0) {
+      setEditingIndex(null);
+      return;
+    }
     const r = await api.createSession();
     if (!r.session) {
       setSidebarError(r.message || "Could not start a new chat.");
@@ -488,6 +534,19 @@ export function App() {
     setSessionId(r.session.id);
     setChatLog([]);
     setEditingIndex(null);
+  }
+
+  function navGo(delta: -1 | 1) {
+    const t = navHist.current[navPos.current + delta];
+    if (!t) return;
+    navPos.current += delta;
+    if (t.sessionId && t.sessionId !== sessionId) {
+      const s = sessions.find((x) => x.id === t.sessionId);
+      if (s) void pickSession(s);
+    }
+    setSelected(t.selected);
+    setView(t.view);
+    setNavTick((n) => n + 1);
   }
 
   async function pickSession(s: SessionSummary) {
@@ -552,24 +611,6 @@ export function App() {
     const r = await api.renameSession({ id: sessionId, title });
     if (!r.ok) setSidebarError(r.message || "Could not rename that chat.");
     await refreshSessions();
-  }
-
-  function handleBack() {
-    if (selected) {
-      setSelected(null);
-      return;
-    }
-    if (view !== "chat") {
-      setView("chat");
-      return;
-    }
-    if (sessionIndex > 0) pickSession(sessions[sessionIndex - 1]);
-  }
-
-  function handleForward() {
-    if (sessionIndex >= 0 && sessionIndex < sessions.length - 1) {
-      pickSession(sessions[sessionIndex + 1]);
-    }
   }
 
   // Latest handlers for the one global shortcut listener.
@@ -668,11 +709,11 @@ export function App() {
     <div className="flex h-full flex-col bg-bg text-fg">
       <TitleBar
         leftWidth={sidebarW}
+        onBack={() => navGo(-1)}
+        onForward={() => navGo(1)}
+        canGoBack={navPos.current > 0}
+        canGoForward={navPos.current < navHist.current.length - 1}
         onToggleSidebar={() => setCollapsed((v) => !v)}
-        onBack={handleBack}
-        onForward={handleForward}
-        canGoBack={canGoBack}
-        canGoForward={canGoForward}
         title={currentTitle}
         onRename={(t) => void renameChat(t)}
         onDelete={() => sessionId && void deleteChat(sessionId)}
@@ -717,7 +758,27 @@ export function App() {
                   {!inputsError && fields.map((f) => (
                     <label key={f.name} className="block text-sm">
                       <span className="text-fg-soft">{f.name}{f.required ? " *" : ""}</span>
-                      <input className="mt-1.5 h-11 w-full rounded-xl border border-line bg-bg-elevated px-3.5 text-[14.5px] outline-none transition-colors focus:border-brand/50" value={values[f.name] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk} />
+                      {f.multi && f.options ? (
+                        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
+                          {f.options.map((o) => {
+                            const cur = (values[f.name] as string[]) || [];
+                            return (
+                              <label key={o} className="flex items-center gap-1.5 text-[14px]">
+                                <input type="checkbox" checked={cur.includes(o)} disabled={!runtimeOk}
+                                  onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.checked ? [...cur, o] : cur.filter((x) => x !== o) }))} />
+                                {o}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      ) : f.options ? (
+                        <select className={inputCls} value={String(values[f.name] ?? "")} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk}>
+                          <option value="" />
+                          {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      ) : (
+                        <input className={inputCls} type={f.secret ? "password" : f.date ? "date" : "text"} value={String(values[f.name] ?? "")} onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))} disabled={!runtimeOk} />
+                      )}
                       {f.description && <span className="mt-1 block text-xs text-fg-dim">{f.description}</span>}
                     </label>
                   ))}
